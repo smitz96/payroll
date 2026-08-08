@@ -76,6 +76,7 @@
       </div>
     </div>
     <div class="col-md-12 adjustment-actions">
+      <a class="btn btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Back</a>
       <a class="btn btn-outline-secondary" href="{{ url_for('reports.employee_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">Open PDF</a>
       {% if not is_finalized %}
       <button class="btn btn-outline-primary" name="action" value="save">Save Changes</button>
