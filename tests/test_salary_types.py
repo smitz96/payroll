@@ -11,8 +11,13 @@ def test_monthly_normalization_resolves_only_monthly():
         assert resolve_payroll_rule(normalize_salary_type(value)) is not None
 
 
+def test_daily_and_monthly_normalization_resolve_rules():
+    assert normalize_salary_type("Daily") == "DAILY"
+    assert resolve_payroll_rule("DAILY") is not None
+
+
 def test_unsupported_types_do_not_resolve_to_monthly():
-    for value in ["Daily", "Hourly", "Contract", "", None, "Unknown"]:
+    for value in ["Hourly", "Contract", "", None, "Unknown"]:
         normalized = normalize_salary_type(value)
         assert normalized != "MONTHLY"
         assert resolve_payroll_rule(normalized) is None
@@ -22,9 +27,9 @@ def test_unsupported_result_preserves_salary_without_final_calculation(app):
     salary = SalaryRecord(
         payroll_month="2026-07",
         employee_id="5",
-        name="Daily Employee",
-        salary_type="Daily",
-        normalized_salary_type="DAILY",
+        name="Hourly Employee",
+        salary_type="Hourly",
+        normalized_salary_type="HOURLY",
         salary=Decimal("25000"),
         adjustment=Decimal("100"),
     )

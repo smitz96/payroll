@@ -16,7 +16,7 @@ from attendance.loans import active_loans_for_employee, employee_has_loan, loan_
 from attendance.master import sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv
-from attendance.payroll_rules import calculate_monthly_shortage, classify_monthly_attendance
+from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, total_paid_days
 from attendance.settings import MONTHLY_RULES as CFG
 from attendance.utils import decimal_money, money
@@ -147,7 +147,12 @@ def employee_attendance_rows(records, result=None, salary=None, overrides=None):
             raw_status = classified["status"]
             explanation = classified["explanation"]
             shortage_minutes = calculate_monthly_shortage(record.actual_minutes)
-        elif salary and salary.normalized_salary_type != "MONTHLY":
+        elif salary and salary.normalized_salary_type == "DAILY":
+            classified = classify_daily_attendance(record, holidays, overrides.get(record.date), record.employee_id)
+            raw_status = classified["status"]
+            explanation = classified["explanation"]
+            shortage_minutes = calculate_monthly_shortage(record.actual_minutes)
+        elif salary and salary.normalized_salary_type not in {"MONTHLY", "DAILY"}:
             raw_status = "Payroll Rules Not Configured"
             explanation = "Salary type rules not configured."
             shortage_minutes = 0
@@ -191,9 +196,10 @@ def save_employee_detail_changes(month, employee_id):
         if loan < 0:
             raise ValueError("Loan deduction cannot be negative.")
         salary.loan = loan
-        salary.leave_encashment_enabled = request.form.get("leave_encashment_enabled") == "on"
-        salary.leave_encashment_disabled = bool(global_leave_encashment and not salary.leave_encashment_enabled)
-        leave_encashment_days = parse_leave_encashment_days(request.form.get("leave_encashment_days", "0"))
+        monthly_wage = salary.normalized_salary_type == "MONTHLY"
+        salary.leave_encashment_enabled = monthly_wage and request.form.get("leave_encashment_enabled") == "on"
+        salary.leave_encashment_disabled = bool(monthly_wage and global_leave_encashment and not salary.leave_encashment_enabled)
+        leave_encashment_days = parse_leave_encashment_days(request.form.get("leave_encashment_days", "0")) if monthly_wage else Decimal("0")
         result = PayrollResult.query.filter_by(payroll_month=month, employee_id=employee_id).first()
         if salary.leave_encashment_enabled and result and not global_leave_encashment:
             available_leave = Decimal(result.closing_leave or 0) + Decimal(getattr(result, "leave_encashment_days", 0) or 0)
@@ -432,12 +438,15 @@ def month(month):
         order = "asc"
     salaries = SalaryRecord.query.filter_by(payroll_month=month).all()
     salaries = sorted(salaries, key=lambda salary: salary_sort_value(salary, sort), reverse=order == "desc")
+    monthly_salaries = [salary for salary in salaries if salary.normalized_salary_type == "MONTHLY"]
+    daily_salaries = [salary for salary in salaries if salary.normalized_salary_type == "DAILY"]
+    other_salaries = [salary for salary in salaries if salary.normalized_salary_type not in {"MONTHLY", "DAILY"}]
     results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
     attendance_count = AttendanceRecord.query.filter_by(payroll_month=month).count()
     missing_salary = attendance_missing_salary(month)
     mismatches = name_mismatches(month)
     wage_types = sorted({s.normalized_salary_type or "MISSING" for s in salaries})
-    return render_template("payroll_month.html", month=month, month_label=display_month(month), payroll_month=payroll_month, is_finalized=payroll_month.status == "FINALIZED", salaries=salaries, results=results, attendance_count=attendance_count, missing_salary=missing_salary, mismatches=mismatches, wage_types=wage_types, sort=sort, order=order)
+    return render_template("payroll_month.html", month=month, month_label=display_month(month), payroll_month=payroll_month, is_finalized=payroll_month.status == "FINALIZED", salaries=salaries, monthly_salaries=monthly_salaries, daily_salaries=daily_salaries, other_salaries=other_salaries, results=results, attendance_count=attendance_count, missing_salary=missing_salary, mismatches=mismatches, wage_types=wage_types, sort=sort, order=order)
 
 
 @bp.route("/<month>/employee/<employee_id>", methods=["GET", "POST"])

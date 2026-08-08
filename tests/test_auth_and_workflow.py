@@ -709,7 +709,32 @@ def test_type_change_recalculation(app):
         db.session.commit()
         calculate_payroll_month("2026-07")
         result = PayrollResult.query.filter_by(employee_id="5").one()
-        assert result.final_salary is None
+        assert result.payroll_rule_type == "DAILY"
+        assert result.final_salary is not None
+
+
+def test_daily_wage_calculates_working_days_and_holidays_without_leave(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Daily Worker"))
+        db.session.add(WeekOffRule(employee_id="5", sunday="WEEK_OFF_ALL", confirmed_at=datetime.utcnow()))
+        db.session.add(Holiday(date=date(2026, 7, 2), name="Factory Holiday", holiday_type="VARIABLE"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Daily Worker", date=date(2026, 7, 1), day="Wednesday", raw_working_hours="9h 00m", actual_minutes=parse_duration("9h 00m"), parse_status="OK"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Daily Worker", date=date(2026, 7, 2), day="Thursday", raw_working_hours="0h 00m", actual_minutes=0, parse_status="OK"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Daily Worker", date=date(2026, 7, 5), day="Sunday", raw_working_hours="0h 00m", actual_minutes=0, parse_status="OK"))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Daily Worker", salary_type="Daily", normalized_salary_type="DAILY", salary=Decimal("500"), adjustment=Decimal("0"), loan=Decimal("0")))
+        db.session.commit()
+
+        result = calculate_payroll_month("2026-07")[0]
+        assert result.payroll_rule_type == "DAILY"
+        assert result.paid_working_days == Decimal("1.0")
+        assert result.holidays == 1
+        assert result.week_offs == 1
+        assert result.paid_leaves == Decimal("0.0")
+        assert result.leave_earned == Decimal("0.0")
+        assert result.closing_leave == Decimal("0.0")
+        assert result.final_salary == Decimal("1000.00")
+        assert LeaveLedger.query.filter_by(employee_id="5", payroll_month="2026-07").count() == 0
         SalaryRecord.query.filter_by(employee_id="5").update({"salary_type": "Monthly", "normalized_salary_type": "MONTHLY", "salary": Decimal("30000")})
         db.session.commit()
         calculate_payroll_month("2026-07")
@@ -720,7 +745,8 @@ def test_type_change_recalculation(app):
         db.session.commit()
         calculate_payroll_month("2026-07")
         result = PayrollResult.query.filter_by(employee_id="5").one()
-        assert result.final_salary is None
+        assert result.payroll_rule_type == "DAILY"
+        assert result.final_salary is not None
 
 
 def test_employee_detail_common_save_recalculates_adjustment_and_loan(client, app):

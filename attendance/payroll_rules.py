@@ -210,6 +210,139 @@ class MonthlyPayrollRule(PayrollRule):
         )
 
 
+class DailyPayrollRule(PayrollRule):
+    salary_type = "DAILY"
+
+    def calculate_employee_month(self, salary_record, attendance_records, opening_leave=Decimal("0"), holidays=None, overrides=None):
+        holidays = holidays or set()
+        overrides = overrides or {}
+        daily_rate = Decimal(salary_record.salary)
+        hourly_rate = daily_rate / Decimal(CFG["SALARY_HOURS_PER_DAY"])
+        quarter_rate = hourly_rate / Decimal(4)
+        full_days = Decimal("0")
+        half_days = Decimal("0")
+        week_offs = 0
+        holiday_count = 0
+        actual_total = 0
+        less_minutes = 0
+        less_deduction = Decimal("0")
+        ot_minutes = 0
+        payable_ot = 0
+        ot_amount = Decimal("0")
+        details = []
+        needs_review = []
+        employee = db.session.get(Employee, salary_record.employee_id)
+        ot_enabled = False if employee and employee.ot_enabled is False else True
+        less_hours_exempt = bool(employee and employee.less_hours_exempt)
+
+        for rec in sorted(attendance_records, key=lambda item: item.date):
+            override = overrides.get(rec.date)
+            row = classify_daily_attendance(rec, holidays, override, rec.employee_id)
+            actual = rec.actual_minutes or 0
+            actual_total += actual
+            if row["status"] == "Week Off":
+                week_offs += 1
+            elif row["status"] == "Week Off Worked":
+                week_offs += 1
+                full_days += Decimal("1")
+            elif row["status"] == "Holiday":
+                holiday_count += 1
+            elif row["status"] == "Full Day Present":
+                full_days += Decimal("1")
+            elif row["status"] == "Half Day Present":
+                half_days += Decimal("1")
+            elif row["status"] in {"Punch Error", "Needs Review"}:
+                needs_review.append(f"{rec.date}: {row['status']}")
+
+            shortage = 0 if less_hours_exempt else calculate_monthly_shortage(actual)
+            shortage_amount = Decimal("0")
+            rounded = row["rounded_minutes"]
+            if shortage and row["status"] in {"Full Day Present", "Week Off Worked"}:
+                shortage_amount = quarter_rate * Decimal(shortage // CFG["ROUNDING_INTERVAL_MINUTES"])
+                less_minutes += shortage
+                less_deduction += shortage_amount
+            raw_ot, rounded_ot, ot_value = calculate_monthly_overtime(actual, quarter_rate)
+            ot_minutes += raw_ot
+            if not ot_enabled:
+                rounded_ot = 0
+                ot_value = Decimal("0")
+            payable_ot += rounded_ot
+            ot_amount += ot_value
+            details.append({
+                "date": rec.date.isoformat(),
+                "day": rec.day,
+                "first_punch": rec.first_punch,
+                "last_punch": rec.last_punch,
+                "raw_working_hours": rec.raw_working_hours,
+                "actual_minutes": actual,
+                "actual_duration": minutes_to_duration(actual),
+                "rounded_minutes": rounded,
+                "rounded_duration": minutes_to_duration(rounded),
+                "attendance_status": row["status"],
+                "paid_day_value": str(row["paid_day"]),
+                "shortage_minutes": shortage,
+                "shortage_deduction": str(money(shortage_amount)),
+                "raw_ot": raw_ot,
+                "payable_ot": rounded_ot,
+                "ot_amount": str(money(ot_value)),
+                "leave_used": "0",
+                "comp_off_earned": "0",
+                "holiday": rec.date in holidays,
+                "week_off": is_week_off_for_date(rec.employee_id, rec.date),
+                "sandwich_leave": False,
+                "override": override.manual_status if override else "",
+                "explanation": row["explanation"],
+            })
+
+        paid_working_days = full_days + (half_days * Decimal("0.5"))
+        payable_days = paid_working_days + Decimal(holiday_count)
+        gross_salary = daily_rate * payable_days
+        manual = Decimal(salary_record.adjustment)
+        loan = Decimal(getattr(salary_record, "loan", Decimal("0")) or 0) + loan_installment_for_employee(salary_record.employee_id, salary_record.payroll_month)
+        loan_pending = loan_pending_after_month_for_employee(salary_record.employee_id, salary_record.payroll_month)
+        advance = advance_deduction_for_employee(salary_record.employee_id, salary_record.payroll_month)
+        manual_deduction = abs(manual) if manual < 0 else Decimal("0")
+        total_deduction = less_deduction + loan + advance + manual_deduction
+        total_addition = ot_amount + (manual if manual > 0 else Decimal("0"))
+        final_salary = gross_salary - total_deduction + total_addition
+        status = "Needs Review" if needs_review else "Calculated"
+        return PayrollResult(
+            payroll_month=salary_record.payroll_month,
+            employee_id=salary_record.employee_id,
+            payroll_rule_type="DAILY",
+            calculation_status=status,
+            message="; ".join(needs_review),
+            full_days=full_days,
+            half_days=half_days,
+            paid_working_days=paid_working_days,
+            week_offs=week_offs,
+            holidays=holiday_count,
+            paid_leaves=Decimal("0"),
+            lop_days=Decimal("0"),
+            opening_leave=Decimal("0"),
+            leave_earned=Decimal("0"),
+            leave_used=Decimal("0"),
+            closing_leave=Decimal("0"),
+            actual_working_minutes=actual_total,
+            less_hours_minutes=less_minutes,
+            less_hours_deduction=money(less_deduction),
+            ot_minutes=ot_minutes,
+            payable_ot_minutes=payable_ot,
+            ot_amount=money(ot_amount),
+            lop_deduction=Decimal("0"),
+            manual_adjustment=manual,
+            leave_encashment_days=Decimal("0"),
+            leave_encashment_amount=Decimal("0"),
+            loan_deduction=money(loan),
+            loan_pending_amount=money(loan_pending),
+            advance_deduction=money(advance),
+            total_deduction=money(total_deduction),
+            total_addition=money(total_addition),
+            final_salary=money(final_salary),
+            detail_json=details,
+        )
+
+
 def classify_monthly_attendance(record, holidays=None, override=None, employee_id=None):
     holidays = holidays or set()
     if override:
@@ -247,6 +380,45 @@ def classify_monthly_attendance(record, holidays=None, override=None, employee_i
     if actual >= CFG["HALF_DAY_MINIMUM_MINUTES"]:
         return {"status": "Half Day Present", "paid_day": Decimal("0.5"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Under 6 hours, valid half-day duration."}
     return {"status": "Full Day LOP", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Less than 3 hours is full-day LOP."}
+
+
+def classify_daily_attendance(record, holidays=None, override=None, employee_id=None):
+    holidays = holidays or set()
+    if override:
+        status = override.manual_status
+        mapping = {
+            "Full Day Present": (Decimal("1"), "Manual override applied."),
+            "Half Day Present": (Decimal("0.5"), "Manual override applied."),
+            "Holiday": (Decimal("1"), "Manual holiday override applied."),
+            "Week Off Worked": (Decimal("1"), "Manual week off worked override applied."),
+            "Week Off": (Decimal("0"), "Manual week off override applied."),
+            "Paid Leave": (Decimal("0"), "Daily wage employees do not use leave balance."),
+            "Half-Day Paid Leave": (Decimal("0"), "Daily wage employees do not use leave balance."),
+            "Unpaid Leave / LOP": (Decimal("0"), "Manual unpaid day override applied."),
+            "Half-Day LOP": (Decimal("0"), "Manual unpaid half-day override applied."),
+        }
+        paid_day, explanation = mapping.get(status, (Decimal("0"), "Manual override applied."))
+        return {"status": status, "paid_day": paid_day, "leave_used": Decimal("0"), "rounded_minutes": record.actual_minutes or 0, "explanation": explanation}
+    if record.date in holidays:
+        return {"status": "Holiday", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "Paid holiday for daily wage employee."}
+    if is_week_off_for_date(employee_id or record.employee_id, record.date):
+        actual = record.actual_minutes or 0
+        if record.parse_status == "OK" and actual >= CFG["HALF_DAY_MINIMUM_MINUTES"]:
+            return {"status": "Week Off Worked", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Worked on configured week off; counted as a working day for daily wage."}
+        return {"status": "Week Off", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "Configured week off is not payable for daily wage."}
+    if record.parse_status != "OK":
+        return {"status": "Needs Review", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": record.warning or "Attendance needs review."}
+    actual = record.actual_minutes
+    if actual is None:
+        return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "No working duration was imported."}
+    if actual >= CFG["FULL_DAY_REQUIRED_MINUTES"]:
+        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Daily full-day working duration."}
+    if actual >= CFG["LESS_HOURS_RULE_MINIMUM_MINUTES"]:
+        rounded = floor_to_interval(actual, CFG["ROUNDING_INTERVAL_MINUTES"])
+        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": rounded, "explanation": "Daily wage short-hours rule applies with 15-minute floor."}
+    if actual >= CFG["HALF_DAY_MINIMUM_MINUTES"]:
+        return {"status": "Half Day Present", "paid_day": Decimal("0.5"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Daily half-day working duration."}
+    return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Less than 3 hours is not payable for daily wage."}
 
 
 def apply_sandwich_leave_policy(classified_rows):
@@ -303,7 +475,7 @@ def calculate_monthly_leave_earned(paid_working_days):
     return truncate_one_decimal(Decimal(paid_working_days) / Decimal(CFG["LEAVE_EARN_DIVISOR"]))
 
 
-PAYROLL_RULES = {"MONTHLY": MonthlyPayrollRule()}
+PAYROLL_RULES = {"MONTHLY": MonthlyPayrollRule(), "DAILY": DailyPayrollRule()}
 
 
 def resolve_payroll_rule(normalized_salary_type):

@@ -36,6 +36,8 @@ def payroll_month_days(month):
 def total_paid_days(result):
     if not result:
         return ""
+    if result.payroll_rule_type == "DAILY":
+        return Decimal(result.paid_working_days or 0) + Decimal(result.holidays or 0)
     return Decimal(result.paid_working_days or 0) + Decimal(result.week_offs or 0) + Decimal(result.paid_leaves or 0)
 
 
@@ -487,6 +489,21 @@ def employee_compact_summary_rows(salary, result):
     if not result:
         return [["Status", "Not Calculated", "Wage Type", salary.salary_type if salary else "N/A"]]
     final_value = result.final_salary if result.final_salary is not None else None
+    if result.payroll_rule_type == "DAILY":
+        rows = [
+            ["Payable Salary", pdf_money(final_value) if final_value is not None else "Not Calculated", "In Words", money_in_words(final_value)],
+            ["Daily Wage", pdf_money(salary.salary) if salary else "N/A", "Wage Type", salary.salary_type if salary else "N/A"],
+            ["Status", result.calculation_status, "Days in Month", payroll_month_days(result.payroll_month)],
+            ["Paid Working Days", result.paid_working_days, "Paid Holidays", result.holidays],
+            ["Payable Days", total_paid_days(result), "Week Offs", result.week_offs],
+            ["Less Hours Deduction", pdf_money(result.less_hours_deduction), "Over Time", pdf_money(result.ot_amount)],
+            ["Adjustment", pdf_money(result.manual_adjustment), "Leave Management", "Not applicable"],
+        ]
+        if result_has_loan(result):
+            rows.append(["Loan Deduction", pdf_money(getattr(result, "loan_deduction", 0)), "Pending Loan Amount", pdf_money(getattr(result, "loan_pending_amount", 0))])
+        if result_has_advance(result):
+            rows.append(["Advance Salary Deduction", pdf_money(getattr(result, "advance_deduction", 0)), "", ""])
+        return rows
     rows = [
         ["Payable Salary", pdf_money(final_value) if final_value is not None else "Not Calculated", "In Words", money_in_words(final_value)],
         ["Base Salary", pdf_money(salary.salary) if salary else "N/A", "Wage Type", salary.salary_type if salary else "N/A"],

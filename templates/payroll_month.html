@@ -85,9 +85,10 @@
 {% if mismatches %}
 <div class="alert alert-warning"><strong>Name mismatches</strong><br>{% for id, attendance_name, salary_name in mismatches %}{{ id }}: employee name differs between Attendance and Wage Master. Matched using Employee ID. Attendance: {{ attendance_name }}, Wage Master: {{ salary_name }}<br>{% endfor %}</div>
 {% endif %}
+{% macro payroll_employee_table(title, records, note="") -%}
 <div class="module-card">
 <div class="module-card-header">
-  <h2 class="module-card-title">Payroll Employees <span class="text-muted">{{ salaries|length }}</span></h2>
+  <h2 class="module-card-title">{{ title }} <span class="text-muted">{{ records|length }}</span></h2>
   <div class="module-card-actions">
     <a class="btn btn-outline-secondary" href="{{ url_for('reports.payroll_summary_pdf', month=month) }}" target="_blank" rel="noopener">Payroll Summary PDF</a>
     <a class="btn btn-outline-secondary" href="{{ url_for('reports.overtime_pdf', month=month) }}" target="_blank" rel="noopener">OT Report PDF</a>
@@ -114,7 +115,7 @@
     </tr>
   </thead>
   <tbody>
-    {% for s in salaries %}
+    {% for s in records %}
     {% set r = results.get(s.employee_id) %}
     <tr>
       <td>{{ s.employee_id }}</td>
@@ -126,15 +127,24 @@
       <td>{{ s.warning }} {{ r.message if r else "" }}</td>
       <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.employee', month=month, employee_id=s.employee_id) }}">Details</a></td>
     </tr>
+    {% else %}
+    <tr><td colspan="8" class="text-muted">No {{ title|lower }} found.</td></tr>
     {% endfor %}
   </tbody>
 </table>
 </div>
 <div class="table-footer">
-  <span class="pagination-status">Showing 1 - {{ salaries|length }} of {{ salaries|length }} Results</span>
+  <span class="pagination-status">Showing {{ 1 if records else 0 }} - {{ records|length }} of {{ records|length }} Results</span>
   <div class="d-flex gap-2"><span class="page-chip is-active">1</span></div>
 </div>
+{% if note %}<p class="text-muted mb-0 px-3 pb-3">{{ note }}</p>{% endif %}
 </div>
+{%- endmacro %}
+{{ payroll_employee_table("Monthly Payroll Employees", monthly_salaries, "Monthly wage calculation includes working days, week offs, paid leave, leave earned, leave encashment, loan, advance, overtime, and less-hours rules.") }}
+{{ payroll_employee_table("Daily Payroll Employees", daily_salaries, "Daily wage calculation pays working days plus holidays only. Week offs and leave balance are not included; loan, advance, overtime, and less-hours rules still apply.") }}
+{% if other_salaries %}
+{{ payroll_employee_table("Other Wage Employees", other_salaries, "These wage types are not configured for automatic payroll calculation.") }}
+{% endif %}
 <div class="mt-3 d-flex gap-2 flex-wrap">
   <a class="btn btn-outline-secondary" href="{{ url_for('reports.payroll_summary_pdf', month=month) }}" target="_blank" rel="noopener">Payroll Summary PDF</a>
   <a class="btn btn-outline-secondary" href="{{ url_for('reports.attendance_detail_pdf', month=month) }}" target="_blank" rel="noopener">Detailed Attendance PDF</a>

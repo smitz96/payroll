@@ -4,9 +4,10 @@
 {% if is_finalized %}
 <div class="alert alert-warning mt-3">Payroll is finalized and locked. Unlock payroll from the month page before making changes.</div>
 {% endif %}
-{% if salary and salary.normalized_salary_type != "MONTHLY" %}
+{% if salary and salary.normalized_salary_type not in ["MONTHLY", "DAILY"] %}
 <div class="alert alert-warning">Wage type rules are not configured. No automatic payroll calculation performed.</div>
 {% endif %}
+{% set is_daily_wage = salary and salary.normalized_salary_type == "DAILY" %}
 {% if result %}
 <div class="summary-grid mb-4">
   <div class="metric"><span>Status</span><strong>{{ result.calculation_status }}</strong></div>
@@ -17,7 +18,9 @@
   <div class="metric"><span>Less-Hours Minutes</span><strong>{{ result.less_hours_minutes }}</strong></div>
   <div class="metric"><span>OT Payable Minutes</span><strong>{{ result.payable_ot_minutes }}</strong></div>
   <div class="metric"><span>Leave Earned</span><strong>{{ result.leave_earned }}</strong></div>
+  {% if not is_daily_wage %}
   <div class="metric"><span>Leave Encashment</span><strong>{{ result.leave_encashment_days or 0 }} day(s) / {{ result.leave_encashment_amount or 0 }}</strong></div>
+  {% endif %}
   {% if has_loan %}
   <div class="metric"><span>Loan Deduction</span><strong>{{ result.loan_deduction or 0 }}</strong></div>
   <div class="metric"><span>Pending Loan Amount</span><strong>{{ result.loan_pending_amount or 0 }}</strong></div>
@@ -39,6 +42,10 @@
     </div>
     <div class="col-md-3">
       <div class="leave-encashment-box">
+        {% if is_daily_wage %}
+        <strong>Leave Management</strong>
+        <div class="status-detail">Not applicable for daily wage employees.</div>
+        {% else %}
         {% set employee_leave_encashment_checked = (global_leave_encashment and salary and not salary.leave_encashment_disabled) or (salary and salary.leave_encashment_enabled) %}
         <label class="form-check">
           <input class="form-check-input" type="checkbox" name="leave_encashment_enabled" id="leaveEncashmentEnabled" {% if employee_leave_encashment_checked %}checked{% endif %} {% if not salary or is_finalized %}disabled{% endif %}>
@@ -52,6 +59,7 @@
           {% endif %}
           Available after calculation: {{ (result.closing_leave or 0) + (result.leave_encashment_days or 0) }} day(s). Calculated value: {{ result.leave_encashment_amount or 0 }}.
         </div>
+        {% endif %}
         {% endif %}
       </div>
     </div>
@@ -84,7 +92,7 @@
       {% endif %}
     </div>
   </div>
-  <p class="text-muted mb-0 mt-3">Adjustment may be positive or negative. {% if global_leave_encashment %}Global leave encashment uses all available leaves; uncheck the employee option to disable it for this employee.{% else %}Enter leave encashment in days.{% endif %} Active loan installments are deducted unless skipped for this employee and month.</p>
+  <p class="text-muted mb-0 mt-3">Adjustment may be positive or negative. {% if is_daily_wage %}Daily wage employees do not use leave management.{% elif global_leave_encashment %}Global leave encashment uses all available leaves; uncheck the employee option to disable it for this employee.{% else %}Enter leave encashment in days.{% endif %} Active loan installments are deducted unless skipped for this employee and month.</p>
 </div>
 <div class="table-responsive">
 <table class="table table-sm smart-table">
