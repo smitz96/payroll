@@ -92,6 +92,42 @@ html[data-theme="dark"] .theme-toggle-thumb { transform:translateX(20px); backgr
 .smart-table { background:var(--smartfill-surface); border:0; }
 .smart-table thead th { background:var(--smartfill-table-head); color:var(--smartfill-ink); white-space:nowrap; font-weight:800; }
 .smart-table tbody tr:hover td { background:var(--smartfill-hover); }
+.sticky-id-name-table {
+  --sticky-id-width: 128px;
+  --sticky-name-width: 240px;
+}
+.sticky-id-name-table th:first-child,
+.sticky-id-name-table td:first-child {
+  position:sticky;
+  left:0;
+  z-index:3;
+  min-width:var(--sticky-id-width);
+  width:var(--sticky-id-width);
+  max-width:var(--sticky-id-width);
+  background:var(--smartfill-surface);
+  border-right:1px solid var(--smartfill-line);
+}
+.sticky-id-name-table th:nth-child(2),
+.sticky-id-name-table td:nth-child(2) {
+  position:sticky;
+  left:var(--sticky-id-width);
+  z-index:3;
+  min-width:var(--sticky-name-width);
+  width:var(--sticky-name-width);
+  max-width:var(--sticky-name-width);
+  background:var(--smartfill-surface);
+  border-right:1px solid var(--smartfill-line);
+  box-shadow:8px 0 10px rgba(15, 23, 42, .05);
+}
+.sticky-id-name-table thead th:first-child,
+.sticky-id-name-table thead th:nth-child(2) {
+  z-index:5;
+  background:var(--smartfill-table-head);
+}
+.sticky-id-name-table tbody tr:hover td:first-child,
+.sticky-id-name-table tbody tr:hover td:nth-child(2) {
+  background:var(--smartfill-hover);
+}
 .employee-cell strong { display:block; font-size:1rem; }
 .employee-cell span { display:block; color:#607086; font-size:.84rem; margin-top:2px; }
 .link-button { border:0; background:transparent; color:var(--smartfill-blue); padding:0; font:inherit; text-align:left; cursor:pointer; }
@@ -259,8 +295,6 @@ html[data-theme="dark"] .theme-toggle-thumb { transform:translateX(20px); backgr
 .weekoff-table-wrap { max-height:calc(100vh - 250px); overflow-x:auto; overflow-y:visible; }
 .weekoff-table thead th { position:sticky; top:0; z-index:2; }
 .weekoff-table th,.weekoff-table td { min-width:160px; }
-.weekoff-table th:first-child,.weekoff-table td:first-child { min-width:72px; }
-.weekoff-table th:nth-child(2),.weekoff-table td:nth-child(2) { min-width:210px; }
 .weekoff-picker { position:relative; min-width:210px; }
 .weekoff-picker-toggle {
   width:100%;
@@ -417,6 +451,9 @@ html[data-theme="dark"] .theme-toggle-thumb { transform:translateX(20px); backgr
   position:sticky;
   z-index:3;
   background:var(--smartfill-surface);
+}
+.attendance-manager-table tbody tr:hover .sticky-col {
+  background:var(--smartfill-hover);
 }
 .attendance-manager-table thead .sticky-col {
   z-index:4;

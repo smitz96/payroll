@@ -315,6 +315,7 @@ def test_employee_master_form_keeps_payroll_controls_on_detail_page(client, app)
     assert b'name="less_hours_exempt"' in master_page.data
     assert b"Edit Details Worker" in master_page.data
     assert b"under a new Employee ID with the updated wage group" in master_page.data
+    assert b"sticky-id-name-table" in master_page.data
 
     detail_page = client.get("/master/5")
     assert b'name="ot_enabled"' in detail_page.data

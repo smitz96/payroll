@@ -5,7 +5,7 @@ from flask import Blueprint, flash, redirect, render_template, request, url_for
 from attendance import db
 from attendance.authentication import current_username, login_required
 from attendance.models import AuditLog, Employee
-from attendance.weekoffs import WEEKDAY_FIELDS, WEEK_OFF_OPTIONS, get_or_create_weekoff_rule, normalize_weekoff_codes, selected_weekoff_codes
+from attendance.weekoffs import WEEKDAY_DISPLAY_FIELDS, WEEKDAY_FIELDS, WEEK_OFF_OPTIONS, get_or_create_weekoff_rule, normalize_weekoff_codes, selected_weekoff_codes
 
 bp = Blueprint("weekoffs", __name__, url_prefix="/weekoffs")
 
@@ -62,4 +62,4 @@ def index():
     for employee in employees:
         rows.append({"employee": employee, "rule": get_or_create_weekoff_rule(employee.id)})
     db.session.commit()
-    return render_template("weekoffs.html", rows=rows, weekdays=WEEKDAY_FIELDS, options=WEEK_OFF_OPTIONS, selected_weekoff_codes=selected_weekoff_codes, sort=sort, order=order)
+    return render_template("weekoffs.html", rows=rows, weekdays=WEEKDAY_DISPLAY_FIELDS, options=WEEK_OFF_OPTIONS, selected_weekoff_codes=selected_weekoff_codes, sort=sort, order=order)

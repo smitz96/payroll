@@ -57,6 +57,9 @@ def test_weekoff_page_saves_and_audits(client, app):
         assert AuditLog.query.filter_by(action="Week Off Rules Changed").count() == 1
     assert b"Normal Shift" in response.data
     assert b"Factory Shift" not in response.data
+    assert b"sticky-id-name-table" in response.data
+    html = response.data.decode()
+    assert html.index("Sunday") < html.index("Monday")
 
 
 def test_backfill_default_weekoffs_assigns_sunday_to_existing_employees(app):

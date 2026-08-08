@@ -12,6 +12,15 @@ WEEKDAY_FIELDS = [
     ("saturday", "Saturday"),
     ("sunday", "Sunday"),
 ]
+WEEKDAY_DISPLAY_FIELDS = [
+    ("sunday", "Sunday"),
+    ("monday", "Monday"),
+    ("tuesday", "Tuesday"),
+    ("wednesday", "Wednesday"),
+    ("thursday", "Thursday"),
+    ("friday", "Friday"),
+    ("saturday", "Saturday"),
+]
 
 WEEK_OFF_OPTIONS = [
     ("WORKING", "Normal Shift"),

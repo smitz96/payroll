@@ -50,6 +50,7 @@ def test_leave_balance_page_renders_after_login(client, app):
     assert response.status_code == 200
     assert b"Leave Balance Management" in response.data
     assert b"Komal V Patel" in response.data
+    assert b"sticky-id-name-table" in response.data
 
 
 def test_leave_balance_manual_adjustment_updates_authoritative_opening(client, app):
