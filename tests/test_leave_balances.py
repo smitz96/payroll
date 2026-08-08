@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
 
 from attendance import db
 from attendance.calculator import opening_leave_for
@@ -89,3 +90,30 @@ def test_leave_balance_rejects_negative_value(client, app):
         "password": "12345",
     }, follow_redirects=True)
     assert b"Leave balance cannot be negative" in response.data
+
+
+def test_leave_balance_import_export_updates_only_current_balance(client, app):
+    with app.app_context():
+        seed_employee_with_leave()
+    client.post("/login", data={"username": "admin", "password": "12345"})
+
+    export_response = client.get("/leave-balances/export.csv")
+    assert export_response.status_code == 200
+    assert b"Employee ID,Employee Name,Current Leave Balance" in export_response.data
+
+    response = client.post("/leave-balances/import", data={
+        "leave_balance_csv": (
+            BytesIO(b"Employee ID,Employee Name,Current Leave Balance\n5,Changed Name,2.4\n"),
+            "leave_balances.csv",
+        )
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"Leave balances imported. 1 employee balance" in response.data
+
+    with app.app_context():
+        employee = db.session.get(Employee, "5")
+        assert employee.name == "Komal V Patel"
+        assert stored_leave_balance("5") == Decimal("2.4")
+        adjustment = LeaveLedger.query.filter_by(employee_id="5", transaction_type="MANUAL_ADJUSTMENT").one()
+        assert adjustment.amount == Decimal("1.2")
+        assert "Bulk leave balance import" in adjustment.description
+        assert AuditLog.query.filter_by(action="Leave Balance Imported").count() == 1

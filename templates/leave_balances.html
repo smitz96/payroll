@@ -19,6 +19,10 @@
 <div class="module-card mb-4">
   <div class="module-card-header">
     <h2 class="module-card-title">Leave Balance Report <span class="text-muted">{{ rows|length }}</span></h2>
+    <div class="module-card-actions">
+      <a class="btn btn-outline-primary" href="{{ url_for('leave_balances.export_csv') }}">Export Leave Balance</a>
+      <button class="btn btn-outline-primary open-leave-drawer" type="button" data-dialog-id="importLeaveBalanceDrawer">Import Leave Balance</button>
+    </div>
   </div>
   <div class="table-responsive leave-table-wrap">
     <table class="table table-sm smart-table leave-balance-table">
@@ -70,6 +74,28 @@
     <div class="d-flex gap-2"><span class="page-chip is-active">1</span></div>
   </div>
 </div>
+
+<dialog class="drawer-dialog" id="importLeaveBalanceDrawer">
+  <form method="post" action="{{ url_for('leave_balances.import_csv') }}" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="drawer-header">
+      <h2 class="section-title mb-0">Import Leave Balance</h2>
+      <button class="dialog-close" type="button" data-close-dialog="importLeaveBalanceDrawer">x</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>Bulk Balance Update</h3>
+        <p class="text-muted">Upload the exported CSV after editing only Current Leave Balance. Employee ID is used for matching; all other columns are ignored.</p>
+        <input class="form-control mb-3" type="file" name="leave_balance_csv" accept=".csv,text/csv" required>
+        <div class="alert alert-warning mb-0">Negative leave balances are not allowed. Each changed row is logged as a manual leave balance import.</div>
+      </section>
+    </div>
+    <div class="drawer-footer">
+      <button class="btn btn-outline-secondary" type="button" data-close-dialog="importLeaveBalanceDrawer">Close</button>
+      <button class="btn btn-primary">Import Leave Balance</button>
+    </div>
+  </form>
+</dialog>
 
 {% for row in rows %}
 {% set employee = row.employee %}

@@ -87,7 +87,43 @@ def leave_balance_rows():
     return rows
 
 
-def apply_leave_balance_updates(changes, username):
+def leave_balance_export_rows():
+    rows = []
+    for row in leave_balance_rows():
+        employee = row["employee"]
+        rows.append({
+            "Employee ID": employee.id,
+            "Employee Name": employee.name,
+            "Current Leave Balance": row["current_balance"],
+        })
+    return rows
+
+
+def apply_leave_balance_import(rows, username):
+    changes = []
+    for row_number, row in enumerate(rows, start=2):
+        employee_id = str(row.get("Employee ID") or "").strip()
+        if not employee_id:
+            raise ValueError(f"Row {row_number}: Employee ID is required.")
+        if not db.session.get(Employee, employee_id):
+            raise ValueError(f"Row {row_number}: Employee ID {employee_id} was not found.")
+        changes.append({
+            "employee_id": employee_id,
+            "new_balance": row.get("Current Leave Balance"),
+            "reason": "Bulk leave balance import",
+        })
+    changed = apply_leave_balance_updates(changes, username, commit=False)
+    if changed:
+        db.session.add(AuditLog(
+            actor=username,
+            action="Leave Balance Imported",
+            detail=f"{len(changed)} leave balance row(s) updated by bulk import.",
+        ))
+    db.session.commit()
+    return changed
+
+
+def apply_leave_balance_updates(changes, username, commit=True):
     changed = []
     today = date.today()
     try:
@@ -126,7 +162,8 @@ def apply_leave_balance_updates(changes, username):
                 ),
             ))
             changed.append((employee, old_balance, new_balance, difference))
-        db.session.commit()
+        if commit:
+            db.session.commit()
         return changed
     except Exception:
         db.session.rollback()

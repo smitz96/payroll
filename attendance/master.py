@@ -9,6 +9,7 @@ from attendance.utils import clean, decimal_money, normalize_salary_type
 ACTIVE_STATUS = "ACTIVE"
 DISABLED_STATUSES = {"LEFT", "TERMINATED"}
 DISABLE_CONFIRMATION_TEXT = "confirm"
+MASTER_IMPORT_REQUIRED_COLUMNS = {"Employee ID", "Wage Type", "Salary"}
 
 
 def employee_sort_value(employee):
@@ -17,6 +18,72 @@ def employee_sort_value(employee):
 
 def active_master_employees():
     return sorted(Employee.query.filter_by(employment_status=ACTIVE_STATUS).all(), key=employee_sort_value)
+
+
+def employee_master_export_rows():
+    rows = []
+    for employee in sorted(Employee.query.all(), key=employee_sort_value):
+        rows.append({
+            "Employee ID": employee.id,
+            "Name": employee.name,
+            "Wage Type": employee.salary_type or "",
+            "Salary": employee.salary or Decimal("0"),
+        })
+    return rows
+
+
+def apply_employee_master_import(rows, actor):
+    changed = []
+    for row_number, row in enumerate(rows, start=2):
+        employee_id = clean(row.get("Employee ID"))
+        if not employee_id:
+            raise ValueError(f"Row {row_number}: Employee ID is required.")
+        employee = db.session.get(Employee, employee_id)
+        if not employee:
+            raise ValueError(f"Row {row_number}: Employee ID {employee_id} was not found.")
+        if employee.employment_status in DISABLED_STATUSES:
+            raise ValueError(f"Row {row_number}: Disabled employee {employee_id} cannot be edited.")
+
+        wage_type = clean(row.get("Wage Type"))
+        normalized_type = normalize_salary_type(wage_type)
+        existing_type = normalize_salary_type(employee.salary_type)
+        if wage_type and not normalized_type:
+            raise ValueError(f"Row {row_number}: Wage type is required.")
+        if existing_type and normalized_type and existing_type != normalized_type:
+            raise ValueError(
+                f"Row {row_number}: Wage type cannot be changed for active employee {employee_id}. "
+                "Mark the employee as left or terminated first, then add a new Employee ID."
+            )
+        salary = decimal_money(row.get("Salary"))
+        if salary < 0:
+            raise ValueError(f"Row {row_number}: Salary cannot be negative.")
+
+        changes = []
+        old_salary = Decimal(employee.salary or 0)
+        if normalized_type and not existing_type:
+            changes.append(f"Wage Type {employee.salary_type or 'Not Set'} -> {wage_type}")
+            employee.salary_type = wage_type
+            employee.normalized_salary_type = normalized_type
+        if old_salary != salary:
+            changes.append(f"Salary {old_salary} -> {salary}")
+            employee.salary = salary
+        if not changes:
+            continue
+        db.session.add(employee)
+        db.session.add(AuditLog(
+            actor=actor,
+            action="Employee Master Bulk Updated",
+            detail=f"{employee.id} - {employee.name}; " + " | ".join(changes),
+        ))
+        changed.append(employee)
+    if changed:
+        db.session.add(AuditLog(
+            actor=actor,
+            action="Employee Master Imported",
+            detail=f"{len(changed)} employee master row(s) updated by bulk import.",
+        ))
+    db.session.flush()
+    return changed
 
 
 def save_master_employee(form, actor):

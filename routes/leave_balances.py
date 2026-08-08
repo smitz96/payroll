@@ -1,15 +1,42 @@
+import csv
 from decimal import Decimal
 from datetime import date
+from io import StringIO
 
-from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, flash, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash
 
 from attendance import db
-from attendance.authentication import login_required
-from attendance.leave_balances import apply_leave_balance_updates, leave_balance_rows, leave_history
+from attendance.authentication import current_username, login_required
+from attendance.leave_balances import apply_leave_balance_import, apply_leave_balance_updates, leave_balance_export_rows, leave_balance_rows, leave_history
 from attendance.models import Employee, LeaveLedger, User
 
 bp = Blueprint("leave_balances", __name__, url_prefix="/leave-balances")
+LEAVE_BALANCE_IMPORT_REQUIRED_COLUMNS = {"Employee ID", "Current Leave Balance"}
+
+
+def parse_csv_upload(file_storage, required_columns):
+    if not file_storage or not file_storage.filename:
+        raise ValueError("Select a CSV file to import.")
+    text = file_storage.read().decode("utf-8-sig")
+    reader = csv.DictReader(StringIO(text))
+    fieldnames = set(reader.fieldnames or [])
+    missing = sorted(required_columns - fieldnames)
+    if missing:
+        raise ValueError("Import CSV missing column(s): " + ", ".join(missing))
+    return list(reader)
+
+
+def csv_response(filename, fieldnames, rows):
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        buffer.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 def employee_sort_value(row, sort):
@@ -69,6 +96,29 @@ def index():
         wage_types=wage_types,
         filters={"employee_id": search_id, "employee_name": search_name, "department": department, "wage_type": wage_type, "sort": sort, "order": order},
     )
+
+
+@bp.route("/export.csv", methods=["GET"])
+@login_required
+def export_csv():
+    return csv_response(
+        "leave_balances.csv",
+        ["Employee ID", "Employee Name", "Current Leave Balance"],
+        leave_balance_export_rows(),
+    )
+
+
+@bp.route("/import", methods=["POST"])
+@login_required
+def import_csv():
+    try:
+        rows = parse_csv_upload(request.files.get("leave_balance_csv"), LEAVE_BALANCE_IMPORT_REQUIRED_COLUMNS)
+        changed = apply_leave_balance_import(rows, current_username())
+        flash(f"Leave balances imported. {len(changed)} employee balance(s) updated.", "success")
+    except Exception as exc:
+        db.session.rollback()
+        flash(str(exc), "danger")
+    return redirect(url_for("leave_balances.index"))
 
 
 @bp.route("/update", methods=["POST"])

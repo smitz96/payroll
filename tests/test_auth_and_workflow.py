@@ -1,5 +1,6 @@
 from decimal import Decimal
 from datetime import date, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from io import BytesIO
 from html import escape
@@ -318,6 +319,60 @@ def test_employee_master_form_keeps_payroll_controls_on_detail_page(client, app)
     detail_page = client.get("/master/5")
     assert b'name="ot_enabled"' in detail_page.data
     assert b'name="less_hours_exempt"' in detail_page.data
+
+
+def test_employee_master_import_export_updates_only_wage_fields(client, app):
+    with app.app_context():
+        db.session.add(Employee(
+            id="5",
+            name="Worker",
+            salary_type="Monthly",
+            normalized_salary_type="MONTHLY",
+            salary=Decimal("30000"),
+            ot_enabled=True,
+            less_hours_exempt=False,
+            employment_status="ACTIVE",
+        ))
+        db.session.add(Employee(id="6", name="New Wage Worker", salary=Decimal("0"), employment_status="ACTIVE"))
+        db.session.commit()
+    client.post("/login", data={"username": "admin", "password": "12345"})
+
+    export_response = client.get("/master/export.csv")
+    assert export_response.status_code == 200
+    assert b"Employee ID,Name,Wage Type,Salary" in export_response.data
+
+    blocked = client.post("/master/import", data={
+        "employee_master_csv": (
+            BytesIO(b"Employee ID,Name,Wage Type,Salary\n5,Changed Name,Daily,40000\n"),
+            "employee_master.csv",
+        )
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"Wage type cannot be changed" in blocked.data
+    with app.app_context():
+        employee = db.session.get(Employee, "5")
+        assert employee.name == "Worker"
+        assert employee.normalized_salary_type == "MONTHLY"
+        assert employee.salary == Decimal("30000.00")
+
+    updated = client.post("/master/import", data={
+        "employee_master_csv": (
+            BytesIO(b"Employee ID,Name,Wage Type,Salary\n5,Changed Name,Monthly,32000\n6,Ignored Name,Daily,800\n"),
+            "employee_master.csv",
+        )
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"Employee master imported. 2 employee" in updated.data
+    with app.app_context():
+        employee = db.session.get(Employee, "5")
+        new_wage = db.session.get(Employee, "6")
+        assert employee.name == "Worker"
+        assert employee.salary == Decimal("32000.00")
+        assert employee.ot_enabled is True
+        assert employee.less_hours_exempt is False
+        assert new_wage.name == "New Wage Worker"
+        assert new_wage.normalized_salary_type == "DAILY"
+        assert new_wage.salary == Decimal("800.00")
+        assert AuditLog.query.filter_by(action="Employee Master Bulk Updated").count() == 2
+        assert AuditLog.query.filter_by(action="Employee Master Imported").count() == 1
 
 
 def test_payroll_month_loads_salary_from_active_master(client, app):
