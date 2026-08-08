@@ -182,6 +182,53 @@ def test_settings_app_update_requires_admin_password_and_logs(client, app, monke
         assert audit.actor == "admin"
 
 
+def test_settings_reset_all_data_requires_phrase_and_clears_app_data(client, app, monkeypatch):
+    monkeypatch.setattr("routes.settings.latest_git_release_datetime", lambda app_root: "08-08-2026 15:12:30")
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker"))
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Worker", date=date(2026, 7, 1)))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("1000")))
+        db.session.add(PayrollResult(payroll_month="2026-07", employee_id="5", calculation_status="Calculated"))
+        db.session.add(WeekOffRule(employee_id="5"))
+        db.session.add(LeaveLedger(employee_id="5", payroll_month="2026-07", date=date(2026, 7, 1), transaction_type="MANUAL_ADJUSTMENT", amount=Decimal("1.0")))
+        db.session.add(Holiday(date=date(2026, 7, 1), name="Holiday"))
+        db.session.add(Loan(employee_id="5", start_date=date(2026, 7, 1), amount=Decimal("1000"), tenure_months=2, monthly_deduction=Decimal("500")))
+        db.session.add(LoanInstallmentSkip(payroll_month="2026-07", employee_id="5", skip=True))
+        db.session.add(AdvanceSalary(employee_id="5", advance_date=date(2026, 7, 1), amount=Decimal("100")))
+        db.session.add(AuditLog(actor="admin", action="Seed Log", detail="Will be deleted"))
+        db.session.commit()
+
+    client.post("/login", data={"username": "admin", "password": "12345"})
+    page = client.get("/settings")
+    assert b"Reset All Data" in page.data
+    assert b'id="resetDataDialog"' in page.data
+
+    blocked = client.post("/settings/reset-data", data={"reset_confirmation": "delete"}, follow_redirects=True)
+    assert b"permanently delete" in blocked.data
+    assert b"reset all app data" in blocked.data
+    with app.app_context():
+        assert Employee.query.count() == 1
+        assert AuditLog.query.count() >= 1
+
+    reset = client.post("/settings/reset-data", data={"reset_confirmation": "permanently delete"}, follow_redirects=True)
+    assert b"All app data has been reset" in reset.data
+    with app.app_context():
+        assert User.query.filter_by(username="admin").count() == 1
+        assert Employee.query.count() == 0
+        assert PayrollMonth.query.count() == 0
+        assert AttendanceRecord.query.count() == 0
+        assert SalaryRecord.query.count() == 0
+        assert PayrollResult.query.count() == 0
+        assert WeekOffRule.query.count() == 0
+        assert LeaveLedger.query.count() == 0
+        assert Holiday.query.count() == 0
+        assert Loan.query.count() == 0
+        assert LoanInstallmentSkip.query.count() == 0
+        assert AdvanceSalary.query.count() == 0
+        assert AuditLog.query.count() == 0
+
+
 def test_reports_page_has_dedicated_route_and_pdf_cards(client, app):
     with app.app_context():
         db.session.add(PayrollMonth(month="2026-07"))

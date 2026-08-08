@@ -81,6 +81,7 @@ html[data-theme="dark"] .theme-toggle-thumb { transform:translateX(20px); backgr
 .section-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 1rem; }
 .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
 .metric, .tool-panel { background: var(--smartfill-surface); border: 1px solid var(--smartfill-line); border-radius: 7px; padding: 16px; box-shadow: 0 1px 3px var(--smartfill-shadow); }
+.danger-zone { border-color:#fecaca; border-top:3px solid #ef4444; }
 .metric { border-top:3px solid var(--smartfill-lime); min-height:92px; }
 .metric span { display:block; color:var(--smartfill-muted); font-size:.82rem; min-height: 1.25rem; }
 .metric strong { display:block; font-size:1.25rem; overflow-wrap:anywhere; color:var(--smartfill-ink); }

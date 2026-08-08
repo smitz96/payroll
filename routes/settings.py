@@ -15,6 +15,7 @@ from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
 APP_VERSION = "V0.01"
+RESET_CONFIRMATION_TEXT = "permanently delete"
 
 
 def latest_git_release_datetime(app_root):
@@ -71,6 +72,17 @@ def run_app_update(app_root):
         return False, f"App update could not be started: {exc}"
 
 
+def reset_application_data():
+    deleted = {}
+    for table in reversed(db.metadata.sorted_tables):
+        if table.name == User.__tablename__:
+            continue
+        result = db.session.execute(table.delete())
+        deleted[table.name] = result.rowcount or 0
+    db.session.commit()
+    return deleted
+
+
 @bp.route("")
 @login_required
 def index():
@@ -105,4 +117,18 @@ def git_pull():
     db.session.add(AuditLog(actor=user.username, action="App Update" if ok else "App Update Failed", detail=message[:2000]))
     db.session.commit()
     flash(message, "success" if ok else "danger")
+    return redirect(url_for("settings.index"))
+
+
+@bp.route("/reset-data", methods=["POST"])
+@login_required
+def reset_data():
+    confirmation = request.form.get("reset_confirmation", "").strip().lower()
+    if confirmation != RESET_CONFIRMATION_TEXT:
+        flash('Type "permanently delete" to reset all app data.', "danger")
+        return redirect(url_for("settings.index"))
+
+    deleted = reset_application_data()
+    deleted_rows = sum(deleted.values())
+    flash(f"All app data has been reset. {deleted_rows} row(s) deleted. Admin login was kept.", "success")
     return redirect(url_for("settings.index"))

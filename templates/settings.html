@@ -41,6 +41,58 @@
         <button class="btn btn-primary w-100" type="submit">Update App</button>
       </form>
     </div>
+    <div class="tool-panel danger-zone mt-3">
+      <h2 class="section-title">Reset All Data</h2>
+      <p class="text-muted">Clear employees, payroll months, attendance, wage records, leave balances, week offs, holidays, loans, advances, and activity logs. Admin login is kept.</p>
+      <button class="btn btn-outline-danger w-100" type="button" id="openResetDataDialog">Reset All Data</button>
+    </div>
   </div>
 </div>
+
+<dialog class="confirm-dialog" id="resetDataDialog">
+  <form method="post" action="{{ url_for('settings.reset_data') }}" id="resetDataForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="dialog-header">
+      <div>
+        <h2 class="mb-2">Reset All Data</h2>
+        <p class="text-muted mb-0">This will permanently clear all app data and activity logs. This cannot be undone.</p>
+      </div>
+      <button type="button" class="dialog-close" id="closeResetDataDialog">x</button>
+    </div>
+    <div class="change-summary">
+      <strong>Admin login will remain.</strong>
+      <p class="text-muted mb-0">Employees, leave balance, week off rules, payroll data, attendance, holidays, loans, advances, and logs will be removed.</p>
+    </div>
+    <label class="form-label" for="resetDataConfirmationInput">Type permanently delete to confirm</label>
+    <input class="form-control mb-3" id="resetDataConfirmationInput" name="reset_confirmation" autocomplete="off" spellcheck="false">
+    <div class="d-flex justify-content-end gap-2">
+      <button class="btn btn-outline-secondary" type="button" id="cancelResetDataDialog">Cancel</button>
+      <button class="btn btn-outline-danger" type="submit" id="confirmResetData" disabled>Reset All Data</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+  const resetDataDialog = document.getElementById('resetDataDialog');
+  const openResetDataDialog = document.getElementById('openResetDataDialog');
+  const resetDataInput = document.getElementById('resetDataConfirmationInput');
+  const confirmResetData = document.getElementById('confirmResetData');
+  const requiredResetText = 'permanently delete';
+
+  function refreshResetDataState() {
+    confirmResetData.disabled = resetDataInput.value.trim().toLowerCase() !== requiredResetText;
+  }
+
+  openResetDataDialog.addEventListener('click', () => {
+    resetDataInput.value = '';
+    refreshResetDataState();
+    resetDataDialog.showModal();
+    resetDataInput.focus();
+  });
+  document.getElementById('closeResetDataDialog').addEventListener('click', () => resetDataDialog.close());
+  document.getElementById('cancelResetDataDialog').addEventListener('click', () => resetDataDialog.close());
+  resetDataInput.addEventListener('paste', event => event.preventDefault());
+  resetDataInput.addEventListener('drop', event => event.preventDefault());
+  resetDataInput.addEventListener('input', refreshResetDataState);
+</script>
 {% endblock %}
