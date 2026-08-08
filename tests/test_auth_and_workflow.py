@@ -824,6 +824,7 @@ def test_loan_module_shows_in_progress_detail_schedule_and_delete(client, app):
     assert loan_reader.metadata.title == f"Loan #{loan_id} Summary - Worker"
     loan_text = "\n".join(page.extract_text() or "" for page in loan_reader.pages)
     assert f"Loan #{loan_id} Summary" in loan_text
+    assert "SMARTfill Payroll" in loan_text
     assert "Pending Loan Amount" in loan_text
     assert "500.00" in loan_text
     assert "Paid" in loan_text
@@ -1208,6 +1209,7 @@ def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
     ot_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(ot.data)).pages)
     assert PdfReader(BytesIO(ot.data)).metadata.title == "Overtime Report"
     assert "Overtime Report" in ot_text
+    assert "SMARTfill Payroll" in ot_text
     assert "2026-07-02" in ot_text
     assert "45" in ot_text
     assert "2026-07-01" not in ot_text
@@ -1219,6 +1221,7 @@ def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
     assert less_hours.data.startswith(b"%PDF")
     less_hours_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(less_hours.data)).pages)
     assert "Less Hours Report" in less_hours_text
+    assert "SMARTfill Payroll" in less_hours_text
     assert "2026-07-03" in less_hours_text
     assert "30" in less_hours_text
     assert "2026-07-01" not in less_hours_text
@@ -1235,6 +1238,7 @@ def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
         assert report.data.startswith(b"%PDF")
         text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(report.data)).pages)
         assert title in text
+        assert "SMARTfill Payroll" in text
 
 
 def test_employee_payroll_controls_disable_ot_and_less_hours_deduction(app):

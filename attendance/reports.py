@@ -201,8 +201,6 @@ def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, lan
     pagesize = landscape(A4) if landscape_page else A4
     doc = SimpleDocTemplate(buffer, pagesize=pagesize, leftMargin=8 * mm, rightMargin=8 * mm, topMargin=8 * mm, bottomMargin=10 * mm)
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("ReportTitle", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=13, leading=15, textColor=colors.HexColor("#0C306A"), spaceAfter=3)
-    subtitle_style = ParagraphStyle("ReportSubtitle", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.HexColor("#657386"), spaceAfter=6)
     cell_style = ParagraphStyle("ReportCell", parent=styles["Normal"], fontSize=font_size, leading=font_size + 1.5)
     header_style = ParagraphStyle("ReportHeaderCell", parent=cell_style, fontName="Helvetica-Bold", textColor=colors.HexColor("#0C306A"))
     if not rows:
@@ -213,9 +211,10 @@ def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, lan
     if not col_widths:
         available_width = pagesize[0] - doc.leftMargin - doc.rightMargin
         col_widths = [available_width / len(headers)] * len(headers)
+    available_width = pagesize[0] - doc.leftMargin - doc.rightMargin
     story = [
-        Paragraph(title, title_style),
-        Paragraph(subtitle, subtitle_style),
+        _report_brand_header(title, subtitle, styles, available_width),
+        Spacer(1, 6),
         _table(table_rows, col_widths=col_widths, font_size=font_size),
     ]
     page_callback = _titled_page_callback(title)
@@ -599,6 +598,44 @@ def _salary_slip_header(month, salary, result, styles, compact=False):
     return table
 
 
+def _report_brand_header(title, subtitle, styles, available_width, compact=False):
+    title_size = 10 if compact else 13
+    subtitle_size = 6.5 if compact else 8
+    title_style = ParagraphStyle(
+        "BrandedReportTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=title_size,
+        leading=title_size + 2,
+        textColor=BRAND_BLUE,
+    )
+    subtitle_style = ParagraphStyle(
+        "BrandedReportSubtitle",
+        parent=styles["Normal"],
+        fontSize=subtitle_size,
+        leading=subtitle_size + 2,
+        textColor=BRAND_MUTED,
+    )
+    right = [
+        Paragraph(title, title_style),
+        Paragraph(subtitle, subtitle_style),
+        Paragraph("SMARTfill Payroll", subtitle_style),
+    ]
+    logo_width = 36 * mm
+    table = Table([[_brand_logo(width=logo_width, height=12.5 * mm), right]], colWidths=[44 * mm, available_width - 44 * mm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#D9E2EC")),
+        ("LINEABOVE", (0, 0), (-1, 0), 2.0, BRAND_GREEN),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    return table
+
+
 def _pdf_header_footer(canvas, doc):
     canvas.saveState()
     canvas.setFont("Helvetica", 8)
@@ -755,9 +792,10 @@ def build_loan_pdf(loan_id, month):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=12 * mm, rightMargin=12 * mm, topMargin=10 * mm, bottomMargin=10 * mm)
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("LoanTitle", parent=styles["Heading1"], fontName="Helvetica-Bold", fontSize=14, leading=17, textColor=colors.HexColor("#0C306A"), spaceAfter=8)
+    available_width = A4[0] - doc.leftMargin - doc.rightMargin
     story = [
-        Paragraph(f"Loan #{loan.id} Summary", title_style),
+        _report_brand_header(f"Loan #{loan.id} Summary", f"Employee: {employee.name if employee else loan.employee_id}", styles, available_width),
+        Spacer(1, 8),
         _table(loan_summary_rows(loan, employee, month, schedule), col_widths=[38 * mm, 58 * mm, 42 * mm, 58 * mm], font_size=8, header=False, highlight_rows=[5]),
         Spacer(1, 8),
         Paragraph("Installment Schedule", ParagraphStyle("LoanSection", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=10, textColor=colors.HexColor("#0C306A"), spaceAfter=4)),
