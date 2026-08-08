@@ -15,8 +15,14 @@ fi
 apt-get update
 apt-get install -y git python3 python3-venv python3-pip build-essential
 
+if ! getent group "$APP_USER" >/dev/null 2>&1; then
+  groupadd --system "$APP_USER"
+fi
+
 if ! id "$APP_USER" >/dev/null 2>&1; then
-  useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
+  useradd --system --create-home --gid "$APP_USER" --shell /usr/sbin/nologin "$APP_USER"
+else
+  usermod --gid "$APP_USER" "$APP_USER"
 fi
 
 if [ ! -d "$APP_DIR/.git" ]; then
