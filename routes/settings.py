@@ -21,9 +21,12 @@ def latest_git_release_datetime(app_root):
     app_root = Path(app_root)
     if not (app_root / ".git").exists():
         return ""
+    git_path = shutil.which("git") or "/usr/bin/git"
+    if not Path(git_path).exists():
+        return ""
     try:
         result = subprocess.run(
-            ["git", "log", "-1", "--format=%cI"],
+            [git_path, "log", "-1", "--format=%cI"],
             cwd=app_root,
             text=True,
             capture_output=True,
