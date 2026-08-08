@@ -1145,6 +1145,8 @@ def test_pdf_reports_download(client, app):
     assert employee_reader.metadata.title == "Worker Salary Report - July 2026"
     employee_text = "\n".join(page.extract_text() or "" for page in employee_reader.pages)
     assert "Final Salary Report" not in employee_text
+    assert "Salary Slip" in employee_text
+    assert "SMARTfill Payroll" in employee_text
     assert "Payable Salary" in employee_text
     assert "Days in Month" in employee_text
     assert "Paid Working Days" in employee_text
@@ -1160,7 +1162,6 @@ def test_pdf_reports_download(client, app):
     assert "Loan Deduction" not in employee_text
     assert "Pending Loan Amount" not in employee_text
     assert "Advance Salary Deduction" not in employee_text
-    assert "SMARTfill" not in employee_text
     assert final_pdf.status_code == 200
     assert final_pdf.mimetype == "application/pdf"
     assert final_pdf.data.startswith(b"%PDF")
@@ -1169,13 +1170,14 @@ def test_pdf_reports_download(client, app):
     final_text = "\n".join(page.extract_text() or "" for page in final_reader.pages)
     assert len(final_reader.pages) == 1
     assert "Final Payroll Report" not in final_text
+    assert "Salary Slip" in final_text
+    assert "SMARTfill Payroll" in final_text
     assert "Payable Salary" in final_text
     assert "Total Paid Days" in final_text
     assert "Worker Two" in final_text
     assert "Loan Deduction" not in final_text
     assert "Pending Loan Amount" not in final_text
     assert "Advance Salary Deduction" not in final_text
-    assert "SMARTfill" not in final_text
 
 
 def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):

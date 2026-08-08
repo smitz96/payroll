@@ -2,13 +2,14 @@ import csv
 import calendar
 from io import BytesIO, StringIO
 from decimal import Decimal
+from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from attendance import db
 from attendance.loans import loan_installment_for_loan, loan_paid_before_month, loan_pending_after_month, loan_remaining_before_month, loan_repayment_schedule
@@ -21,6 +22,10 @@ ONES = [
     "seventeen", "eighteen", "nineteen",
 ]
 TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+BRAND_BLUE = colors.HexColor("#0C306A")
+BRAND_GREEN = colors.HexColor("#A6CE15")
+BRAND_MUTED = colors.HexColor("#657386")
+LOGO_PATH = Path(__file__).resolve().parent.parent / "static" / "img" / "smartfill-logo.png"
 
 
 def payroll_month_days(month):
@@ -533,10 +538,73 @@ def employee_detail_compact_rows(result):
     return rows
 
 
+def _brand_logo(width=30 * mm, height=10.5 * mm):
+    if LOGO_PATH.exists():
+        image = Image(str(LOGO_PATH), width=width, height=height)
+        image.hAlign = "LEFT"
+        return image
+    return Paragraph("SMARTfill", ParagraphStyle("LogoFallback", fontName="Helvetica-Bold", fontSize=13, textColor=BRAND_BLUE))
+
+
+def _salary_slip_header(month, salary, result, styles, compact=False):
+    employee_id = salary.employee_id if salary else (result.employee_id if result else "")
+    employee_name = salary.name if salary else employee_id
+    title_size = 8.5 if compact else 12
+    text_size = 5.4 if compact else 8
+    title_style = ParagraphStyle(
+        "SlipTitle",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=title_size,
+        leading=title_size + 1,
+        textColor=BRAND_BLUE,
+        alignment=TA_LEFT,
+    )
+    meta_style = ParagraphStyle(
+        "SlipMeta",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=text_size,
+        leading=text_size + 1,
+        textColor=BRAND_MUTED,
+    )
+    employee_style = ParagraphStyle(
+        "SlipEmployee",
+        parent=meta_style,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#172033"),
+    )
+    left = _brand_logo(width=27 * mm if compact else 34 * mm, height=9.5 * mm if compact else 12 * mm)
+    middle = [
+        Paragraph("Salary Slip", title_style),
+        Paragraph(f"Payroll Month: {display_month(month)}", meta_style),
+        Paragraph("SMARTfill Payroll", meta_style),
+    ]
+    right = [
+        Paragraph(f"Employee ID: {employee_id}", meta_style),
+        Paragraph(f"Employee Name: {employee_name}", employee_style),
+        Paragraph(f"Status: {result.calculation_status if result else 'Not Calculated'}", meta_style),
+    ]
+    table = Table([[left, middle, right]], colWidths=[36 * mm, 55 * mm, 103 * mm] if compact else [44 * mm, 64 * mm, 88 * mm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+        ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#D9E2EC")),
+        ("LINEABOVE", (0, 0), (-1, 0), 2.0, BRAND_GREEN),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4 if compact else 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4 if compact else 6),
+    ]))
+    return table
+
+
 def _pdf_header_footer(canvas, doc):
     canvas.saveState()
     canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(colors.HexColor("#657386"))
+    canvas.setFillColor(BRAND_BLUE)
+    canvas.drawString(doc.leftMargin, 6 * mm, "SMARTfill Payroll")
+    canvas.setFillColor(BRAND_MUTED)
     canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, 6 * mm, f"Page {doc.page}")
     canvas.restoreState()
 
@@ -590,10 +658,7 @@ def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None,
 
 
 def employee_report_block(month, salary, result, styles, compact=False):
-    employee_id = salary.employee_id if salary else (result.employee_id if result else "")
-    employee_name = salary.name if salary else employee_id
-    title_style = ParagraphStyle("BlockTitle", parent=styles["Heading2"], fontName="Helvetica-Bold", fontSize=8 if compact else 11, textColor=colors.HexColor("#0C306A"), spaceBefore=2, spaceAfter=3)
-    label = Paragraph(f"{employee_id} - {employee_name} | Payroll Month: {month}", title_style)
+    header = _salary_slip_header(month, salary, result, styles, compact=compact)
     if compact:
         words_style = ParagraphStyle("PayWords", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=5.4, leading=6.2, textColor=colors.HexColor("#0C306A"))
         summary_rows = employee_compact_summary_rows(salary, result)
@@ -606,9 +671,10 @@ def employee_report_block(month, salary, result, styles, compact=False):
             font_size=4.25,
             blank_columns=[6],
         )
-        return KeepTogether([label, summary, Spacer(1, 1), detail])
+        return KeepTogether([header, Spacer(1, 2), summary, Spacer(1, 1), detail])
     return KeepTogether([
-        label,
+        header,
+        Spacer(1, 6),
         _table(employee_salary_summary_rows(salary, result), col_widths=[55 * mm, 65 * mm], header=False),
         Spacer(1, 6),
         _table(employee_detail_rows(result), col_widths=[32 * mm, 34 * mm, 42 * mm, 28 * mm, 30 * mm, 30 * mm], font_size=8),
