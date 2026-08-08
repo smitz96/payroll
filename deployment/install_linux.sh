@@ -29,7 +29,8 @@ if [ ! -d "$APP_DIR/.git" ]; then
   mkdir -p "$(dirname "$APP_DIR")"
   git clone "$REPO_URL" "$APP_DIR"
 else
-  git -C "$APP_DIR" pull --ff-only
+  chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+  sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only
 fi
 
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
