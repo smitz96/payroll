@@ -161,8 +161,12 @@ def test_dashboard_progress_includes_attendance_employees_missing_wage(client, a
 
 
 def test_settings_app_update_requires_admin_password_and_logs(client, app, monkeypatch):
+    monkeypatch.setattr("routes.settings.latest_git_release_datetime", lambda app_root: "08-08-2026 15:12:30")
     client.post("/login", data={"username": "admin", "password": "12345"})
     page = client.get("/settings")
+    assert b"About" in page.data
+    assert b"V0.01" in page.data
+    assert b"08-08-2026 15:12:30" in page.data
     assert b"Update App" in page.data
     assert b'name="admin_password"' in page.data
 

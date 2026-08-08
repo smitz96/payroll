@@ -15,6 +15,19 @@
   </div>
   <div class="col-lg-4">
     <div class="tool-panel">
+      <h2 class="section-title">About</h2>
+      <table class="table table-sm mb-0">
+        <tr>
+          <th>Version</th>
+          <td>{{ about.version }}</td>
+        </tr>
+        <tr>
+          <th>Release Date</th>
+          <td>{{ about.release_at }}</td>
+        </tr>
+      </table>
+    </div>
+    <div class="tool-panel mt-3">
       <h2 class="section-title">Security</h2>
       <a class="btn btn-primary" href="{{ url_for('settings.security') }}">Change Password</a>
     </div>

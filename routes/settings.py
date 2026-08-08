@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
@@ -10,8 +11,36 @@ from attendance import db
 from attendance.authentication import change_password, login_required
 from attendance.models import AuditLog, User
 from attendance.settings import MONTHLY_RULES
+from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
+APP_VERSION = "V0.01"
+
+
+def latest_git_release_datetime(app_root):
+    app_root = Path(app_root)
+    if not (app_root / ".git").exists():
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cI"],
+            cwd=app_root,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    value = result.stdout.strip()
+    if not value:
+        return ""
+    try:
+        return format_ist_datetime(datetime.fromisoformat(value))
+    except ValueError:
+        return ""
 
 
 def run_app_update(app_root):
@@ -42,7 +71,11 @@ def run_app_update(app_root):
 @bp.route("")
 @login_required
 def index():
-    return render_template("settings.html", monthly_rules=MONTHLY_RULES)
+    about = {
+        "version": APP_VERSION,
+        "release_at": latest_git_release_datetime(Path(current_app.root_path)) or "Not available",
+    }
+    return render_template("settings.html", monthly_rules=MONTHLY_RULES, about=about)
 
 
 @bp.route("/security", methods=["GET", "POST"])
