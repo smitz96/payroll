@@ -40,6 +40,11 @@ sudo -u "$APP_USER" "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.tx
 sudo -u "$APP_USER" mkdir -p "$APP_DIR/data" "$APP_DIR/uploads" "$APP_DIR/output" "$APP_DIR/tmp"
 sudo -u "$APP_USER" "$APP_DIR/venv/bin/python" "$APP_DIR/scripts/init_db.py"
 
+cat > "/etc/sudoers.d/$SERVICE_NAME-update" <<SUDOERS
+$APP_USER ALL=(root) NOPASSWD: SETENV: $APP_DIR/update.sh
+SUDOERS
+chmod 440 "/etc/sudoers.d/$SERVICE_NAME-update"
+
 cat > "/etc/systemd/system/$SERVICE_NAME.service" <<SERVICE
 [Unit]
 Description=SMARTfill Attendance and Payroll Management

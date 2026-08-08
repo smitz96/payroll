@@ -160,20 +160,20 @@ def test_dashboard_progress_includes_attendance_employees_missing_wage(client, a
     assert b"1 of 2 employees processed" in response.data
 
 
-def test_settings_git_pull_requires_admin_password_and_logs(client, app, monkeypatch):
+def test_settings_app_update_requires_admin_password_and_logs(client, app, monkeypatch):
     client.post("/login", data={"username": "admin", "password": "12345"})
     page = client.get("/settings")
-    assert b"Git Pull Update" in page.data
+    assert b"Update App" in page.data
     assert b'name="admin_password"' in page.data
 
     bad = client.post("/settings/git-pull", data={"admin_password": "wrong"}, follow_redirects=True)
     assert b"Admin password is incorrect" in bad.data
 
-    monkeypatch.setattr("routes.settings.run_git_update", lambda app_root: (True, "Git pull completed."))
+    monkeypatch.setattr("routes.settings.run_app_update", lambda app_root: (True, "App update completed."))
     good = client.post("/settings/git-pull", data={"admin_password": "12345"}, follow_redirects=True)
-    assert b"Git pull completed" in good.data
+    assert b"App update completed" in good.data
     with app.app_context():
-        audit = AuditLog.query.filter_by(action="Git Pull Update").one()
+        audit = AuditLog.query.filter_by(action="App Update").one()
         assert audit.actor == "admin"
 
 
