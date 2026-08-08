@@ -3,15 +3,27 @@ from decimal import Decimal
 
 from flask import Blueprint, render_template, request
 
+from attendance import db
 from attendance.authentication import login_required
 from attendance.calculator import attendance_missing_salary
-from attendance.models import AuditLog, AttendanceRecord, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
+from attendance.master import employee_active_for_payroll_month
+from attendance.models import AuditLog, AttendanceRecord, Employee, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
 
 bp = Blueprint("dashboard", __name__)
 
 
 def money(value):
     return f"{Decimal(value or 0):,.2f}"
+
+
+def scoped_salaries(month):
+    salaries = SalaryRecord.query.filter_by(payroll_month=month).all()
+    return [salary for salary in salaries if employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month)]
+
+
+def scoped_results(month):
+    results = PayrollResult.query.filter_by(payroll_month=month).all()
+    return [result for result in results if employee_active_for_payroll_month(db.session.get(Employee, result.employee_id), month)]
 
 
 def display_month(month):
@@ -25,8 +37,8 @@ def display_month(month):
 
 
 def month_snapshot(month):
-    salaries = SalaryRecord.query.filter_by(payroll_month=month.month).all()
-    results = PayrollResult.query.filter_by(payroll_month=month.month).all()
+    salaries = scoped_salaries(month.month)
+    results = scoped_results(month.month)
     calculated = [r for r in results if r.final_salary is not None and r.calculation_status in {"Calculated", "Needs Review"}]
     review_count = len([r for r in results if r.calculation_status != "Calculated"]) + len(attendance_missing_salary(month.month))
     return {
@@ -51,8 +63,8 @@ def index():
         if not db_month:
             month = months[0] if months else None
     selected = month.month if month else None
-    salaries = SalaryRecord.query.filter_by(payroll_month=selected).all() if selected else []
-    results = PayrollResult.query.filter_by(payroll_month=selected).all() if selected else []
+    salaries = scoped_salaries(selected) if selected else []
+    results = scoped_results(selected) if selected else []
     attendance_count = AttendanceRecord.query.filter_by(payroll_month=selected).count() if selected else 0
     monthly = [s for s in salaries if s.normalized_salary_type == "MONTHLY"]
     unsupported = [s for s in salaries if s.normalized_salary_type != "MONTHLY"]

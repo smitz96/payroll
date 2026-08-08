@@ -161,6 +161,31 @@ def test_dashboard_progress_includes_attendance_employees_missing_wage(client, a
     assert b"1 of 2 employees processed" in response.data
 
 
+def test_inactive_employee_attendance_is_not_missing_salary_next_month(client, app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-08"))
+        db.session.add(Employee(
+            id="6",
+            name="Left Worker",
+            salary_type="Monthly",
+            normalized_salary_type="MONTHLY",
+            salary=Decimal("30000"),
+            employment_status="LEFT",
+            inactive_at=datetime(2026, 7, 15, 12, 0, 0),
+        ))
+        db.session.add(AttendanceRecord(payroll_month="2026-08", employee_id="6", employee_name="Left Worker", date=date(2026, 8, 1), day="Saturday"))
+        db.session.commit()
+    client.post("/login", data={"username": "admin", "password": "12345"})
+
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    assert b"Attendance exists but salary data is missing" not in dashboard.data
+
+    payroll = client.get("/payroll/2026-08")
+    assert payroll.status_code == 200
+    assert b"Salary data not present for Employee ID 6" not in payroll.data
+
+
 def test_settings_app_update_requires_admin_password_and_logs(client, app, monkeypatch):
     monkeypatch.setattr("routes.settings.latest_git_release_datetime", lambda app_root: "08-08-2026 15:12:30")
     client.post("/login", data={"username": "admin", "password": "12345"})
@@ -433,7 +458,7 @@ def test_payroll_month_loads_salary_from_active_master(client, app):
     page = client.get("/payroll/2026-07")
     assert b"Load Wage From Master" in page.data
     response = client.post("/payroll/2026-07", data={"action": "salary"}, follow_redirects=True)
-    assert b"Wage data loaded from master: 1 created, 0 updated, 0 skipped" in response.data
+    assert b"Wage data loaded from master: 1 created, 0 updated, 1 skipped" in response.data
     with app.app_context():
         salary = SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="5").one()
         assert salary.name == "Worker"
@@ -441,6 +466,31 @@ def test_payroll_month_loads_salary_from_active_master(client, app):
         assert salary.salary == Decimal("30000.00")
         assert SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="6").count() == 0
         assert AuditLog.query.filter_by(action="Wage Master Loaded").count() == 1
+
+
+def test_disabled_employee_is_included_only_until_inactive_month(client, app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(PayrollMonth(month="2026-08"))
+        db.session.add(Employee(
+            id="6",
+            name="Left Worker",
+            salary_type="Monthly",
+            normalized_salary_type="MONTHLY",
+            salary=Decimal("25000"),
+            employment_status="LEFT",
+            inactive_at=datetime(2026, 7, 15, 12, 0, 0),
+        ))
+        db.session.add(WeekOffRule(employee_id="6", confirmed_at=datetime(2026, 7, 1, 9, 0, 0)))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="6", name="Left Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("25000"), adjustment=Decimal("0"), loan=Decimal("0")))
+        db.session.add(SalaryRecord(payroll_month="2026-08", employee_id="6", name="Left Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("25000"), adjustment=Decimal("0"), loan=Decimal("0")))
+        db.session.commit()
+
+        calculate_payroll_month("2026-07", "admin")
+        assert PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").count() == 1
+
+        calculate_payroll_month("2026-08", "admin")
+        assert PayrollResult.query.filter_by(payroll_month="2026-08", employee_id="6").count() == 0
 
 
 def test_payroll_month_employee_table_has_sortable_id_column(client, app):

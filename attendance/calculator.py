@@ -6,12 +6,14 @@ from attendance.models import (
     AttendanceOverride,
     AttendanceRecord,
     AuditLog,
+    Employee,
     LeaveLedger,
     PayrollResult,
     SalaryRecord,
     WeekOffRule,
 )
 from attendance.holidays import holiday_dates_for_records
+from attendance.master import employee_active_for_payroll_month
 from attendance.payroll_rules import UnsupportedPayrollResult, resolve_payroll_rule
 
 
@@ -42,7 +44,10 @@ def calculate_payroll_month(month, actor="admin"):
     LeaveLedger.query.filter_by(payroll_month=month).delete()
     db.session.flush()
     db.session.expunge_all()
-    salary_records = SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id).all()
+    salary_records = [
+        salary for salary in SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id).all()
+        if employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month)
+    ]
     attendance_by_employee = {}
     for record in AttendanceRecord.query.filter_by(payroll_month=month).all():
         attendance_by_employee.setdefault(record.employee_id, []).append(record)
@@ -110,6 +115,9 @@ def calculate_employee_payroll(month, employee_id, actor="admin"):
     salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=employee_id).first()
     if not salary:
         raise ValueError(f"Salary data not present for Employee ID {employee_id}.")
+    employee = db.session.get(Employee, employee_id)
+    if not employee_active_for_payroll_month(employee, month):
+        raise ValueError(f"Employee ID {employee_id} is inactive for payroll month {month}.")
     attendance_records = AttendanceRecord.query.filter_by(payroll_month=month, employee_id=employee_id).order_by(AttendanceRecord.date).all()
     holidays = holiday_dates_for_records(attendance_records)
     overrides = {o.date: o for o in AttendanceOverride.query.filter_by(payroll_month=month, employee_id=employee_id).all()}
@@ -128,6 +136,8 @@ def first_payroll_employees_without_confirmed_weekoff(month, employee_id=None):
         query = query.filter_by(employee_id=employee_id)
     missing = []
     for salary in query.order_by(SalaryRecord.employee_id).all():
+        if not employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month):
+            continue
         prior_result = PayrollResult.query.filter(
             PayrollResult.employee_id == salary.employee_id,
             PayrollResult.payroll_month < month,
@@ -146,6 +156,9 @@ def attendance_missing_salary(month):
     records = AttendanceRecord.query.filter_by(payroll_month=month).all()
     missing = {}
     for rec in records:
+        employee = db.session.get(Employee, rec.employee_id)
+        if employee and not employee_active_for_payroll_month(employee, month):
+            continue
         if rec.employee_id not in salary_ids:
             missing[rec.employee_id] = rec.employee_name
     return missing
@@ -156,6 +169,9 @@ def name_mismatches(month):
     mismatches = []
     seen = set()
     for rec in AttendanceRecord.query.filter_by(payroll_month=month).all():
+        employee = db.session.get(Employee, rec.employee_id)
+        if employee and not employee_active_for_payroll_month(employee, month):
+            continue
         salary = salary_by_id.get(rec.employee_id)
         key = (rec.employee_id, rec.employee_name, salary.name if salary else "")
         if salary and rec.employee_name and salary.name and rec.employee_name.strip().lower() != salary.name.strip().lower() and key not in seen:

@@ -13,7 +13,7 @@ from attendance.calculator import attendance_missing_salary, calculate_employee_
 from attendance.advances import advance_deduction_for_employee, advances_for_payroll_month
 from attendance.holidays import holiday_dates_for_records
 from attendance.loans import active_loans_for_employee, employee_has_loan, loan_installment_for_employee, loan_skip_for_employee
-from attendance.master import sync_salary_records_from_master
+from attendance.master import employee_active_for_payroll_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv
 from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance
@@ -436,12 +436,19 @@ def month(month):
     order = request.args.get("order", "asc")
     if order not in {"asc", "desc"}:
         order = "asc"
-    salaries = SalaryRecord.query.filter_by(payroll_month=month).all()
+    salaries = [
+        salary for salary in SalaryRecord.query.filter_by(payroll_month=month).all()
+        if employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month)
+    ]
     salaries = sorted(salaries, key=lambda salary: salary_sort_value(salary, sort), reverse=order == "desc")
     monthly_salaries = [salary for salary in salaries if salary.normalized_salary_type == "MONTHLY"]
     daily_salaries = [salary for salary in salaries if salary.normalized_salary_type == "DAILY"]
     other_salaries = [salary for salary in salaries if salary.normalized_salary_type not in {"MONTHLY", "DAILY"}]
-    results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
+    results = {
+        r.employee_id: r
+        for r in PayrollResult.query.filter_by(payroll_month=month).all()
+        if employee_active_for_payroll_month(db.session.get(Employee, r.employee_id), month)
+    }
     attendance_count = AttendanceRecord.query.filter_by(payroll_month=month).count()
     missing_salary = attendance_missing_salary(month)
     mismatches = name_mismatches(month)
@@ -471,6 +478,9 @@ def employee(month, employee_id):
         return redirect(url_for("payroll.employee", month=month, employee_id=employee_id))
     salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=employee_id).first()
     employee = db.session.get(Employee, employee_id)
+    if employee and not employee_active_for_payroll_month(employee, month):
+        flash(f"Employee ID {employee_id} is inactive for payroll month {month}.", "warning")
+        return redirect(url_for("payroll.month", month=month))
     result = PayrollResult.query.filter_by(payroll_month=month, employee_id=employee_id).first()
     records = AttendanceRecord.query.filter_by(payroll_month=month, employee_id=employee_id).order_by(AttendanceRecord.date).all()
     overrides = {o.date: o for o in AttendanceOverride.query.filter_by(payroll_month=month, employee_id=employee_id).all()}

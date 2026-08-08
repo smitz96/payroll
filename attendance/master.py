@@ -20,6 +20,19 @@ def active_master_employees():
     return sorted(Employee.query.filter_by(employment_status=ACTIVE_STATUS).all(), key=employee_sort_value)
 
 
+def employee_active_for_payroll_month(employee, payroll_month):
+    if not employee:
+        return True
+    if employee.employment_status == ACTIVE_STATUS:
+        return True
+    if employee.employment_status not in DISABLED_STATUSES:
+        return True
+    if not employee.inactive_at:
+        return False
+    inactive_month = employee.inactive_at.strftime("%Y-%m")
+    return str(payroll_month or "") <= inactive_month
+
+
 def employee_master_export_rows():
     rows = []
     for employee in sorted(Employee.query.all(), key=employee_sort_value):
@@ -197,7 +210,10 @@ def sync_salary_records_from_master(month, actor):
     created = 0
     updated = 0
     skipped = 0
-    for employee in active_master_employees():
+    for employee in sorted(Employee.query.all(), key=employee_sort_value):
+        if not employee_active_for_payroll_month(employee, month):
+            skipped += 1
+            continue
         if not employee.normalized_salary_type or Decimal(employee.salary or 0) <= 0:
             skipped += 1
             continue

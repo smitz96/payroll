@@ -7,7 +7,9 @@ from flask import Blueprint, Response, render_template, request
 
 from attendance.authentication import login_required
 from attendance.calculator import attendance_missing_salary
-from attendance.models import AttendanceRecord, PayrollMonth, PayrollResult, SalaryRecord
+from attendance import db
+from attendance.master import employee_active_for_payroll_month
+from attendance.models import AttendanceRecord, Employee, PayrollMonth, PayrollResult, SalaryRecord
 from attendance.reports import (
     attendance_detail_csv,
     build_all_employees_pdf,
@@ -41,6 +43,16 @@ def money(value):
     return f"{Decimal(value or 0):,.2f}"
 
 
+def scoped_salaries(month):
+    salaries = SalaryRecord.query.filter_by(payroll_month=month).all()
+    return [salary for salary in salaries if employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month)]
+
+
+def scoped_results(month):
+    results = PayrollResult.query.filter_by(payroll_month=month).all()
+    return [result for result in results if employee_active_for_payroll_month(db.session.get(Employee, result.employee_id), month)]
+
+
 def csv_response(content, filename):
     return Response(content, mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
@@ -56,8 +68,8 @@ def index():
     requested_month = request.args.get("month", "").strip()
     selected_month = requested_month if any(item.month == requested_month for item in months) else (months[0].month if months else None)
     selected = PayrollMonth.query.filter_by(month=selected_month).first() if selected_month else None
-    salaries = SalaryRecord.query.filter_by(payroll_month=selected_month).all() if selected_month else []
-    results = PayrollResult.query.filter_by(payroll_month=selected_month).all() if selected_month else []
+    salaries = scoped_salaries(selected_month) if selected_month else []
+    results = scoped_results(selected_month) if selected_month else []
     calculated = [result for result in results if result.final_salary is not None and result.calculation_status in {"Calculated", "Needs Review"}]
     missing_salary = attendance_missing_salary(selected_month) if selected_month else {}
     cards = [
