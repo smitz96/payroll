@@ -5,6 +5,7 @@ from flask_wtf import CSRFProtect
 
 from attendance import db
 from attendance.authentication import init_admin_user
+from attendance.utils import format_ist_datetime
 from config import Config
 
 csrf = CSRFProtect()
@@ -89,6 +90,7 @@ def create_app(test_config=None):
     app.config.from_object(Config)
     if test_config:
         app.config.update(test_config)
+    app.jinja_env.filters["ist_datetime"] = format_ist_datetime
     Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)
     Path("data").mkdir(exist_ok=True)
     db.init_app(app)

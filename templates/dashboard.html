@@ -211,7 +211,7 @@
         {% for log in recent_logs %}
         <div class="log-item">
           <strong>{{ log.action }}</strong>
-          <span>{{ log.actor or "system" }} · {{ log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else "" }}</span>
+          <span>{{ log.actor or "system" }} · {{ log.created_at|ist_datetime("%d-%m-%Y %H:%M") }}</span>
           <small>{{ log.detail or "" }}</small>
         </div>
         {% else %}

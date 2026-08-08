@@ -126,7 +126,7 @@
         {% set employee = employee_map.get(log.employee_id) %}
         <tr>
           <td>{{ loop.index }}</td>
-          <td>{{ log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else log.date }}</td>
+          <td>{{ log.created_at|ist_datetime("%d-%m-%Y %H:%M") if log.created_at else log.date }}</td>
           <td class="employee-cell"><strong>{{ employee.name if employee else log.employee_id }}</strong><span>{{ log.employee_id }}</span></td>
           <td><strong>{{ "%+0.1f"|format(log.amount) }}</strong></td>
           <td>{{ log.description }}</td>

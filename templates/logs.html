@@ -44,7 +44,7 @@
     {% for log in logs %}
     <tr>
       <td>{{ ((page - 1) * per_page) + loop.index }}</td>
-      <td>{{ log.created_at.strftime("%Y-%m-%d %H:%M:%S") if log.created_at else "" }}</td>
+      <td>{{ log.created_at|ist_datetime }}</td>
       <td>{{ log.actor or "system" }}</td>
       <td>{{ log.action }}</td>
       <td>{{ log.detail or "" }}</td>

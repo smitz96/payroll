@@ -1,6 +1,10 @@
 import re
-from datetime import datetime
+from datetime import datetime, time, timezone
 from decimal import Decimal, ROUND_DOWN
+from zoneinfo import ZoneInfo
+
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def clean(value):
@@ -66,3 +70,22 @@ def money(value):
 
 def truncate_one_decimal(value):
     return Decimal(value).quantize(Decimal("0.1"), rounding=ROUND_DOWN)
+
+
+def as_ist(value):
+    if not value:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(IST)
+
+
+def format_ist_datetime(value, date_format="%d-%m-%Y %H:%M:%S"):
+    local_value = as_ist(value)
+    return local_value.strftime(date_format) if local_value else ""
+
+
+def ist_day_to_utc_bounds(day):
+    start = datetime.combine(day, time.min, tzinfo=IST).astimezone(timezone.utc)
+    end = datetime.combine(day, time.max, tzinfo=IST).astimezone(timezone.utc)
+    return start.replace(tzinfo=None), end.replace(tzinfo=None)

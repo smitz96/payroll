@@ -1,9 +1,10 @@
-from datetime import datetime, time
+from datetime import datetime
 
 from flask import Blueprint, render_template, request
 
 from attendance.authentication import login_required
 from attendance.models import AuditLog
+from attendance.utils import ist_day_to_utc_bounds
 
 bp = Blueprint("logs", __name__, url_prefix="/logs")
 
@@ -32,9 +33,11 @@ def index():
     actions = [row[0] for row in AuditLog.query.with_entities(AuditLog.action).distinct().order_by(AuditLog.action.asc()).all()]
     query = AuditLog.query
     if start_date:
-        query = query.filter(AuditLog.created_at >= datetime.combine(start_date, time.min))
+        start_at, _ = ist_day_to_utc_bounds(start_date)
+        query = query.filter(AuditLog.created_at >= start_at)
     if end_date:
-        query = query.filter(AuditLog.created_at <= datetime.combine(end_date, time.max))
+        _, end_at = ist_day_to_utc_bounds(end_date)
+        query = query.filter(AuditLog.created_at <= end_at)
     if action_filter:
         query = query.filter(AuditLog.action == action_filter)
     total = query.count()
