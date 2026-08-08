@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -18,11 +19,14 @@ def run_app_update(app_root):
     update_script = app_root / "update.sh"
     if not update_script.exists():
         return False, "update.sh was not found on this server. Pull the latest code once from terminal, then try Update App again."
+    sudo_path = shutil.which("sudo") or "/usr/bin/sudo"
+    if not Path(sudo_path).exists():
+        return False, "sudo was not found on this server. Install sudo or run updates manually from terminal."
     try:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         subprocess.Popen(
-            ["sudo", str(update_script)],
+            [sudo_path, str(update_script)],
             cwd=app_root,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
