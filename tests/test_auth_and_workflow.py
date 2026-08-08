@@ -1,5 +1,5 @@
 from decimal import Decimal
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from io import BytesIO
 from html import escape
@@ -513,6 +513,41 @@ def test_sandwich_leave_marks_weekoff_between_leave_days_and_pdf(app):
         text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf_bytes)).pages)
         assert "Sandwich Leave" in text
         assert "2026-07-05" in text
+
+
+def test_monthly_leave_allotment_counts_eligible_month_days_and_current_leave_use(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Worker"))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(Holiday(date=date(2026, 7, 2), name="Factory Holiday", holiday_type="VARIABLE"))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000"), adjustment=Decimal("0"), loan=Decimal("0")))
+        leave_day = date(2026, 7, 3)
+        for offset in range(28):
+            day = date(2026, 7, 1) + timedelta(days=offset)
+            minutes = 0 if day.weekday() == 6 or day in {date(2026, 7, 2), leave_day} else parse_duration("9h 00m")
+            db.session.add(AttendanceRecord(
+                payroll_month="2026-07",
+                employee_id="5",
+                employee_name="Worker",
+                date=day,
+                day=day.strftime("%A"),
+                raw_working_hours="0h 00m" if minutes == 0 else "9h 00m",
+                actual_minutes=minutes,
+                parse_status="OK",
+            ))
+        db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="5", date=leave_day, manual_status="Paid Leave"))
+        db.session.commit()
+
+        result = calculate_payroll_month("2026-07")[0]
+
+        assert result.paid_working_days == Decimal("22.0")
+        assert result.week_offs == 4
+        assert result.holidays == 1
+        assert result.leave_used == Decimal("1")
+        assert result.leave_earned == Decimal("1.8")
+        assert result.paid_leaves == Decimal("1")
+        assert result.closing_leave == Decimal("0.8")
 
 
 def test_salary_import_auto_creates_weekoff_and_leave_defaults(tmp_path, app):

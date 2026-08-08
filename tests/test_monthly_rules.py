@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from attendance.payroll_rules import (
     calculate_monthly_leave_earned,
+    days_in_payroll_month,
     calculate_monthly_overtime,
     calculate_monthly_shortage,
     classify_monthly_attendance,
@@ -59,17 +60,21 @@ def test_overtime_threshold_and_flooring():
         assert calculate_monthly_overtime(parse_duration(raw), Decimal("10"))[1] == payable
 
 
-def test_leave_earning_truncates_one_decimal():
+def test_leave_earning_uses_month_days_and_truncates_one_decimal():
     expected = {
-        0: Decimal("0.0"),
-        6: Decimal("0.5"),
-        12: Decimal("1.0"),
-        15: Decimal("1.2"),
-        18: Decimal("1.5"),
-        24: Decimal("2.0"),
+        (0, 31): Decimal("0.0"),
+        (15, 30): Decimal("1.0"),
+        (28, 31): Decimal("1.8"),
+        (28, 28): Decimal("2.0"),
+        (23, 31): Decimal("1.4"),
     }
-    for paid_days, earned in expected.items():
-        assert calculate_monthly_leave_earned(Decimal(paid_days)) == earned
+    for (eligible_days, days_in_month), earned in expected.items():
+        assert calculate_monthly_leave_earned(Decimal(eligible_days), days_in_month) == earned
+
+
+def test_days_in_payroll_month_handles_calendar_month_length():
+    assert days_in_payroll_month("2026-02") == 28
+    assert days_in_payroll_month("2026-07") == 31
 
 
 def test_parse_date_accepts_manual_and_picker_formats():

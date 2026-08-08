@@ -1,3 +1,4 @@
+import calendar
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
@@ -143,7 +144,8 @@ class MonthlyPayrollRule(PayrollRule):
             })
 
         paid_working_days = full_days + (half_days * Decimal("0.5"))
-        leave_earned = calculate_monthly_leave_earned(paid_working_days) + comp_off_earned
+        eligible_leave_days = paid_working_days + Decimal(week_offs) + Decimal(holiday_count) + leave_used
+        leave_earned = calculate_monthly_leave_earned(eligible_leave_days, days_in_payroll_month(salary_record.payroll_month)) + comp_off_earned
         available_leave = Decimal(opening_leave) + leave_earned
         paid_leave = min(leave_used, available_leave)
         excess_leave = max(Decimal("0"), leave_used - available_leave)
@@ -471,8 +473,15 @@ def calculate_monthly_overtime(actual_minutes, quarter_rate=Decimal("0")):
     return raw, rounded, amount
 
 
-def calculate_monthly_leave_earned(paid_working_days):
-    return truncate_one_decimal(Decimal(paid_working_days) / Decimal(CFG["LEAVE_EARN_DIVISOR"]))
+def days_in_payroll_month(payroll_month):
+    year, month = [int(part) for part in payroll_month.split("-", 1)]
+    return calendar.monthrange(year, month)[1]
+
+
+def calculate_monthly_leave_earned(eligible_leave_days, days_in_month):
+    if not days_in_month:
+        return Decimal("0.0")
+    return truncate_one_decimal((Decimal(eligible_leave_days) / Decimal(days_in_month)) * Decimal("2"))
 
 
 PAYROLL_RULES = {"MONTHLY": MonthlyPayrollRule(), "DAILY": DailyPayrollRule()}
