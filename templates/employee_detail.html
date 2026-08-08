@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">{{ employee_id }} - {{ salary.name if salary else employee.name }}</h1>
+{% if is_finalized %}
+<div class="alert alert-warning mt-3">Payroll is finalized and locked. Unlock payroll from the month page before making changes.</div>
+{% endif %}
+{% if salary and salary.normalized_salary_type != "MONTHLY" %}
+<div class="alert alert-warning">Wage type rules are not configured. No automatic payroll calculation performed.</div>
+{% endif %}
+{% if result %}
+<div class="summary-grid mb-4">
+  <div class="metric"><span>Status</span><strong>{{ result.calculation_status }}</strong></div>
+  <div class="metric"><span>Days in Month</span><strong>{{ month_days }}</strong></div>
+  <div class="metric"><span>Paid Working Days</span><strong>{{ result.paid_working_days }}</strong></div>
+  <div class="metric"><span>Week Offs</span><strong>{{ result.week_offs }}</strong></div>
+  <div class="metric"><span>Total Paid Days</span><strong>{{ total_paid_days }}</strong></div>
+  <div class="metric"><span>Less-Hours Minutes</span><strong>{{ result.less_hours_minutes }}</strong></div>
+  <div class="metric"><span>OT Payable Minutes</span><strong>{{ result.payable_ot_minutes }}</strong></div>
+  <div class="metric"><span>Leave Earned</span><strong>{{ result.leave_earned }}</strong></div>
+  <div class="metric"><span>Leave Encashment</span><strong>{{ result.leave_encashment_days or 0 }} day(s) / {{ result.leave_encashment_amount or 0 }}</strong></div>
+  {% if has_loan %}
+  <div class="metric"><span>Loan Deduction</span><strong>{{ result.loan_deduction or 0 }}</strong></div>
+  <div class="metric"><span>Pending Loan Amount</span><strong>{{ result.loan_pending_amount or 0 }}</strong></div>
+  {% endif %}
+  {% if payroll_advances or result.advance_deduction %}
+  <div class="metric"><span>Advance Salary Deduction</span><strong>{{ result.advance_deduction or 0 }}</strong></div>
+  {% endif %}
+  <div class="metric"><span>Final Payable Salary</span><strong>{{ result.final_salary if result.final_salary is not none else "Not Calculated" }}</strong></div>
+</div>
+{% endif %}
+<form method="post" id="employeeDetailForm">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="tool-panel mb-4">
+  <h2 class="section-title">Employee Payroll Adjustments</h2>
+  <div class="row g-2">
+    <div class="col-md-3">
+      <label class="form-label">Adjustment (+ / -)</label>
+      <input class="form-control" name="adjustment" value="{{ salary.adjustment if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+    </div>
+    <div class="col-md-3">
+      <div class="leave-encashment-box">
+        {% set employee_leave_encashment_checked = (global_leave_encashment and salary and not salary.leave_encashment_disabled) or (salary and salary.leave_encashment_enabled) %}
+        <label class="form-check">
+          <input class="form-check-input" type="checkbox" name="leave_encashment_enabled" id="leaveEncashmentEnabled" {% if employee_leave_encashment_checked %}checked{% endif %} {% if not salary or is_finalized %}disabled{% endif %}>
+          <span>{{ "Include in Global Leave Encashment" if global_leave_encashment else "Enable Leave Encashment" }}</span>
+        </label>
+        <input class="form-control form-control-sm" name="leave_encashment_days" id="leaveEncashmentDays" value="{{ 'All available' if global_leave_encashment and employee_leave_encashment_checked else (salary.leave_encashment_days if salary else 0) }}" inputmode="decimal" placeholder="Encashment Days" {% if not salary or is_finalized or global_leave_encashment or not salary.leave_encashment_enabled %}disabled{% endif %}>
+        {% if result %}
+        <div class="status-detail">
+          {% if global_leave_encashment %}
+          Global encashment is on. This employee will encash all available leaves unless unchecked here.
+          {% endif %}
+          Available after calculation: {{ (result.closing_leave or 0) + (result.leave_encashment_days or 0) }} day(s). Calculated value: {{ result.leave_encashment_amount or 0 }}.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">Manual Loan / Other Deduction</label>
+      <input class="form-control" name="loan" value="{{ salary.loan if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+    </div>
+    <div class="col-md-3">
+      <div class="leave-encashment-box">
+        <label class="form-check">
+          <input class="form-check-input" type="checkbox" name="loan_installment_skip" {% if loan_skip and loan_skip.skip %}checked{% endif %} {% if is_finalized or not active_loans %}disabled{% endif %}>
+          <span>Skip Loan Installment</span>
+        </label>
+        <input class="form-control form-control-sm" name="loan_skip_notes" value="{{ loan_skip.notes if loan_skip else '' }}" placeholder="Skip notes" {% if is_finalized or not active_loans %}disabled{% endif %}>
+        <div class="status-detail">Active loan installment: {{ active_loan_installment }}{% if not active_loans %}. No active loan for this month.{% endif %}</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="leave-encashment-box">
+        <strong>Advance Salary Deduction</strong>
+        <div class="status-detail">{{ advance_deduction }}{% if not payroll_advances %}. No advance due this month.{% endif %}</div>
+      </div>
+    </div>
+    <div class="col-md-12 adjustment-actions">
+      <a class="btn btn-outline-secondary" href="{{ url_for('reports.employee_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">Open PDF</a>
+      {% if not is_finalized %}
+      <button class="btn btn-outline-primary" name="action" value="save">Save Changes</button>
+      <button class="btn btn-primary" name="action" value="recalculate">Recalculate Payroll</button>
+      {% endif %}
+    </div>
+  </div>
+  <p class="text-muted mb-0 mt-3">Adjustment may be positive or negative. {% if global_leave_encashment %}Global leave encashment uses all available leaves; uncheck the employee option to disable it for this employee.{% else %}Enter leave encashment in days.{% endif %} Active loan installments are deducted unless skipped for this employee and month.</p>
+</div>
+<div class="table-responsive">
+<table class="table table-sm smart-table">
+  <thead><tr><th>Date</th><th>Day</th><th>First</th><th>Last</th><th>Raw</th><th>Status</th><th>Override</th><th>Notes</th></tr></thead>
+  <tbody>
+  {% for row in attendance_rows %}
+  {% set rec = row.record %}
+  <tr class="{% if row.is_error %}attendance-error-row{% endif %}">
+    <td>{{ rec.date }}</td>
+    <td>{{ rec.day }}</td>
+    <td>{{ rec.first_punch }}</td>
+    <td>{{ rec.last_punch }}</td>
+    <td>{{ rec.raw_working_hours }}</td>
+    <td>
+      <span class="status-badge status-{{ row.status_tone }}">{{ row.display_status }}</span>
+      {% if row.is_shortage %}
+      <span class="status-badge status-shortage">Less Hours{% if row.shortage_minutes %}: {{ row.shortage_minutes }}m{% endif %}</span>
+      {% endif %}
+      {% if rec.warning or row.explanation %}
+      <div class="status-detail">{{ rec.warning or row.explanation }}</div>
+      {% endif %}
+    </td>
+    <td>
+        <select class="form-select form-select-sm" name="manual_status_{{ rec.id }}" {% if is_finalized %}disabled{% endif %}>
+          {% for option in override_options %}
+          <option {% if overrides.get(rec.date) and overrides.get(rec.date).manual_status == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+    </td>
+    <td><input class="form-control form-control-sm" name="notes_{{ rec.id }}" placeholder="Notes" value="{{ overrides.get(rec.date).notes if overrides.get(rec.date) else '' }}" {% if is_finalized %}disabled{% endif %}></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if not is_finalized %}
+<div class="sticky-actions">
+  <button class="btn btn-outline-primary" name="action" value="save">Save Changes</button>
+  <button class="btn btn-primary" name="action" value="recalculate">Recalculate Payroll</button>
+</div>
+{% endif %}
+</form>
+{% if result and result.detail_json %}
+<h2 class="section-title">Calculation Detail</h2>
+<div class="table-responsive">
+<table class="table table-sm smart-table">
+  <thead><tr><th>Date</th><th>Actual</th><th>Rounded</th><th>Status</th><th>Paid Day</th><th>Shortage</th><th>Raw OT</th><th>Payable OT</th><th>Explanation</th></tr></thead>
+  <tbody>{% for row in result.detail_json %}
+  <tr><td>{{ row.date }}</td><td>{{ row.actual_duration }}</td><td>{{ row.rounded_duration }}</td><td>{{ row.attendance_status }}</td><td>{{ row.paid_day_value }}</td><td>{{ row.shortage_minutes }}</td><td>{{ row.raw_ot }}</td><td>{{ row.payable_ot }}</td><td>{{ row.explanation }}</td></tr>
+  {% endfor %}</tbody>
+</table>
+</div>
+{% endif %}
+<script>
+  const leaveEncashmentEnabled = document.getElementById('leaveEncashmentEnabled');
+  const leaveEncashmentDays = document.getElementById('leaveEncashmentDays');
+  const globalLeaveEncashment = {{ 'true' if global_leave_encashment else 'false' }};
+  if (leaveEncashmentEnabled && leaveEncashmentDays) {
+    leaveEncashmentEnabled.addEventListener('change', () => {
+      leaveEncashmentDays.disabled = globalLeaveEncashment || !leaveEncashmentEnabled.checked;
+      if (!globalLeaveEncashment && leaveEncashmentEnabled.checked) {
+        leaveEncashmentDays.focus();
+      }
+    });
+  }
+</script>
+{% endblock %}

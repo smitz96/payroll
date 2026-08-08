@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Loans</h1>
+    <p class="text-muted mb-0">Create and manage interest-free employee loan deductions used during payroll calculation.</p>
+  </div>
+  <button class="btn btn-primary" type="button" id="openLoanDrawer">Add Loan</button>
+</div>
+
+<dialog class="drawer-dialog" id="loanDrawer">
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="create">
+  <div class="drawer-header">
+    <h2 class="section-title mb-0">Add Loan</h2>
+    <button class="dialog-close" type="button" id="closeLoanDrawer">x</button>
+  </div>
+  <div class="drawer-body">
+  <div class="row g-2">
+    <div class="col-md-12">
+      <label class="form-label">Employee</label>
+      <select class="form-select" name="employee_id" required>
+        <option value="">Select Employee</option>
+        {% for employee in employees %}
+        <option value="{{ employee.id }}">{{ employee.id }} - {{ employee.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Loan Start Date</label>
+      <input class="form-control" type="date" name="start_date" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Loan Amount</label>
+      <input class="form-control" name="amount" inputmode="decimal" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Planned Tenure</label>
+      <input class="form-control" name="tenure_months" inputmode="numeric" placeholder="Months" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Monthly Deduction</label>
+      <input class="form-control" name="monthly_deduction" inputmode="decimal" required>
+    </div>
+    <div class="col-md-12">
+      <label class="form-label">Notes</label>
+      <input class="form-control" name="notes" placeholder="Optional">
+    </div>
+  </div>
+  </div>
+  <div class="drawer-footer">
+    <button class="btn btn-outline-secondary" type="button" id="cancelLoanDrawer">Close</button>
+    <button class="btn btn-primary">Save Loan</button>
+  </div>
+</form>
+</dialog>
+
+<div class="module-card mb-4">
+  <div class="module-card-header">
+    <h2 class="module-card-title">Current Loans In Progress <span class="text-muted">{{ in_progress_rows|length }}</span></h2>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm smart-table">
+      <thead><tr><th>Sr.</th><th>Loan</th><th>Employee</th><th>Start Date</th><th>Current Installment</th><th>Pending Loan Amount</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        {% for row in in_progress_rows %}
+        {% set loan = row.loan %}
+        {% set employee = employee_map.get(loan.employee_id) %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td><a href="{{ url_for('loans.detail', loan_id=loan.id, month=month) }}">Loan #{{ loan.id }}</a></td>
+          <td>{{ loan.employee_id }} - {{ employee.name if employee else "Unknown" }}</td>
+          <td>{{ loan.start_date }}</td>
+          <td>{{ row.installment }}</td>
+          <td><strong>{{ row.pending }}</strong></td>
+          <td><span class="badge text-bg-success">In Progress</span></td>
+          <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('reports.loan_pdf', loan_id=loan.id, month=month) }}" target="_blank" rel="noopener">PDF</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-muted">No current loan in progress.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="module-card">
+<div class="module-card-header">
+  <h2 class="module-card-title">Loan Register <span class="text-muted">{{ loan_rows|length }}</span></h2>
+</div>
+<div class="table-responsive">
+<table class="table table-sm smart-table">
+  <thead><tr><th>Sr.</th><th>Loan</th><th>Employee</th><th>Start Date</th><th>Loan Amount</th><th>Pending</th><th>This Month</th><th>Status</th><th>Action</th></tr></thead>
+  <tbody>
+    {% for row in loan_rows %}
+    {% set loan = row.loan %}
+    {% set employee = employee_map.get(loan.employee_id) %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td><a href="{{ url_for('loans.detail', loan_id=loan.id, month=month) }}">Loan #{{ loan.id }}</a></td>
+      <td>{{ loan.employee_id }} - {{ employee.name if employee else "Unknown" }}</td>
+      <td>{{ loan.start_date }}</td>
+      <td>{{ loan.amount }}</td>
+      <td>{{ row.pending }}</td>
+      <td>{{ row.installment }}</td>
+      <td><span class="badge {{ 'text-bg-success' if row.is_in_progress else ('text-bg-warning' if loan.is_active else 'text-bg-secondary') }}">{{ 'In Progress' if row.is_in_progress else ('Active' if loan.is_active else 'Inactive') }}</span></td>
+      <td>
+        <div class="d-flex gap-2">
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('loans.detail', loan_id=loan.id, month=month) }}">View</a>
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('reports.loan_pdf', loan_id=loan.id, month=month) }}" target="_blank" rel="noopener">PDF</a>
+        {% if loan.is_active %}
+        <form method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="action" value="deactivate">
+          <input type="hidden" name="loan_id" value="{{ loan.id }}">
+          <button class="btn btn-sm btn-outline-danger">Deactivate</button>
+        </form>
+        {% endif %}
+        <button class="btn btn-sm btn-outline-danger delete-loan-button" type="button" data-loan-id="{{ loan.id }}" data-loan-label="Loan #{{ loan.id }} - {{ employee.name if employee else loan.employee_id }}">Delete</button>
+        </div>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="text-muted">No loans found.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+</div>
+<dialog class="confirm-dialog" id="deleteLoanDialog">
+  <form method="post" id="deleteLoanForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="delete">
+    <input type="hidden" name="loan_id" id="deleteLoanId">
+    <div class="dialog-header">
+      <div>
+        <h2 class="section-title mb-1">Delete Loan</h2>
+        <p class="text-muted mb-0" id="deleteLoanLabel"></p>
+      </div>
+      <button class="dialog-close" type="button" id="closeDeleteLoan">x</button>
+    </div>
+    <p class="text-muted">This will permanently delete the selected loan. Payroll calculations using this loan should be recalculated after deletion.</p>
+    <label class="form-label" for="deleteLoanConfirmationInput">Type permanently delete to confirm</label>
+    <input class="form-control mb-3" id="deleteLoanConfirmationInput" name="delete_confirmation" autocomplete="off" spellcheck="false">
+    <div class="d-flex justify-content-end gap-2">
+      <button class="btn btn-outline-secondary" type="button" id="cancelDeleteLoan">Cancel</button>
+      <button class="btn btn-outline-danger" id="confirmDeleteLoan" disabled>Permanently Delete</button>
+    </div>
+  </form>
+</dialog>
+<script>
+  const deleteLoanDialog = document.getElementById('deleteLoanDialog');
+  const deleteLoanButtons = document.querySelectorAll('.delete-loan-button');
+  const deleteLoanInput = document.getElementById('deleteLoanConfirmationInput');
+  const deleteLoanId = document.getElementById('deleteLoanId');
+  const deleteLoanLabel = document.getElementById('deleteLoanLabel');
+  const confirmDeleteLoan = document.getElementById('confirmDeleteLoan');
+  const requiredDeleteLoanText = 'permanently delete';
+
+  function refreshDeleteLoanState() {
+    confirmDeleteLoan.disabled = deleteLoanInput.value.trim().toLowerCase() !== requiredDeleteLoanText;
+  }
+
+  deleteLoanButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      deleteLoanInput.value = '';
+      deleteLoanId.value = button.dataset.loanId;
+      deleteLoanLabel.textContent = button.dataset.loanLabel;
+      refreshDeleteLoanState();
+      deleteLoanDialog.showModal();
+      deleteLoanInput.focus();
+    });
+  });
+  document.getElementById('closeDeleteLoan').addEventListener('click', () => deleteLoanDialog.close());
+  document.getElementById('cancelDeleteLoan').addEventListener('click', () => deleteLoanDialog.close());
+  deleteLoanInput.addEventListener('paste', event => event.preventDefault());
+  deleteLoanInput.addEventListener('drop', event => event.preventDefault());
+  deleteLoanInput.addEventListener('input', refreshDeleteLoanState);
+  const loanDrawer = document.getElementById('loanDrawer');
+  document.getElementById('openLoanDrawer').addEventListener('click', () => loanDrawer.showModal());
+  document.getElementById('closeLoanDrawer').addEventListener('click', () => loanDrawer.close());
+  document.getElementById('cancelLoanDrawer').addEventListener('click', () => loanDrawer.close());
+</script>
+{% endblock %}

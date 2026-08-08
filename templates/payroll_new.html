@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Payroll Month</h1>
+<form method="post" class="tool-panel">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label class="form-label">Select Payroll Month</label>
+  <input class="form-control" type="month" name="month" value="{{ default_month }}" required>
+  <button class="btn btn-primary mt-3">Continue</button>
+</form>
+{% endblock %}

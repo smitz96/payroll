@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Employees</h1>
+    <p class="text-muted mb-0">Maintain employee wage, salary, and payroll status.</p>
+  </div>
+</div>
+
+<div class="module-card">
+<div class="module-card-header">
+  <h2 class="module-card-title">Total Active Employees {{ employees|selectattr("employment_status", "equalto", "ACTIVE")|list|length }}</h2>
+  <div class="module-card-actions">
+    <button class="btn btn-outline-primary open-employee-drawer" type="button" data-dialog-id="addEmployeeDrawer">Add Employee</button>
+  </div>
+</div>
+<div class="table-responsive">
+  <table class="table table-sm smart-table">
+    <thead><tr><th>Employee ID</th><th>Name</th><th>Wage Type</th><th>Salary</th><th>OT</th><th>Less Hours</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for employee in employees %}
+      <tr>
+        <td>{{ employee.id }}</td>
+        <td class="employee-cell">
+          <button class="link-button open-employee-drawer" type="button" data-dialog-id="employeeDrawer{{ loop.index }}">
+            <strong>{{ employee.name }}</strong>
+          </button>
+        </td>
+        <td>{{ employee.salary_type or "Not Set" }}</td>
+        <td>{{ employee.salary or 0 }}</td>
+        <td>{{ "Enabled" if employee.ot_enabled else "Disabled" }}</td>
+        <td>{{ "Ignored" if employee.less_hours_exempt else "Deducted" }}</td>
+        <td><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></td>
+        <td>
+          {% if employee.employment_status == 'ACTIVE' %}
+          <button class="btn btn-sm btn-outline-danger disable-employee-button" type="button" data-employee-id="{{ employee.id }}" data-employee-label="{{ employee.id }} - {{ employee.name }}">Mark Left / Terminated</button>
+          {% else %}
+          <button class="btn btn-sm btn-outline-primary enable-employee-button" type="button" data-employee-id="{{ employee.id }}" data-employee-label="{{ employee.id }} - {{ employee.name }}">Enable</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="text-muted">No employee master records found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="table-footer">
+  <span class="pagination-status">Showing 1 - {{ employees|length }} of {{ employees|length }} Results</span>
+  <div class="d-flex gap-2"><span class="page-chip is-active">1</span></div>
+</div>
+</div>
+
+<dialog class="drawer-dialog" id="addEmployeeDrawer">
+  <form method="post" action="{{ url_for('master.index') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="save">
+    <div class="drawer-header">
+      <h2 class="section-title mb-0">Add Employee</h2>
+      <button class="dialog-close" type="button" data-close-dialog="addEmployeeDrawer">x</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>Basic Details</h3>
+        <label class="form-label">Employee ID</label>
+        <input class="form-control mb-3" name="employee_id" required>
+        <label class="form-label">Employee Name</label>
+        <input class="form-control mb-3" name="name" required>
+        <label class="form-label">Wage Type</label>
+        <select class="form-select mb-3" name="wage_type" required>
+          <option value="Monthly">Monthly</option>
+          <option value="Daily">Daily Wage</option>
+        </select>
+        <label class="form-label">Wage / Salary</label>
+        <input class="form-control mb-3" name="salary" inputmode="decimal" required>
+        <p class="text-muted mb-0">Once an active employee is set as Monthly or Daily Wage, wage type cannot be changed. Mark the employee as left or terminated first, then add the same employee under a new Employee ID with the updated wage group.</p>
+      </section>
+    </div>
+    <div class="drawer-footer">
+      <button class="btn btn-outline-secondary" type="button" data-close-dialog="addEmployeeDrawer">Close</button>
+      <button class="btn btn-primary">Add Employee</button>
+    </div>
+  </form>
+</dialog>
+
+{% for employee in employees %}
+<dialog class="drawer-dialog" id="employeeDrawer{{ loop.index }}">
+  <form method="post" action="{{ url_for('master.index') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="save">
+    <input type="hidden" name="employee_id" value="{{ employee.id }}">
+    <input type="hidden" name="master_controls_present" value="1">
+    <div class="drawer-header">
+      <h2 class="section-title mb-0">Edit Details {{ employee.name }}</h2>
+      <button class="dialog-close" type="button" data-close-dialog="employeeDrawer{{ loop.index }}">x</button>
+    </div>
+    <div class="drawer-body">
+      {% if employee.employment_status != 'ACTIVE' %}
+      <div class="alert alert-warning">This employee is {{ employee.employment_status|lower }} and cannot be edited from master.</div>
+      {% endif %}
+      <section class="drawer-section">
+        <h3>Basic Details</h3>
+        <label class="form-label">Employee ID</label>
+        <input class="form-control mb-3" value="{{ employee.id }}" readonly>
+        <label class="form-label">Employee Name</label>
+        <input class="form-control mb-3" name="name" value="{{ employee.name }}" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <label class="form-label">Wage Type</label>
+        <select class="form-select mb-3" name="wage_type" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+          <option value="Monthly" {% if employee.normalized_salary_type == 'MONTHLY' %}selected{% endif %}>Monthly</option>
+          <option value="Daily" {% if employee.normalized_salary_type == 'DAILY' %}selected{% endif %}>Daily Wage</option>
+        </select>
+        <label class="form-label">Wage / Salary</label>
+        <input class="form-control mb-3" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <div class="drawer-detail-grid mb-3">
+          <div><span>Status</span><strong>{{ employee.employment_status }}</strong></div>
+          <div><span>OT Eligible</span><strong>{{ "Enabled" if employee.ot_enabled else "Disabled" }}</strong></div>
+          <div><span>Less Hours</span><strong>{{ "Ignored" if employee.less_hours_exempt else "Deducted" }}</strong></div>
+        </div>
+        <label class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" name="ot_enabled" {% if employee.ot_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+          <span>OT Eligible</span>
+        </label>
+        <label class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" name="less_hours_exempt" {% if employee.less_hours_exempt %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+          <span>Ignore Less Hours Deduction</span>
+        </label>
+        <p class="text-muted mb-0">Wage type cannot be changed for an active employee once set. Mark the employee as left or terminated before adding a new Employee ID with another wage group.</p>
+      </section>
+    </div>
+    <div class="drawer-footer">
+      <a class="btn btn-outline-primary" href="{{ url_for('master.detail', employee_id=employee.id) }}">Open Full Page</a>
+      <button class="btn btn-outline-secondary" type="button" data-close-dialog="employeeDrawer{{ loop.index }}">Close</button>
+      {% if employee.employment_status == 'ACTIVE' %}
+      <button class="btn btn-primary">Save Details</button>
+      {% endif %}
+    </div>
+  </form>
+</dialog>
+{% endfor %}
+
+<dialog class="confirm-dialog" id="disableEmployeeDialog">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="disable">
+    <input type="hidden" name="employee_id" id="disableEmployeeId">
+    <div class="dialog-header">
+      <div>
+        <h2 class="section-title mb-1">Disable Employee</h2>
+        <p class="text-muted mb-0" id="disableEmployeeLabel"></p>
+      </div>
+      <button class="dialog-close" type="button" id="closeDisableEmployee">x</button>
+    </div>
+    <label class="form-label">Status</label>
+    <select class="form-select mb-3" name="employment_status" required>
+      <option value="LEFT">Left</option>
+      <option value="TERMINATED">Terminated</option>
+    </select>
+    <label class="form-label">Reason</label>
+    <input class="form-control mb-3" name="inactive_reason" placeholder="Optional">
+    <label class="form-label" for="disableConfirmationInput">Type confirm to continue</label>
+    <input class="form-control mb-3" id="disableConfirmationInput" name="disable_confirmation" autocomplete="off" spellcheck="false">
+    <div class="d-flex justify-content-end gap-2">
+      <button class="btn btn-outline-secondary" type="button" id="cancelDisableEmployee">Cancel</button>
+      <button class="btn btn-outline-danger" id="confirmDisableEmployee" disabled>Confirm Disable</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="confirm-dialog" id="enableEmployeeDialog">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="enable">
+    <input type="hidden" name="employee_id" id="enableEmployeeId">
+    <div class="dialog-header">
+      <div>
+        <h2 class="section-title mb-1">Enable Employee</h2>
+        <p class="text-muted mb-0" id="enableEmployeeLabel"></p>
+      </div>
+      <button class="dialog-close" type="button" id="closeEnableEmployee">x</button>
+    </div>
+    <p class="text-muted">This will mark the employee as active again and allow payroll master edits.</p>
+    <label class="form-label" for="enableConfirmationInput">Type confirm to continue</label>
+    <input class="form-control mb-3" id="enableConfirmationInput" name="enable_confirmation" autocomplete="off" spellcheck="false">
+    <div class="d-flex justify-content-end gap-2">
+      <button class="btn btn-outline-secondary" type="button" id="cancelEnableEmployee">Cancel</button>
+      <button class="btn btn-outline-primary" id="confirmEnableEmployee" disabled>Confirm Enable</button>
+    </div>
+  </form>
+</dialog>
+<script>
+  document.querySelectorAll('.open-employee-drawer').forEach(button => {
+    button.addEventListener('click', () => document.getElementById(button.dataset.dialogId).showModal());
+  });
+  document.querySelectorAll('[data-close-dialog]').forEach(button => {
+    button.addEventListener('click', () => document.getElementById(button.dataset.closeDialog).close());
+  });
+  const disableDialog = document.getElementById('disableEmployeeDialog');
+  const disableInput = document.getElementById('disableConfirmationInput');
+  const disableId = document.getElementById('disableEmployeeId');
+  const disableLabel = document.getElementById('disableEmployeeLabel');
+  const confirmDisable = document.getElementById('confirmDisableEmployee');
+  const enableDialog = document.getElementById('enableEmployeeDialog');
+  const enableInput = document.getElementById('enableConfirmationInput');
+  const enableId = document.getElementById('enableEmployeeId');
+  const enableLabel = document.getElementById('enableEmployeeLabel');
+  const confirmEnable = document.getElementById('confirmEnableEmployee');
+  function refreshDisableState() {
+    confirmDisable.disabled = disableInput.value.trim().toLowerCase() !== 'confirm';
+  }
+  function refreshEnableState() {
+    confirmEnable.disabled = enableInput.value.trim().toLowerCase() !== 'confirm';
+  }
+  document.querySelectorAll('.disable-employee-button').forEach(button => {
+    button.addEventListener('click', () => {
+      disableId.value = button.dataset.employeeId;
+      disableLabel.textContent = button.dataset.employeeLabel;
+      disableInput.value = '';
+      refreshDisableState();
+      disableDialog.showModal();
+      disableInput.focus();
+    });
+  });
+  document.querySelectorAll('.enable-employee-button').forEach(button => {
+    button.addEventListener('click', () => {
+      enableId.value = button.dataset.employeeId;
+      enableLabel.textContent = button.dataset.employeeLabel;
+      enableInput.value = '';
+      refreshEnableState();
+      enableDialog.showModal();
+      enableInput.focus();
+    });
+  });
+  document.getElementById('closeDisableEmployee').addEventListener('click', () => disableDialog.close());
+  document.getElementById('cancelDisableEmployee').addEventListener('click', () => disableDialog.close());
+  document.getElementById('closeEnableEmployee').addEventListener('click', () => enableDialog.close());
+  document.getElementById('cancelEnableEmployee').addEventListener('click', () => enableDialog.close());
+  disableInput.addEventListener('paste', event => event.preventDefault());
+  disableInput.addEventListener('drop', event => event.preventDefault());
+  disableInput.addEventListener('input', refreshDisableState);
+  enableInput.addEventListener('paste', event => event.preventDefault());
+  enableInput.addEventListener('drop', event => event.preventDefault());
+  enableInput.addEventListener('input', refreshEnableState);
+</script>
+{% endblock %}

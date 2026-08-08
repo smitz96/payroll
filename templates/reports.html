@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "icons.html" import icon %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Reports</h1>
+    <p class="text-muted mb-0">Open payroll reports as PDFs in a new tab.</p>
+  </div>
+  {% if month_options %}
+  <form method="get" class="month-switcher">
+    <select class="form-select form-select-sm" name="month" onchange="this.form.submit()">
+      {% for item in month_options %}
+      <option value="{{ item.value }}" {% if item.value == month %}selected{% endif %}>{{ item.label }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  {% endif %}
+</div>
+
+{% if month %}
+<section class="report-hero mb-4">
+  <div>
+    <span class="health-label">Selected Payroll Month</span>
+    <strong>{{ snapshot.month_label }}</strong>
+    <span class="badge text-bg-{{ 'warning' if snapshot.status == 'FINALIZED' else 'success' }}">{{ snapshot.status }}</span>
+  </div>
+  <div class="report-snapshot-grid">
+    <div><span>Salary Employees</span><strong>{{ snapshot.salary_count }}</strong></div>
+    <div><span>Attendance Rows</span><strong>{{ snapshot.attendance_count }}</strong></div>
+    <div><span>Processed</span><strong>{{ snapshot.processed_count }}</strong></div>
+    <div><span>Review Items</span><strong class="{{ 'text-danger' if snapshot.review_count else '' }}">{{ snapshot.review_count }}</strong></div>
+    <div><span>Total Payable</span><strong>{{ snapshot.total_payable }}</strong></div>
+    <div><span>Total Deductions</span><strong>{{ snapshot.total_deductions }}</strong></div>
+  </div>
+</section>
+
+<div class="module-card">
+  <div class="module-card-header">
+    <h2 class="module-card-title">Payroll PDF Reports</h2>
+    <div class="module-card-actions">
+      <a class="btn btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Open Payroll Month</a>
+    </div>
+  </div>
+  <div class="report-page-grid">
+    {% for card in cards %}
+    <a class="report-card report-card-large" href="{{ url_for(card.href, month=month) }}" target="_blank" rel="noopener">
+      <span class="report-icon">{{ icon(card.icon) }}</span>
+      <span>
+        <strong>{{ card.title }}</strong>
+        <span>{{ card.detail }}</span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+<div class="module-card">
+  <div class="empty-state">No payroll month is available yet. Create a payroll month before opening reports.</div>
+</div>
+{% endif %}
+{% endblock %}

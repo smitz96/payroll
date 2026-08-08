@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% from "icons.html" import icon %}
+{% block content %}
+{% set card_icons = {
+  "Salary Employees": "users",
+  "Attendance Rows": "attendance",
+  "Employees Processed": "processed",
+  "Total Base Salary": "salary",
+  "Total Payable Salary": "salary",
+  "Total Deductions": "deduction",
+  "Over Time Amount": "overtime",
+  "Review Items": "review",
+  "Less Hours": "less-hours",
+  "Average Payable": "average"
+} %}
+<div class="dashboard-shell">
+  <div class="dashboard-top">
+    <div>
+      <h1 class="page-title">Dashboard</h1>
+      <p class="text-muted mb-0">Payroll month {{ payroll_health.selected_label }} is {{ payroll_health.status|lower }}.</p>
+    </div>
+    <div class="dashboard-actions">
+      {% if months %}
+      <form method="get" class="month-switcher">
+        <select class="form-select form-select-sm" name="month" onchange="this.form.submit()">
+          {% for item in month_options %}
+          <option value="{{ item.value }}" {% if item.value == month %}selected{% endif %}>{{ item.label }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% endif %}
+      {% if month %}
+      <a class="btn btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Review Payroll</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <section class="dashboard-hero">
+    <div class="payroll-health">
+      <div>
+        <span class="health-label">Current Month</span>
+        <strong>{{ payroll_health.selected_label }}</strong>
+        <span class="badge text-bg-{{ 'warning' if payroll_health.is_finalized else 'success' }}">{{ 'Finalized / Locked' if payroll_health.is_finalized else 'Draft' }}</span>
+      </div>
+      <div class="health-progress">
+        <div class="health-progress-top">
+          <span>Processing Progress</span>
+          <strong>{{ payroll_health.completion }}%</strong>
+        </div>
+        <div class="progress-track"><div class="progress-bar" style="width: {{ payroll_health.completion }}%"></div></div>
+        <small class="text-muted">{{ cards[2].value }} of {{ payroll_health.expected_employee_count }} employees processed</small>
+      </div>
+      <div>
+        <span class="health-label">Needs Attention</span>
+        <strong class="{{ 'text-danger' if payroll_health.review_count else '' }}">{{ payroll_health.review_count }}</strong>
+      </div>
+    </div>
+
+    <div class="dashboard-kpis">
+      {% for card in cards[:6] %}
+      <div class="metric metric-compact">
+        <span class="kpi-icon">{{ icon(card_icons.get(card.label, "processed")) }}</span>
+        <span>{{ card.label }}</span>
+        <strong>{{ card.value }}</strong>
+        <small>{{ card.detail }}</small>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="dashboard-grid dashboard-grid-ops">
+    <section class="tool-panel dashboard-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Payroll Checklist</h2>
+        {% if month %}<a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Open Month</a>{% endif %}
+      </div>
+      <div class="checklist">
+        {% for step in payroll_steps %}
+        {% if step.target == 'weekoffs' %}
+          {% set href = url_for('weekoffs.index') %}
+        {% elif step.target == 'errors' and month %}
+          {% set href = url_for('reports.errors_pdf', month=month) %}
+        {% elif month %}
+          {% set href = url_for('payroll.month', month=month) %}
+        {% else %}
+          {% set href = url_for('payroll.new') %}
+        {% endif %}
+        <a class="check-item {{ 'check-done' if step.done else 'check-pending' }}" href="{{ href }}">
+          <span class="check-dot">{{ 'Done' if step.done else 'Open' }}</span>
+          <strong>{{ step.label }}</strong>
+          <small>{{ step.detail }}</small>
+        </a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="tool-panel dashboard-panel compact-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Calculation Status</h2>
+      </div>
+      {% if status_counts %}
+      <div class="status-breakdown">
+        {% for label, count in status_counts.items() %}
+        <div class="status-breakdown-row">
+          <span>{{ label }}</span>
+          <strong>{{ count }}</strong>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">No calculation status yet.</div>
+      {% endif %}
+    </section>
+  </div>
+
+  <div class="dashboard-grid dashboard-grid-ops">
+    <section class="tool-panel dashboard-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Review Queue</h2>
+        {% if month %}<a class="btn btn-sm btn-outline-primary" href="{{ url_for('reports.errors_pdf', month=month) }}" target="_blank" rel="noopener">Error PDF</a>{% endif %}
+      </div>
+      {% if review_items %}
+      <div class="review-list">
+        {% for item in review_items %}
+        <div class="review-item review-{{ item.tone }}">
+          <strong>{{ item.label }}</strong>
+          <span>{{ item.detail }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">No review items for the current payroll month.</div>
+      {% endif %}
+    </section>
+
+    <section class="tool-panel dashboard-panel" id="reports">
+      <div class="panel-title-row">
+        <h2 class="section-title">Reports & Quick Actions</h2>
+      </div>
+        <div class="report-card-grid">
+        {% if month %}
+        <a class="report-card" href="{{ url_for('payroll.month', month=month) }}"><span class="report-icon">{{ icon("payroll") }}</span><span><strong>Monthly Payroll</strong><span>Upload, calculate, finalize</span></span></a>
+        <a class="report-card" href="{{ url_for('reports.final_report_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("pdf") }}</span><span><strong>Salary Report</strong><span>Open final salary PDF</span></span></a>
+        <a class="report-card" href="{{ url_for('reports.overtime_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("overtime") }}</span><span><strong>Overtime Report</strong><span>Employees with paid OT</span></span></a>
+        <a class="report-card" href="{{ url_for('reports.less_hours_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("less-hours") }}</span><span><strong>Less Hours Report</strong><span>Short working-hour deductions</span></span></a>
+        {% endif %}
+        <a class="report-card" href="{{ url_for('leave_balances.index') }}"><span class="report-icon">{{ icon("leaf") }}</span><span><strong>Leave Balance</strong><span>Carry-forward report</span></span></a>
+        <a class="report-card" href="{{ url_for('logs.index') }}"><span class="report-icon">{{ icon("logs") }}</span><span><strong>Activity Logs</strong><span>Audit trail and filters</span></span></a>
+      </div>
+    </section>
+  </div>
+
+  <div class="dashboard-grid dashboard-grid-wide dashboard-secondary">
+    <section class="tool-panel dashboard-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Recent Payroll Months</h2>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm smart-table">
+          <thead><tr><th>Month</th><th>Status</th><th>Salary</th><th>Attendance</th><th>Processed</th><th>Review</th><th>Payable</th><th></th></tr></thead>
+          <tbody>
+            {% for row in month_rows %}
+            <tr>
+              <td>{{ row.display_month }}</td>
+              <td><span class="badge text-bg-{{ 'warning' if row.month.status == 'FINALIZED' else 'success' }}">{{ row.month.status }}</span></td>
+              <td>{{ row.salary_count }}</td>
+              <td>{{ row.attendance_count }}</td>
+              <td>{{ row.processed_count }}</td>
+              <td>{{ row.review_count }}</td>
+              <td>{{ row.total_payable }}</td>
+              <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.month', month=row.month.month) }}">Open</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="text-muted">No payroll months created yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tool-panel dashboard-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Top Payable Employees</h2>
+      </div>
+      {% if top_payables %}
+      <div class="table-responsive mb-4 top-payable-table-wrap">
+        <table class="table table-sm smart-table top-payable-table">
+          <thead><tr><th>Employee ID</th><th>Name</th><th>Payable</th><th>Paid Days</th><th>Deduction</th></tr></thead>
+          <tbody>
+            {% for row in top_payables %}
+            <tr>
+              <td>{{ row.employee_id }}</td>
+              <td>{{ row.name }}</td>
+              <td><strong>{{ row.final_salary }}</strong></td>
+              <td>{{ row.paid_days }}</td>
+              <td>{{ row.deduction }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state mb-4">No payable salary data yet.</div>
+      {% endif %}
+
+      <div class="panel-title-row">
+        <h2 class="section-title">Recent Logs</h2>
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('logs.index') }}">View All</a>
+      </div>
+      <div class="log-list">
+        {% for log in recent_logs %}
+        <div class="log-item">
+          <strong>{{ log.action }}</strong>
+          <span>{{ log.actor or "system" }} · {{ log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else "" }}</span>
+          <small>{{ log.detail or "" }}</small>
+        </div>
+        {% else %}
+        <div class="empty-state">No logs yet.</div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

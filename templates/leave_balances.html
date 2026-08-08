@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Leave Balance</h1>
+    <p class="text-muted mb-0">Leave Balance Management report with opening, earned, used, encashed, and carry-forward values.</p>
+  </div>
+</div>
+
+<div class="summary-grid mb-4">
+  {% for label, value in summary.items() %}
+  <div class="metric">
+    <span>{{ label }}</span>
+    <strong>{{ value }}</strong>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="module-card mb-4">
+  <div class="module-card-header">
+    <h2 class="module-card-title">Leave Balance Report <span class="text-muted">{{ rows|length }}</span></h2>
+  </div>
+  <div class="table-responsive leave-table-wrap">
+    <table class="table table-sm smart-table leave-balance-table">
+      <thead>
+        <tr>
+          <th>
+            <a class="sort-link" href="{{ url_for('leave_balances.index', employee_id=filters.employee_id, employee_name=filters.employee_name, department=filters.department, wage_type=filters.wage_type, sort='id', order='desc' if filters.sort == 'id' and filters.order == 'asc' else 'asc') }}">Employee ID{% if filters.sort == 'id' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if filters.order == 'asc' else 'Descending' }}">{{ '↑' if filters.order == 'asc' else '↓' }}</span>{% endif %}</a>
+          </th>
+          <th>
+            <a class="sort-link" href="{{ url_for('leave_balances.index', employee_id=filters.employee_id, employee_name=filters.employee_name, department=filters.department, wage_type=filters.wage_type, sort='name', order='desc' if filters.sort == 'name' and filters.order == 'asc' else 'asc') }}">Employee Name{% if filters.sort == 'name' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if filters.order == 'asc' else 'Descending' }}">{{ '↑' if filters.order == 'asc' else '↓' }}</span>{% endif %}</a>
+          </th>
+          <th>Wage Type</th>
+          <th>Status</th>
+          <th>Last Payroll Month</th>
+          <th>Opening Balance</th>
+          <th>Earned</th>
+          <th>Used</th>
+          <th>Encashed</th>
+          <th>Current Leave Balance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        {% set employee = row.employee %}
+        <tr>
+          <td>{{ employee.id }}</td>
+          <td class="employee-cell">
+            <button class="link-button open-leave-drawer" type="button" data-dialog-id="leaveDrawer{{ loop.index }}">
+              <strong>{{ employee.name }}</strong>
+            </button>
+          </td>
+          <td>{{ row.salary_type or "N/A" }}</td>
+          <td><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></td>
+          <td>{{ row.last_payroll_month or "N/A" }}</td>
+          <td>{{ row.opening_leave }}</td>
+          <td>{{ row.leave_earned }}</td>
+          <td>{{ row.leave_used }}</td>
+          <td>{{ row.leave_encashed }}</td>
+          <td><strong>{{ row.current_balance }}</strong></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="text-muted">No leave balance rows found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="table-footer">
+    <span class="pagination-status">Showing 1 - {{ rows|length }} of {{ rows|length }} Results</span>
+    <div class="d-flex gap-2"><span class="page-chip is-active">1</span></div>
+  </div>
+</div>
+
+{% for row in rows %}
+{% set employee = row.employee %}
+<dialog class="drawer-dialog" id="leaveDrawer{{ loop.index }}">
+  <form method="post" action="{{ url_for('leave_balances.update') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="employee_id" value="{{ employee.id }}">
+    <input type="hidden" name="current_balance_{{ employee.id }}" value="{{ row.current_balance }}">
+    <div class="drawer-header">
+      <h2 class="section-title mb-0">Edit Leave Balance {{ employee.name }}</h2>
+      <button class="dialog-close" type="button" data-close-dialog="leaveDrawer{{ loop.index }}">x</button>
+    </div>
+    <div class="drawer-body">
+      <section class="drawer-section">
+        <h3>Leave Details</h3>
+        <div class="drawer-detail-grid mb-3">
+          <div><span>Employee ID</span><strong>{{ employee.id }}</strong></div>
+          <div><span>Employee Name</span><strong>{{ employee.name }}</strong></div>
+          <div><span>Wage Type</span><strong>{{ row.salary_type or "N/A" }}</strong></div>
+          <div><span>Last Payroll Month</span><strong>{{ row.last_payroll_month or "N/A" }}</strong></div>
+          <div><span>Opening Balance</span><strong>{{ row.opening_leave }}</strong></div>
+          <div><span>Earned</span><strong>{{ row.leave_earned }}</strong></div>
+          <div><span>Used</span><strong>{{ row.leave_used }}</strong></div>
+          <div><span>Encashed</span><strong>{{ row.leave_encashed }}</strong></div>
+        </div>
+        <label class="form-label">Current Leave Balance</label>
+        <input class="form-control mb-3" value="{{ row.current_balance }}" readonly>
+        <label class="form-label">New Leave Balance</label>
+        <input class="form-control mb-3" name="new_balance_{{ employee.id }}" value="{{ row.current_balance }}" inputmode="decimal">
+        <label class="form-label">Reason / Note</label>
+        <input class="form-control mb-3" name="reason_{{ employee.id }}" placeholder="Required if changed">
+        <label class="form-label">Password</label>
+        <input class="form-control mb-3" name="password" type="password" autocomplete="current-password">
+        <a class="btn btn-outline-primary" href="{{ url_for('leave_balances.history', employee_id=employee.id) }}">View Full History</a>
+      </section>
+    </div>
+    <div class="drawer-footer">
+      <button class="btn btn-outline-secondary" type="button" data-close-dialog="leaveDrawer{{ loop.index }}">Close</button>
+      <button class="btn btn-primary">Save Details</button>
+    </div>
+  </form>
+</dialog>
+{% endfor %}
+
+<div class="module-card">
+  <div class="module-card-header">
+    <h2 class="module-card-title">Leave Balance Log Report <span class="text-muted">{{ leave_logs|length }}</span></h2>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm smart-table">
+      <thead><tr><th>Sr.</th><th>Date</th><th>Employee</th><th>Adjustment</th><th>Description</th></tr></thead>
+      <tbody>
+        {% for log in leave_logs %}
+        {% set employee = employee_map.get(log.employee_id) %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else log.date }}</td>
+          <td class="employee-cell"><strong>{{ employee.name if employee else log.employee_id }}</strong><span>{{ log.employee_id }}</span></td>
+          <td><strong>{{ "%+0.1f"|format(log.amount) }}</strong></td>
+          <td>{{ log.description }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-muted">No manual leave balance adjustments found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.open-leave-drawer').forEach(button => {
+    button.addEventListener('click', () => document.getElementById(button.dataset.dialogId).showModal());
+  });
+  document.querySelectorAll('[data-close-dialog]').forEach(button => {
+    button.addEventListener('click', () => document.getElementById(button.dataset.closeDialog).close());
+  });
+</script>
+{% endblock %}

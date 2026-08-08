@@ -1,0 +1,437 @@
+{% extends "base.html" %}
+{% from "icons.html" import icon %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-3">
+  <div>
+    <h1 class="page-title">Attendance Manager</h1>
+    <p class="text-muted mb-0">{{ month_label }} attendance review before payroll calculation.</p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Back to Payroll</a>
+  </div>
+</div>
+
+{% if is_finalized %}
+<div class="alert alert-warning">Payroll is finalized and locked. Unlock payroll before changing attendance.</div>
+{% endif %}
+
+<div class="summary-grid mb-4">
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("attendance") }}</span><span>Employees</span><strong>{{ employee_rows|length }}</strong><small>Imported attendance employees</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("processed") }}</span><span>Dates</span><strong>{{ dates|length }}</strong><small>Payroll attendance days</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("review") }}</span><span>Odd Punch Days</span><strong>{{ odd_count }}</strong><small>Marked with warning icon</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("salary") }}</span><span>Submission</span><strong>{{ "Submitted" if payroll_month.attendance_submitted else "Pending" }}</strong><small>{{ "Payroll can be calculated" if payroll_month.attendance_submitted else "Submit to calculate payroll" }}</small></div>
+</div>
+
+<form method="post" enctype="multipart/form-data" class="tool-panel mb-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="import_attendance">
+  <div class="d-flex justify-content-between align-items-end gap-3 flex-wrap">
+    <div class="flex-grow-1">
+      <label class="form-label">Attendance CSV / XLSX</label>
+      <input class="form-control" type="file" name="attendance_csv" accept=".csv,.xlsx" required {% if is_finalized %}disabled{% endif %}>
+      <div class="status-detail mt-2">
+        {% if employee_rows %}
+        Re-import clears existing attendance review changes and fetches the newly uploaded file.
+        {% else %}
+        Import attendance first, then review punches and submit to calculate payroll.
+        {% endif %}
+      </div>
+    </div>
+    <button class="btn btn-primary" {% if is_finalized %}disabled{% endif %}>{{ "Re-import Attendance" if employee_rows else "Import Attendance" }}</button>
+  </div>
+</form>
+
+<form method="post" id="attendanceManagerForm" class="module-card attendance-manager-card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" id="attendanceAction" value="save">
+  <div class="module-card-header">
+    <div class="attendance-title-actions">
+      <h2 class="module-card-title">Daily Punch Report <span class="text-muted">{{ employee_rows|length }}</span></h2>
+      <div class="attendance-filter" id="employeeFilter">
+        <button class="btn btn-outline-secondary btn-sm" type="button" id="openEmployeeFilter">Filter Employees <span id="employeeFilterButtonCount">All</span></button>
+        <div class="attendance-filter-menu" id="employeeFilterMenu" hidden>
+          <div class="attendance-filter-search">
+            <input class="form-control" id="employeeFilterSearch" type="search" placeholder="Search by employee name or ID" autocomplete="off">
+            <select class="form-select" id="employeeFilterMode">
+              <option value="all">All</option>
+              <option value="odd">Odd Punch</option>
+            </select>
+          </div>
+          <label class="attendance-filter-option attendance-filter-select-all">
+            <input class="form-check-input" type="checkbox" id="employeeFilterSelectAll">
+            <span>Select All</span>
+          </label>
+          <div class="attendance-filter-list" id="employeeFilterList">
+            {% for employee in employee_rows %}
+            <label class="attendance-filter-option" data-filter-option data-search="{{ (employee.name ~ ' ' ~ employee.employee_id)|lower }}" data-has-odd="{{ '1' if employee.has_odd else '0' }}">
+              <input class="form-check-input employee-filter-choice" type="checkbox" value="{{ employee.employee_id }}" checked>
+              <span><strong>{{ employee.name }}</strong><small>{{ employee.employee_id }}</small></span>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="attendance-filter-count"><span id="employeeFilterSelectedCount">{{ employee_rows|length }} result selected</span></div>
+          <div class="attendance-filter-footer">
+            <button class="btn btn-link" type="button" id="employeeFilterClear">Clear All</button>
+            <div class="d-flex gap-2">
+              <button class="btn btn-outline-secondary btn-sm" type="button" id="employeeFilterCancel">Cancel</button>
+              <button class="btn btn-primary btn-sm" type="button" id="employeeFilterApply">Apply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="module-card-actions">
+      <button class="btn btn-outline-primary" type="submit" data-attendance-action="save" {% if is_finalized %}disabled{% endif %}>Save Draft</button>
+      <button class="btn btn-primary" type="submit" data-attendance-action="submit" {% if is_finalized %}disabled{% endif %}>Submit & Calculate Payroll</button>
+    </div>
+  </div>
+  <div class="attendance-manager-wrap">
+    <table class="table smart-table attendance-manager-table">
+      <thead>
+        <tr>
+          <th class="sticky-col employee-id-col">
+            <a class="sort-link" href="{{ url_for('attendance_manager.month', month=month, sort='id', order='desc' if sort == 'id' and order == 'asc' else 'asc') }}">Employee ID{% if sort == 'id' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if order == 'asc' else 'Descending' }}">{{ '↑' if order == 'asc' else '↓' }}</span>{% endif %}</a>
+          </th>
+          <th class="sticky-col employee-name-col">
+            <a class="sort-link" href="{{ url_for('attendance_manager.month', month=month, sort='name', order='desc' if sort == 'name' and order == 'asc' else 'asc') }}">Name{% if sort == 'name' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if order == 'asc' else 'Descending' }}">{{ '↑' if order == 'asc' else '↓' }}</span>{% endif %}</a>
+          </th>
+          {% for day in dates %}
+          <th>{{ day.strftime("%d-%m-%Y") }}<span class="attendance-day-label">{{ day.strftime("%A") }}</span></th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for employee in employee_rows %}
+        <tr class="attendance-row" data-employee-id="{{ employee.employee_id }}" data-employee-name="{{ employee.name|lower }}" data-has-odd="{{ '1' if employee.has_odd else '0' }}">
+          <td class="sticky-col employee-id-col">{{ employee.employee_id }}</td>
+          <td class="sticky-col employee-name-col employee-cell"><strong>{{ employee.name }}</strong></td>
+          {% for day in dates %}
+          {% set cell = employee.cells.get(day) %}
+          <td class="attendance-punch-cell {% if cell and cell.odd %}odd-punch-cell{% endif %}">
+            {% if cell %}
+            <input type="hidden" name="punches_{{ cell.record.id }}" id="punches_{{ cell.record.id }}" value="{{ cell.punch_text }}">
+            <button
+              type="button"
+              class="punch-cell-button"
+              data-record-id="{{ cell.record.id }}"
+              data-employee="{{ employee.employee_id }} - {{ employee.name }}"
+              data-date="{{ day.strftime('%d %b %Y') }}"
+              data-day="{{ day.strftime('%A') }}"
+              data-punches="{{ cell.punch_text|e }}"
+              data-warning="{{ cell.warning|e }}"
+              {% if is_finalized %}disabled{% endif %}
+            >
+              <span class="punch-lines" id="punch_display_{{ cell.record.id }}">
+                {% if cell.punches %}
+                  {% for punch in cell.punches %}<span>{{ punch }}</span>{% endfor %}
+                {% else %}
+                  <span>-</span>
+                {% endif %}
+              </span>
+              <span class="odd-punch-warning {% if not cell.odd %}d-none{% endif %}" id="punch_warning_{{ cell.record.id }}" title="Odd punch count">!</span>
+            </button>
+            {% else %}
+            <span class="text-muted">-</span>
+            {% endif %}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="table-footer">
+    <span class="pagination-status" id="attendanceVisibleStatus">Showing 1 - {{ employee_rows|length }} of {{ employee_rows|length }} Results</span>
+    <div class="attendance-pagination">
+      <select class="form-select form-select-sm" id="attendanceRowsPerPage" aria-label="Rows per page">
+        <option value="10">10 / Page</option>
+        <option value="25">25 / Page</option>
+        <option value="50">50 / Page</option>
+        <option value="all">All</option>
+      </select>
+      <button class="btn btn-outline-secondary btn-sm" type="button" id="attendancePrevPage">Previous</button>
+      <div class="attendance-page-list" id="attendancePageList"></div>
+      <button class="btn btn-outline-secondary btn-sm" type="button" id="attendanceNextPage">Next</button>
+    </div>
+  </div>
+</form>
+
+<dialog class="attendance-log-dialog" id="attendanceLogDialog">
+  <div class="attendance-log-shell">
+    <div class="attendance-log-header">
+      <div>
+        <h2>Attendance Log</h2>
+        <p id="attendanceLogEmployee">Employee</p>
+      </div>
+      <button type="button" class="dialog-close" id="closeAttendanceLog">x</button>
+    </div>
+    <div class="attendance-log-body">
+      <div class="attendance-log-date">
+        <span id="attendanceLogDate">Date</span>
+        <strong id="attendanceLogDay">Day</strong>
+      </div>
+      <div class="attendance-log-editor">
+        <label class="form-label">Punches</label>
+        <textarea class="form-control" id="attendancePunchTextarea" rows="8" placeholder="09:36 AM&#10;01:15 PM&#10;03:30 PM&#10;06:31 PM"></textarea>
+        <div class="status-detail mt-2">Enter one punch per line. Pairs are treated as In/Out sessions.</div>
+        <div class="break-summary" id="attendanceBreakSummary"></div>
+        <div class="alert alert-warning mt-3 d-none" id="attendanceOddWarning">Odd punch count. Add the missing In/Out punch before submitting.</div>
+      </div>
+    </div>
+    <div class="attendance-log-footer">
+      <button type="button" class="btn btn-outline-secondary" id="deletePunches">Clear Punches</button>
+      <div class="d-flex gap-2">
+        <button type="button" class="btn btn-outline-secondary" id="cancelAttendanceLog">Cancel</button>
+        <button type="button" class="btn btn-primary" id="applyAttendanceLog">Apply</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<script>
+  const attendanceForm = document.getElementById('attendanceManagerForm');
+  const attendanceAction = document.getElementById('attendanceAction');
+  document.querySelectorAll('[data-attendance-action]').forEach(button => {
+    button.addEventListener('click', () => {
+      attendanceAction.value = button.dataset.attendanceAction;
+    });
+  });
+
+  const dialog = document.getElementById('attendanceLogDialog');
+  const employeeLabel = document.getElementById('attendanceLogEmployee');
+  const dateLabel = document.getElementById('attendanceLogDate');
+  const dayLabel = document.getElementById('attendanceLogDay');
+  const textarea = document.getElementById('attendancePunchTextarea');
+  const oddWarning = document.getElementById('attendanceOddWarning');
+  const breakSummary = document.getElementById('attendanceBreakSummary');
+  let activeRecordId = null;
+
+  function parsePunches(value) {
+    return (value.match(/\b\d{1,2}:\d{2}\s*(?:AM|PM)\b/gi) || []).map(item => item.toUpperCase().replace(/\s+/g, ' '));
+  }
+
+  function minutesFromPunch(punch) {
+    const match = punch.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+    if (!match) return null;
+    let hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const meridian = match[3].toUpperCase();
+    if (meridian === 'PM' && hour !== 12) hour += 12;
+    if (meridian === 'AM' && hour === 12) hour = 0;
+    return hour * 60 + minute;
+  }
+
+  function durationLabel(minutes) {
+    if (minutes === null || Number.isNaN(minutes)) return '-';
+    return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+  }
+
+  function refreshPunchSummary() {
+    const punches = parsePunches(textarea.value);
+    oddWarning.classList.toggle('d-none', punches.length % 2 === 0);
+    let total = 0;
+    let breakMinutes = 0;
+    for (let index = 0; index + 1 < punches.length; index += 2) {
+      let start = minutesFromPunch(punches[index]);
+      let end = minutesFromPunch(punches[index + 1]);
+      if (start === null || end === null) continue;
+      if (end < start) end += 24 * 60;
+      total += end - start;
+      if (index + 2 < punches.length) {
+        const nextIn = minutesFromPunch(punches[index + 2]);
+        if (nextIn !== null) breakMinutes += Math.max(0, nextIn - end);
+      }
+    }
+    breakSummary.textContent = punches.length ? `Working Time: ${durationLabel(total)}${breakMinutes ? ` | Break Time: ${durationLabel(breakMinutes)}` : ''}` : 'No punches entered';
+  }
+
+  document.querySelectorAll('.punch-cell-button').forEach(button => {
+    button.addEventListener('click', () => {
+      activeRecordId = button.dataset.recordId;
+      employeeLabel.textContent = button.dataset.employee;
+      dateLabel.textContent = button.dataset.date;
+      dayLabel.textContent = button.dataset.day;
+      textarea.value = document.getElementById(`punches_${activeRecordId}`).value;
+      refreshPunchSummary();
+      dialog.showModal();
+      textarea.focus();
+    });
+  });
+
+  textarea.addEventListener('input', refreshPunchSummary);
+  document.getElementById('closeAttendanceLog').addEventListener('click', () => dialog.close());
+  document.getElementById('cancelAttendanceLog').addEventListener('click', () => dialog.close());
+  document.getElementById('deletePunches').addEventListener('click', () => {
+    textarea.value = '';
+    refreshPunchSummary();
+  });
+  document.getElementById('applyAttendanceLog').addEventListener('click', () => {
+    if (!activeRecordId) return;
+    const punches = parsePunches(textarea.value);
+    const normalized = punches.join('\n');
+    document.getElementById(`punches_${activeRecordId}`).value = normalized;
+    const display = document.getElementById(`punch_display_${activeRecordId}`);
+    display.innerHTML = punches.length ? punches.map(punch => `<span>${punch}</span>`).join('') : '<span>-</span>';
+    document.getElementById(`punch_warning_${activeRecordId}`).classList.toggle('d-none', punches.length % 2 === 0);
+    dialog.close();
+  });
+
+  const employeeFilter = document.getElementById('employeeFilter');
+  const employeeFilterMenu = document.getElementById('employeeFilterMenu');
+  const openEmployeeFilter = document.getElementById('openEmployeeFilter');
+  const employeeFilterSearch = document.getElementById('employeeFilterSearch');
+  const employeeFilterMode = document.getElementById('employeeFilterMode');
+  const employeeFilterSelectAll = document.getElementById('employeeFilterSelectAll');
+  const employeeFilterChoices = Array.from(document.querySelectorAll('.employee-filter-choice'));
+  const employeeFilterOptions = Array.from(document.querySelectorAll('[data-filter-option]'));
+  const employeeFilterSelectedCount = document.getElementById('employeeFilterSelectedCount');
+  const employeeFilterButtonCount = document.getElementById('employeeFilterButtonCount');
+  const attendanceRows = Array.from(document.querySelectorAll('.attendance-row'));
+  const attendanceVisibleStatus = document.getElementById('attendanceVisibleStatus');
+  const attendanceRowsPerPage = document.getElementById('attendanceRowsPerPage');
+  const attendancePrevPage = document.getElementById('attendancePrevPage');
+  const attendanceNextPage = document.getElementById('attendanceNextPage');
+  const attendancePageList = document.getElementById('attendancePageList');
+  let appliedEmployeeIds = new Set(employeeFilterChoices.map(choice => choice.value));
+  let draftEmployeeIds = new Set(appliedEmployeeIds);
+  let appliedFilterMode = 'all';
+  let attendancePage = 1;
+
+  function visibleFilterOptions() {
+    return employeeFilterOptions.filter(option => !option.classList.contains('d-none'));
+  }
+
+  function refreshFilterList() {
+    const query = employeeFilterSearch.value.trim().toLowerCase();
+    const mode = employeeFilterMode.value;
+    employeeFilterOptions.forEach(option => {
+      const matchesSearch = !query || option.dataset.search.includes(query);
+      const matchesMode = mode !== 'odd' || option.dataset.hasOdd === '1';
+      option.classList.toggle('d-none', !(matchesSearch && matchesMode));
+      const checkbox = option.querySelector('.employee-filter-choice');
+      checkbox.checked = draftEmployeeIds.has(checkbox.value);
+    });
+    const visibleOptions = visibleFilterOptions();
+    const checkedVisible = visibleOptions.filter(option => draftEmployeeIds.has(option.querySelector('.employee-filter-choice').value));
+    employeeFilterSelectAll.checked = visibleOptions.length > 0 && checkedVisible.length === visibleOptions.length;
+    employeeFilterSelectAll.indeterminate = checkedVisible.length > 0 && checkedVisible.length < visibleOptions.length;
+    const selectedCount = draftEmployeeIds.size;
+    employeeFilterSelectedCount.textContent = `${selectedCount} result${selectedCount === 1 ? '' : 's'} selected`;
+  }
+
+  function refreshAttendanceRows() {
+    const matchingRows = [];
+    attendanceRows.forEach(row => {
+      const showEmployee = appliedEmployeeIds.has(row.dataset.employeeId);
+      const showMode = appliedFilterMode !== 'odd' || row.dataset.hasOdd === '1';
+      if (showEmployee && showMode) matchingRows.push(row);
+    });
+    const perPageValue = attendanceRowsPerPage.value;
+    const rowsPerPage = perPageValue === 'all' ? Math.max(matchingRows.length, 1) : Number(perPageValue);
+    const totalPages = Math.max(1, Math.ceil(matchingRows.length / rowsPerPage));
+    attendancePage = Math.min(Math.max(attendancePage, 1), totalPages);
+    const startIndex = (attendancePage - 1) * rowsPerPage;
+    const endIndex = Math.min(startIndex + rowsPerPage, matchingRows.length);
+    const pageRows = new Set(matchingRows.slice(startIndex, endIndex));
+    attendanceRows.forEach(row => row.classList.toggle('d-none', !pageRows.has(row)));
+    attendanceVisibleStatus.textContent = matchingRows.length
+      ? `Showing ${startIndex + 1} - ${endIndex} of ${matchingRows.length} Results`
+      : `Showing 0 - 0 of ${attendanceRows.length} Results`;
+    if (appliedFilterMode === 'odd') {
+      employeeFilterButtonCount.textContent = `${matchingRows.length} Odd`;
+    } else if (appliedEmployeeIds.size === employeeFilterChoices.length) {
+      employeeFilterButtonCount.textContent = 'All';
+    } else {
+      employeeFilterButtonCount.textContent = String(matchingRows.length);
+    }
+    attendancePrevPage.disabled = attendancePage <= 1;
+    attendanceNextPage.disabled = attendancePage >= totalPages;
+    attendancePageList.innerHTML = '';
+    for (let page = 1; page <= totalPages; page += 1) {
+      if (totalPages > 5 && page !== 1 && page !== totalPages && Math.abs(page - attendancePage) > 1) {
+        if (!attendancePageList.lastElementChild || attendancePageList.lastElementChild.textContent !== '...') {
+          const spacer = document.createElement('span');
+          spacer.className = 'pagination-status';
+          spacer.textContent = '...';
+          attendancePageList.appendChild(spacer);
+        }
+        continue;
+      }
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `page-chip page-chip-button${page === attendancePage ? ' is-active' : ''}`;
+      button.textContent = page;
+      button.addEventListener('click', () => {
+        attendancePage = page;
+        refreshAttendanceRows();
+      });
+      attendancePageList.appendChild(button);
+    }
+  }
+
+  openEmployeeFilter.addEventListener('click', () => {
+    draftEmployeeIds = new Set(appliedEmployeeIds);
+    employeeFilterMode.value = appliedFilterMode;
+    employeeFilterSearch.value = '';
+    employeeFilterMenu.hidden = false;
+    refreshFilterList();
+    employeeFilterSearch.focus();
+  });
+
+  employeeFilterSearch.addEventListener('input', refreshFilterList);
+  employeeFilterMode.addEventListener('change', refreshFilterList);
+  employeeFilterChoices.forEach(choice => {
+    choice.addEventListener('change', () => {
+      if (choice.checked) {
+        draftEmployeeIds.add(choice.value);
+      } else {
+        draftEmployeeIds.delete(choice.value);
+      }
+      refreshFilterList();
+    });
+  });
+  employeeFilterSelectAll.addEventListener('change', () => {
+    visibleFilterOptions().forEach(option => {
+      const checkbox = option.querySelector('.employee-filter-choice');
+      if (employeeFilterSelectAll.checked) {
+        draftEmployeeIds.add(checkbox.value);
+      } else {
+        draftEmployeeIds.delete(checkbox.value);
+      }
+    });
+    refreshFilterList();
+  });
+  document.getElementById('employeeFilterClear').addEventListener('click', () => {
+    draftEmployeeIds.clear();
+    refreshFilterList();
+  });
+  document.getElementById('employeeFilterCancel').addEventListener('click', () => {
+    employeeFilterMenu.hidden = true;
+  });
+  document.getElementById('employeeFilterApply').addEventListener('click', () => {
+    appliedEmployeeIds = new Set(draftEmployeeIds);
+    appliedFilterMode = employeeFilterMode.value;
+    employeeFilterMenu.hidden = true;
+    attendancePage = 1;
+    refreshAttendanceRows();
+  });
+  attendanceRowsPerPage.addEventListener('change', () => {
+    attendancePage = 1;
+    refreshAttendanceRows();
+  });
+  attendancePrevPage.addEventListener('click', () => {
+    attendancePage -= 1;
+    refreshAttendanceRows();
+  });
+  attendanceNextPage.addEventListener('click', () => {
+    attendancePage += 1;
+    refreshAttendanceRows();
+  });
+  document.addEventListener('click', event => {
+    if (!employeeFilter.contains(event.target)) {
+      employeeFilterMenu.hidden = true;
+    }
+  });
+  refreshAttendanceRows();
+</script>
+{% endblock %}

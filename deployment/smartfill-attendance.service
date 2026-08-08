@@ -1,0 +1,17 @@
+[Unit]
+Description=SMARTfill Attendance and Payroll Management
+After=network.target
+
+[Service]
+Type=simple
+User=smartfill
+Group=smartfill
+WorkingDirectory=/opt/smartfill-attendance
+Environment="PATH=/opt/smartfill-attendance/venv/bin"
+Environment="APP_PORT=3000"
+ExecStart=/opt/smartfill-attendance/venv/bin/gunicorn --workers 2 --bind 0.0.0.0:3000 app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

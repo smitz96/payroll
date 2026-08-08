@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" id="weekoffForm">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Week Off Selector</h1>
+    <p class="text-muted mb-0">Configure weekly offs per employee. Save changes before recalculating payroll.</p>
+  </div>
+  <button class="btn btn-primary">Save</button>
+</div>
+
+<div class="tool-panel weekoff-panel">
+  <div class="table-responsive weekoff-table-wrap">
+    <table class="table table-sm smart-table weekoff-table">
+      <thead>
+        <tr>
+          <th>
+            <a class="sort-link" href="{{ url_for('weekoffs.index', sort='id', order='desc' if sort == 'id' and order == 'asc' else 'asc') }}">Employee ID{% if sort == 'id' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if order == 'asc' else 'Descending' }}">{{ '↑' if order == 'asc' else '↓' }}</span>{% endif %}</a>
+          </th>
+          <th>
+            <a class="sort-link" href="{{ url_for('weekoffs.index', sort='name', order='desc' if sort == 'name' and order == 'asc' else 'asc') }}">Name{% if sort == 'name' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if order == 'asc' else 'Descending' }}">{{ '↑' if order == 'asc' else '↓' }}</span>{% endif %}</a>
+          </th>
+          {% for field, label in weekdays %}
+          <th>{{ label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.employee.id }}</td>
+          <td>{{ row.employee.name }}</td>
+          {% for field, label in weekdays %}
+          <td>
+            {% set selected_codes = selected_weekoff_codes(row.rule|attr(field)) %}
+            <div class="weekoff-picker" data-weekoff-picker>
+              <button class="weekoff-picker-toggle" type="button" aria-expanded="false">
+                <span class="weekoff-pill-wrap" data-weekoff-summary>
+                  {% for code, option_label in options %}
+                  {% if code in selected_codes %}
+                  <span class="weekoff-pill">{{ option_label }}</span>
+                  {% endif %}
+                  {% endfor %}
+                </span>
+                <span class="weekoff-caret" aria-hidden="true"></span>
+              </button>
+              <div class="weekoff-menu" data-weekoff-menu>
+                {% for code, option_label in options %}
+                <label class="weekoff-option">
+                  <input type="checkbox" name="{{ row.employee.id }}_{{ field }}" value="{{ code }}" data-weekoff-input data-label="{{ option_label }}" {% if code in selected_codes %}checked{% endif %}>
+                  <span>{{ option_label }}</span>
+                </label>
+                {% endfor %}
+              </div>
+            </div>
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+</form>
+<script>
+  document.querySelectorAll('[data-weekoff-picker]').forEach((picker) => {
+    const toggle = picker.querySelector('.weekoff-picker-toggle');
+    const summary = picker.querySelector('[data-weekoff-summary]');
+    const inputs = Array.from(picker.querySelectorAll('[data-weekoff-input]'));
+
+    const closeOthers = () => {
+      document.querySelectorAll('[data-weekoff-picker].is-open').forEach((openPicker) => {
+        if (openPicker !== picker) {
+          openPicker.classList.remove('is-open');
+          openPicker.querySelector('.weekoff-picker-toggle')?.setAttribute('aria-expanded', 'false');
+        }
+      });
+    };
+
+    const renderSummary = () => {
+      const checked = inputs.filter((input) => input.checked);
+      summary.innerHTML = '';
+      checked.forEach((input) => {
+        const pill = document.createElement('span');
+        pill.className = 'weekoff-pill';
+        pill.textContent = input.dataset.label;
+        summary.appendChild(pill);
+      });
+    };
+
+    const normalizeSelection = (changedInput) => {
+      if (!changedInput.checked) {
+        if (!inputs.some((input) => input.checked)) {
+          inputs.find((input) => input.value === 'WORKING').checked = true;
+        }
+        return;
+      }
+      if (changedInput.value === 'WEEK_OFF_ALL') {
+        inputs.forEach((input) => {
+          input.checked = input === changedInput;
+        });
+        return;
+      }
+      if (changedInput.value === 'WORKING') {
+        inputs.find((input) => input.value === 'WEEK_OFF_ALL').checked = false;
+        return;
+      }
+      inputs.find((input) => input.value === 'WORKING').checked = true;
+      inputs.forEach((input) => {
+        if (input.value === 'WEEK_OFF_ALL') {
+          input.checked = false;
+        }
+      });
+    };
+
+    toggle.addEventListener('click', () => {
+      closeOthers();
+      const isOpen = picker.classList.toggle('is-open');
+      toggle.setAttribute('aria-expanded', String(isOpen));
+    });
+
+    inputs.forEach((input) => {
+      input.addEventListener('change', () => {
+        normalizeSelection(input);
+        renderSummary();
+      });
+    });
+
+    renderSummary();
+  });
+
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('[data-weekoff-picker]')) {
+      return;
+    }
+    document.querySelectorAll('[data-weekoff-picker].is-open').forEach((picker) => {
+      picker.classList.remove('is-open');
+      picker.querySelector('.weekoff-picker-toggle')?.setAttribute('aria-expanded', 'false');
+    });
+  });
+</script>
+{% endblock %}

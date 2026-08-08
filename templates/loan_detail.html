@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Loan #{{ loan.id }}</h1>
+    <p class="text-muted mb-0">{{ loan.employee_id }} - {{ employee.name if employee else "Unknown Employee" }}</p>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('loans.index', month=month) }}">Back to Loans</a>
+    <a class="btn btn-primary" href="{{ url_for('reports.loan_pdf', loan_id=loan.id, month=month) }}" target="_blank" rel="noopener">Open PDF</a>
+    <button class="btn btn-outline-danger" type="button" id="openDeleteLoan">Delete Loan</button>
+  </div>
+</div>
+
+<div class="metrics mb-4">
+  <div class="metric"><span>Start Date</span><strong>{{ loan.start_date }}</strong></div>
+  <div class="metric"><span>Expected End Date</span><strong>{{ end_date or "N/A" }}</strong></div>
+  <div class="metric"><span>Loan Amount</span><strong>{{ loan.amount }}</strong></div>
+  <div class="metric"><span>Paid Before {{ month }}</span><strong>{{ paid }}</strong></div>
+  <div class="metric"><span>Remaining Before {{ month }}</span><strong>{{ remaining }}</strong></div>
+  <div class="metric"><span>Pending Loan Amount</span><strong>{{ pending }}</strong></div>
+  <div class="metric"><span>This Month Installment</span><strong>{{ installment }}</strong></div>
+  <div class="metric"><span>Status</span><strong>{{ "Active" if loan.is_active else "Inactive" }}</strong></div>
+</div>
+
+<div class="tool-panel mb-4">
+  <h2 class="section-title">Loan Details</h2>
+  <div class="row g-3">
+    <div class="col-md-3"><strong>Planned Tenure</strong><br>{{ loan.tenure_months }} month(s)</div>
+    <div class="col-md-3"><strong>Monthly Deduction</strong><br>{{ loan.monthly_deduction }}</div>
+    <div class="col-md-6"><strong>Notes</strong><br>{{ loan.notes or "No notes" }}</div>
+  </div>
+</div>
+
+<div class="tool-panel">
+  <h2 class="section-title">Installment Schedule</h2>
+  <div class="table-responsive">
+    <table class="table table-sm smart-table">
+      <thead><tr><th>Sr.</th><th>Installment Month</th><th>Installment Date</th><th>Amount</th><th>Status</th><th>Pending After Installment</th><th>Notes</th></tr></thead>
+      <tbody>
+        {% for item in schedule %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ item.month }}</td>
+          <td>{{ item.date }}</td>
+          <td>{{ item.installment }}</td>
+          <td>
+            <span class="badge {{ 'text-bg-success' if item.status == 'Paid' else ('text-bg-warning' if item.status == 'Skipped' else 'text-bg-secondary') }}">{{ item.status }}</span>
+          </td>
+          <td>{{ item.remaining_after }}</td>
+          <td>{{ item.notes }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-muted">No installment schedule available.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<dialog class="confirm-dialog" id="deleteLoanDialog">
+  <form method="post" action="{{ url_for('loans.index') }}" id="deleteLoanForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="delete">
+    <input type="hidden" name="loan_id" value="{{ loan.id }}">
+    <div class="dialog-header">
+      <div>
+        <h2 class="section-title mb-1">Delete Loan</h2>
+        <p class="text-muted mb-0">Loan #{{ loan.id }} - {{ employee.name if employee else loan.employee_id }}</p>
+      </div>
+      <button class="dialog-close" type="button" id="closeDeleteLoan">x</button>
+    </div>
+    <p class="text-muted">This will permanently delete this loan. Payroll calculations using this loan should be recalculated after deletion.</p>
+    <label class="form-label" for="deleteLoanConfirmationInput">Type permanently delete to confirm</label>
+    <input class="form-control mb-3" id="deleteLoanConfirmationInput" name="delete_confirmation" autocomplete="off" spellcheck="false">
+    <div class="d-flex justify-content-end gap-2">
+      <button class="btn btn-outline-secondary" type="button" id="cancelDeleteLoan">Cancel</button>
+      <button class="btn btn-outline-danger" id="confirmDeleteLoan" disabled>Permanently Delete</button>
+    </div>
+  </form>
+</dialog>
+<script>
+  const deleteLoanDialog = document.getElementById('deleteLoanDialog');
+  const deleteLoanInput = document.getElementById('deleteLoanConfirmationInput');
+  const confirmDeleteLoan = document.getElementById('confirmDeleteLoan');
+  const requiredDeleteLoanText = 'permanently delete';
+
+  function refreshDeleteLoanState() {
+    confirmDeleteLoan.disabled = deleteLoanInput.value.trim().toLowerCase() !== requiredDeleteLoanText;
+  }
+
+  document.getElementById('openDeleteLoan').addEventListener('click', () => {
+    deleteLoanInput.value = '';
+    refreshDeleteLoanState();
+    deleteLoanDialog.showModal();
+    deleteLoanInput.focus();
+  });
+  document.getElementById('closeDeleteLoan').addEventListener('click', () => deleteLoanDialog.close());
+  document.getElementById('cancelDeleteLoan').addEventListener('click', () => deleteLoanDialog.close());
+  deleteLoanInput.addEventListener('paste', event => event.preventDefault());
+  deleteLoanInput.addEventListener('drop', event => event.preventDefault());
+  deleteLoanInput.addEventListener('input', refreshDeleteLoanState);
+</script>
+{% endblock %}

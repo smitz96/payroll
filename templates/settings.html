@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Settings</h1>
+<div class="alert alert-info">Current payroll configuration applies to <strong>Wage Type: Monthly</strong>.</div>
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="tool-panel">
+      <h2 class="section-title">Monthly Attendance, Salary & Leave Rules</h2>
+      <table class="table table-sm">
+        {% for key, value in monthly_rules.items() %}
+        <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="tool-panel">
+      <h2 class="section-title">Security</h2>
+      <a class="btn btn-primary" href="{{ url_for('settings.security') }}">Change Password</a>
+    </div>
+    <div class="tool-panel mt-3">
+      <h2 class="section-title">Server Update</h2>
+      <p class="text-muted">Pull the latest committed code from the configured GitHub remote. Private repositories require GitHub access on this server.</p>
+      <form method="post" action="{{ url_for('settings.git_pull') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="form-label" for="admin_password">Admin Password</label>
+        <input class="form-control mb-3" id="admin_password" name="admin_password" type="password" autocomplete="current-password" required>
+        <button class="btn btn-primary w-100" type="submit">Git Pull Update</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

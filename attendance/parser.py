@@ -1,0 +1,425 @@
+import csv
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+import re
+from xml.etree import ElementTree
+from zipfile import ZipFile
+
+from attendance import db
+from attendance.employee_defaults import ensure_employee_defaults
+from attendance.models import AttendanceRecord, AuditLog, Employee, PayrollMonth, SalaryRecord
+from attendance.utils import clean, decimal_money, minutes_to_duration, normalize_salary_type, parse_csv_date, parse_duration
+
+ATTENDANCE_REQUIRED = [
+    "Employee ID",
+    "Employee Name",
+    "Department",
+    "Designation",
+    "Date",
+    "Day",
+    "Shift",
+    "From",
+    "To",
+    "First Punch",
+    "Last Punch",
+    "Total Working Hours",
+]
+
+SALARY_ALIASES = {
+    "ID": "Employee ID",
+    "Employee ID": "Employee ID",
+    "Name": "Name",
+    "Type": "Type",
+    "Salary": "Salary",
+    "Adjustment": "Manual Adjustment",
+    "Manual Adjustment": "Manual Adjustment",
+}
+
+
+def ensure_month(month):
+    existing = PayrollMonth.query.get(month)
+    if not existing:
+        existing = PayrollMonth(month=month)
+        db.session.add(existing)
+        db.session.flush()
+    return existing
+
+
+def _dict_reader(path):
+    return csv.DictReader(open(path, newline="", encoding="utf-8-sig"))
+
+
+XML_NS = {
+    "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+    "office_rel": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+}
+PUNCH_TIME_RE = re.compile(r"\b\d{1,2}:\d{2}\s*(?:AM|PM)\b", re.IGNORECASE)
+
+
+def _cell_column_index(cell_ref):
+    letters = "".join(ch for ch in cell_ref if ch.isalpha())
+    index = 0
+    for letter in letters:
+        index = index * 26 + (ord(letter.upper()) - ord("A") + 1)
+    return index
+
+
+def _xlsx_shared_strings(zf):
+    try:
+        data = zf.read("xl/sharedStrings.xml")
+    except KeyError:
+        return []
+    root = ElementTree.fromstring(data)
+    strings = []
+    for item in root.findall("main:si", XML_NS):
+        parts = [node.text or "" for node in item.findall(".//main:t", XML_NS)]
+        strings.append("".join(parts))
+    return strings
+
+
+def _first_sheet_path(zf):
+    workbook = ElementTree.fromstring(zf.read("xl/workbook.xml"))
+    rels = ElementTree.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+    relation_targets = {
+        rel.attrib["Id"]: rel.attrib["Target"]
+        for rel in rels.findall("rel:Relationship", XML_NS)
+    }
+    first_sheet = workbook.find("main:sheets/main:sheet", XML_NS)
+    if first_sheet is None:
+        raise ValueError("Attendance XLSX has no sheets")
+    rel_id = first_sheet.attrib.get(f"{{{XML_NS['office_rel']}}}id")
+    target = relation_targets.get(rel_id)
+    if not target:
+        raise ValueError("Attendance XLSX sheet relationship is missing")
+    return "xl/" + target.lstrip("/")
+
+
+def _xlsx_cell_value(cell, shared_strings):
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        return "".join(node.text or "" for node in cell.findall(".//main:t", XML_NS))
+    value = cell.find("main:v", XML_NS)
+    if value is None or value.text is None:
+        return ""
+    text = value.text
+    if cell_type == "s":
+        try:
+            return shared_strings[int(text)]
+        except (ValueError, IndexError):
+            return ""
+    return text
+
+
+def _xlsx_rows(path):
+    with ZipFile(path) as zf:
+        shared_strings = _xlsx_shared_strings(zf)
+        sheet_path = _first_sheet_path(zf)
+        sheet = ElementTree.fromstring(zf.read(sheet_path))
+        rows = []
+        for row in sheet.findall(".//main:sheetData/main:row", XML_NS):
+            values_by_column = {}
+            for cell in row.findall("main:c", XML_NS):
+                column_index = _cell_column_index(cell.attrib.get("r", ""))
+                if column_index:
+                    values_by_column[column_index] = _xlsx_cell_value(cell, shared_strings)
+            if not values_by_column:
+                rows.append([])
+                continue
+            max_column = max(values_by_column)
+            rows.append([values_by_column.get(index, "") for index in range(1, max_column + 1)])
+        return rows
+
+
+def _daily_punch_date_header(value):
+    first_line = clean(str(value).splitlines()[0] if value is not None else "")
+    if not first_line:
+        return None
+    try:
+        parsed_date = parse_csv_date(first_line)
+    except ValueError:
+        return None
+    lines = [clean(line) for line in str(value).splitlines() if clean(line)]
+    day = lines[1] if len(lines) > 1 else parsed_date.strftime("%A")
+    return parsed_date, day
+
+
+def _parse_punch_times(value):
+    text = clean(value)
+    if not text:
+        return []
+    return [match.group(0).upper().replace("  ", " ") for match in PUNCH_TIME_RE.finditer(text)]
+
+
+def _time_to_minutes(value):
+    parsed = datetime.strptime(value, "%I:%M %p")
+    return parsed.hour * 60 + parsed.minute
+
+
+def _working_minutes_from_punches(punches):
+    if len(punches) < 2:
+        return None
+    total = 0
+    for index in range(0, len(punches) - 1, 2):
+        start = _time_to_minutes(punches[index])
+        end = _time_to_minutes(punches[index + 1])
+        if end < start:
+            end += 24 * 60
+        total += end - start
+    return total
+
+
+def parse_punch_times(value):
+    return _parse_punch_times(value)
+
+
+def working_minutes_from_punches(punches):
+    return _working_minutes_from_punches(punches)
+
+
+def _attendance_rows_from_daily_punch_xlsx(path):
+    rows = _xlsx_rows(path)
+    if not rows:
+        raise ValueError("Attendance XLSX is empty")
+    header_index = next((index for index, row in enumerate(rows) if "Employee ID" in [clean(cell) for cell in row]), None)
+    if header_index is None:
+        raise ValueError("Attendance XLSX missing Employee ID header")
+    headers = [clean(cell) for cell in rows[header_index]]
+    required_static = ["Employee ID", "Employee Name", "Department", "Designation"]
+    missing_static = [name for name in required_static if name not in headers]
+    if missing_static:
+        raise ValueError("Attendance XLSX missing columns: " + ", ".join(missing_static))
+    column_indexes = {header: headers.index(header) for header in required_static}
+    date_columns = []
+    for index, header in enumerate(headers):
+        parsed = _daily_punch_date_header(header)
+        if parsed:
+            date_columns.append((index, parsed[0], parsed[1]))
+    if not date_columns:
+        raise ValueError("Attendance XLSX has no daily punch date columns")
+
+    normalized_rows = []
+    for row in rows[header_index + 1:]:
+        employee_id = clean(row[column_indexes["Employee ID"]] if len(row) > column_indexes["Employee ID"] else "")
+        if not employee_id:
+            continue
+        base = {
+            "Employee ID": employee_id,
+            "Employee Name": clean(row[column_indexes["Employee Name"]] if len(row) > column_indexes["Employee Name"] else ""),
+            "Department": clean(row[column_indexes["Department"]] if len(row) > column_indexes["Department"] else ""),
+            "Designation": clean(row[column_indexes["Designation"]] if len(row) > column_indexes["Designation"] else ""),
+        }
+        for column_index, punch_date, day in date_columns:
+            raw_value = row[column_index] if len(row) > column_index else ""
+            punches = _parse_punch_times(raw_value)
+            total_minutes = _working_minutes_from_punches(punches)
+            warning = ""
+            if len(punches) % 2 == 1:
+                warning = "Odd punch count"
+            normalized_rows.append({
+                **base,
+                "Date": punch_date.isoformat(),
+                "Day": day,
+                "Shift": "Normal Shift",
+                "From": "",
+                "To": "",
+                "First Punch": punches[0] if punches else "",
+                "Last Punch": punches[-1] if punches else "",
+                "Total Working Hours": minutes_to_duration(total_minutes) if total_minutes is not None else "",
+                "_Punch Count": str(len(punches)),
+                "_Punches": punches,
+                "_Punch Warning": warning,
+            })
+    return normalized_rows
+
+
+def attendance_rows_from_upload(path):
+    suffix = Path(path).suffix.lower()
+    if suffix == ".xlsx":
+        return _attendance_rows_from_daily_punch_xlsx(path)
+    return list(_dict_reader(path))
+
+
+def ensure_employee_master_from_attendance(employee_id, name, row):
+    employee = db.session.get(Employee, employee_id)
+    created = employee is None
+    if created:
+        employee = Employee(
+            id=employee_id,
+            name=name or employee_id,
+            salary_type="",
+            normalized_salary_type="",
+            salary=0,
+            employment_status="ACTIVE",
+            ot_enabled=True,
+            less_hours_exempt=False,
+        )
+    else:
+        employee.name = employee.name or name or employee_id
+
+    department = clean(row.get("Department"))
+    designation = clean(row.get("Designation"))
+    employee.department = department or employee.department
+    employee.designation = designation or employee.designation
+    db.session.add(employee)
+    if created:
+        db.session.flush()
+    return employee, created
+
+
+def import_attendance_csv(path, month, actor="admin"):
+    ensure_month(month)
+    payroll_month = PayrollMonth.query.get(month)
+    if payroll_month:
+        payroll_month.attendance_submitted = False
+    AttendanceRecord.query.filter_by(payroll_month=month).delete()
+    from attendance.models import AttendanceOverride, PayrollResult
+    AttendanceOverride.query.filter_by(payroll_month=month).delete()
+    PayrollResult.query.filter_by(payroll_month=month).delete()
+    rows = attendance_rows_from_upload(path)
+    missing = [name for name in ATTENDANCE_REQUIRED if name not in (rows[0].keys() if rows else [])]
+    warnings = []
+    default_details = []
+    auto_created_masters = []
+    if missing:
+        raise ValueError("Attendance CSV missing columns: " + ", ".join(missing))
+    duplicate_keys = Counter((clean(r.get("Employee ID")), clean(r.get("Date"))) for r in rows)
+    imported = 0
+    for row in rows:
+        employee_id = clean(row.get("Employee ID"))
+        name = clean(row.get("Employee Name"))
+        if not employee_id:
+            warnings.append("Attendance row missing Employee ID")
+            continue
+        employee, master_created = ensure_employee_master_from_attendance(employee_id, name, row)
+        if master_created:
+            auto_created_masters.append(f"{employee_id} - {employee.name}")
+        created_defaults = ensure_employee_defaults(employee_id)
+        if created_defaults:
+            default_details.append(f"{employee_id} - {name or employee_id}: {', '.join(created_defaults)}")
+        warning_parts = []
+        status = "OK"
+        try:
+            date = parse_csv_date(row.get("Date"))
+        except ValueError as exc:
+            warnings.append(f"Employee {employee_id}: {exc}")
+            continue
+        try:
+            actual = parse_duration(row.get("Total Working Hours"))
+        except ValueError as exc:
+            actual = None
+            status = "NEEDS_REVIEW"
+            warning_parts.append(str(exc))
+        first = clean(row.get("First Punch"))
+        last = clean(row.get("Last Punch"))
+        raw_hours = clean(row.get("Total Working Hours"))
+        punches = row.get("_Punches") or [punch for punch in [first, last] if punch]
+        if duplicate_keys[(employee_id, clean(row.get("Date")))] > 1:
+            status = "NEEDS_REVIEW"
+            warning_parts.append("Duplicate employee/date")
+        if not first and not last and not raw_hours:
+            status = "NEEDS_REVIEW"
+            warning_parts.append("Missing punch and working hours")
+        elif (first and not last) or (last and not first):
+            status = "NEEDS_REVIEW"
+            warning_parts.append("Punch error")
+        if clean(row.get("_Punch Warning")):
+            status = "NEEDS_REVIEW"
+            warning_parts.append(clean(row.get("_Punch Warning")))
+        record = AttendanceRecord(
+            payroll_month=month,
+            employee_id=employee_id,
+            employee_name=name,
+            department=clean(row.get("Department")),
+            designation=clean(row.get("Designation")),
+            date=date,
+            day=clean(row.get("Day")),
+            shift=clean(row.get("Shift")),
+            shift_from=clean(row.get("From")),
+            shift_to=clean(row.get("To")),
+            first_punch=first,
+            last_punch=last,
+            punches_json=punches,
+            raw_working_hours=raw_hours,
+            actual_minutes=actual,
+            parse_status=status,
+            warning="; ".join(warning_parts),
+        )
+        db.session.add(record)
+        imported += 1
+    db.session.add(AuditLog(actor=actor, action="Attendance Uploaded", detail=f"{Path(path).name}: {imported} rows"))
+    if auto_created_masters:
+        detail = f"{Path(path).name}: " + " | ".join(auto_created_masters)
+        db.session.add(AuditLog(actor=actor, action="Employee Master Auto Created", detail=detail))
+    if default_details:
+        db.session.add(AuditLog(actor=actor, action="Employee Defaults Created", detail=" | ".join(default_details)))
+    db.session.commit()
+    return imported, warnings
+
+
+def import_salary_csv(path, month, actor="admin"):
+    ensure_month(month)
+    SalaryRecord.query.filter_by(payroll_month=month).delete()
+    rows = list(_dict_reader(path))
+    if not rows:
+        raise ValueError("Salary CSV is empty")
+    normalized_rows = []
+    for row in rows:
+        normalized = {SALARY_ALIASES.get(k.strip(), k.strip()): clean(v) for k, v in row.items()}
+        normalized_rows.append(normalized)
+    required = ["Employee ID", "Name", "Type", "Salary", "Manual Adjustment"]
+    missing = [name for name in required if name not in normalized_rows[0]]
+    if missing:
+        raise ValueError("Salary CSV missing columns: " + ", ".join(missing))
+    warnings = []
+    default_details = []
+    duplicate_ids = Counter(r.get("Employee ID") for r in normalized_rows)
+    imported = 0
+    for row in normalized_rows:
+        employee_id = clean(row.get("Employee ID"))
+        if not employee_id:
+            warnings.append("Salary row missing Employee ID")
+            continue
+        warning_parts = []
+        if duplicate_ids[employee_id] > 1:
+            warning_parts.append("Duplicate Employee ID")
+        salary_type = clean(row.get("Type"))
+        normalized_type = normalize_salary_type(salary_type)
+        if not normalized_type:
+            warning_parts.append("Missing Wage Type")
+        elif normalized_type != "MONTHLY":
+            warning_parts.append(f'Unsupported Wage Type "{salary_type}"')
+            db.session.add(AuditLog(actor=actor, action="Unsupported Wage Type Detected", detail=f"{employee_id}: {salary_type}"))
+        try:
+            salary = decimal_money(row.get("Salary"))
+        except ValueError as exc:
+            salary = 0
+            warning_parts.append(str(exc))
+        try:
+            adjustment = decimal_money(row.get("Manual Adjustment"))
+        except ValueError as exc:
+            adjustment = 0
+            warning_parts.append(str(exc))
+        employee = Employee.query.get(employee_id) or Employee(id=employee_id, name=clean(row.get("Name")) or employee_id)
+        employee.name = clean(row.get("Name")) or employee.name
+        db.session.merge(employee)
+        created_defaults = ensure_employee_defaults(employee_id)
+        if created_defaults:
+            default_details.append(f"{employee_id} - {clean(row.get('Name')) or employee_id}: {', '.join(created_defaults)}")
+        db.session.add(SalaryRecord(
+            payroll_month=month,
+            employee_id=employee_id,
+            name=clean(row.get("Name")) or employee_id,
+            salary_type=salary_type,
+            normalized_salary_type=normalized_type,
+            salary=salary,
+            adjustment=adjustment,
+            warning="; ".join(warning_parts),
+        ))
+        imported += 1
+    db.session.add(AuditLog(actor=actor, action="Salary CSV Uploaded", detail=f"{Path(path).name}: {imported} rows"))
+    if default_details:
+        db.session.add(AuditLog(actor=actor, action="Employee Defaults Created", detail=" | ".join(default_details)))
+    db.session.commit()
+    return imported, warnings

@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Advances</h1>
+    <p class="text-muted mb-0">Create and manage salary advances deducted from the next month payroll.</p>
+  </div>
+  <button class="btn btn-primary" type="button" id="openAdvanceDrawer">Add Advance</button>
+</div>
+
+<dialog class="drawer-dialog" id="advanceDrawer">
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="create">
+  <div class="drawer-header">
+    <h2 class="section-title mb-0">Add Advance</h2>
+    <button class="dialog-close" type="button" id="closeAdvanceDrawer">x</button>
+  </div>
+  <div class="drawer-body">
+  <div class="row g-2">
+    <div class="col-md-12">
+      <label class="form-label">Employee</label>
+      <select class="form-select" name="employee_id" required>
+        <option value="">Select Employee</option>
+        {% for employee in employees %}
+        <option value="{{ employee.id }}">{{ employee.id }} - {{ employee.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Advance Date</label>
+      <input class="form-control" type="date" name="advance_date" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Advance Amount</label>
+      <input class="form-control" name="amount" inputmode="decimal" required>
+    </div>
+    <div class="col-md-12">
+      <label class="form-label">Notes</label>
+      <input class="form-control" name="notes" placeholder="Optional">
+    </div>
+  </div>
+  </div>
+  <div class="drawer-footer">
+    <button class="btn btn-outline-secondary" type="button" id="cancelAdvanceDrawer">Close</button>
+    <button class="btn btn-primary">Save Advance</button>
+  </div>
+</form>
+</dialog>
+
+<div class="module-card mb-4">
+  <div class="module-card-header">
+    <h2 class="module-card-title">Current Advances Due <span class="text-muted">{{ due_rows|length }}</span></h2>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm smart-table">
+      <thead><tr><th>Sr.</th><th>Advance</th><th>Employee</th><th>Advance Date</th><th>Deduct In Payroll</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for row in due_rows %}
+        {% set advance = row.advance %}
+        {% set employee = employee_map.get(advance.employee_id) %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>Advance #{{ advance.id }}</td>
+          <td>{{ advance.employee_id }} - {{ employee.name if employee else "Unknown" }}</td>
+          <td>{{ advance.advance_date }}</td>
+          <td>{{ row.deduction_month }}</td>
+          <td><strong>{{ advance.amount }}</strong></td>
+          <td><span class="badge text-bg-warning">Due This Month</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-muted">No advance salary deductions due this month.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="module-card">
+<div class="module-card-header">
+  <h2 class="module-card-title">Advance Register <span class="text-muted">{{ advance_rows|length }}</span></h2>
+</div>
+<div class="table-responsive">
+<table class="table table-sm smart-table">
+      <thead><tr><th>Sr.</th><th>Advance</th><th>Employee</th><th>Advance Date</th><th>Deduct In Payroll</th><th>Amount</th><th>Action</th></tr></thead>
+  <tbody>
+    {% for row in advance_rows %}
+    {% set advance = row.advance %}
+    {% set employee = employee_map.get(advance.employee_id) %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>Advance #{{ advance.id }}</td>
+      <td>{{ advance.employee_id }} - {{ employee.name if employee else "Unknown" }}</td>
+      <td>{{ advance.advance_date }}</td>
+      <td>{{ row.deduction_month }}</td>
+      <td>{{ advance.amount }}</td>
+      <td><button class="btn btn-sm btn-outline-danger delete-advance-button" type="button" data-advance-id="{{ advance.id }}" data-advance-label="Advance #{{ advance.id }} - {{ employee.name if employee else advance.employee_id }}">Delete</button></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="text-muted">No advance salary records found.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+</div>
+<dialog class="confirm-dialog" id="deleteAdvanceDialog">
+  <form method="post" id="deleteAdvanceForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="delete">
+    <input type="hidden" name="advance_id" id="deleteAdvanceId">
+    <div class="dialog-header">
+      <div>
+        <h2 class="section-title mb-1">Delete Advance Salary</h2>
+        <p class="text-muted mb-0" id="deleteAdvanceLabel"></p>
+      </div>
+      <button class="dialog-close" type="button" id="closeDeleteAdvance">x</button>
+    </div>
+    <p class="text-muted">This will permanently delete the selected advance salary record. Payroll calculations using this advance should be recalculated after deletion.</p>
+    <label class="form-label" for="deleteAdvanceConfirmationInput">Type permanently delete to confirm</label>
+    <input class="form-control mb-3" id="deleteAdvanceConfirmationInput" name="delete_confirmation" autocomplete="off" spellcheck="false">
+    <div class="d-flex justify-content-end gap-2">
+      <button class="btn btn-outline-secondary" type="button" id="cancelDeleteAdvance">Cancel</button>
+      <button class="btn btn-outline-danger" id="confirmDeleteAdvance" disabled>Permanently Delete</button>
+    </div>
+  </form>
+</dialog>
+<script>
+  const deleteAdvanceDialog = document.getElementById('deleteAdvanceDialog');
+  const deleteAdvanceButtons = document.querySelectorAll('.delete-advance-button');
+  const deleteAdvanceInput = document.getElementById('deleteAdvanceConfirmationInput');
+  const deleteAdvanceId = document.getElementById('deleteAdvanceId');
+  const deleteAdvanceLabel = document.getElementById('deleteAdvanceLabel');
+  const confirmDeleteAdvance = document.getElementById('confirmDeleteAdvance');
+  const requiredDeleteAdvanceText = 'permanently delete';
+
+  function refreshDeleteAdvanceState() {
+    confirmDeleteAdvance.disabled = deleteAdvanceInput.value.trim().toLowerCase() !== requiredDeleteAdvanceText;
+  }
+
+  deleteAdvanceButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      deleteAdvanceInput.value = '';
+      deleteAdvanceId.value = button.dataset.advanceId;
+      deleteAdvanceLabel.textContent = button.dataset.advanceLabel;
+      refreshDeleteAdvanceState();
+      deleteAdvanceDialog.showModal();
+      deleteAdvanceInput.focus();
+    });
+  });
+  document.getElementById('closeDeleteAdvance').addEventListener('click', () => deleteAdvanceDialog.close());
+  document.getElementById('cancelDeleteAdvance').addEventListener('click', () => deleteAdvanceDialog.close());
+  deleteAdvanceInput.addEventListener('paste', event => event.preventDefault());
+  deleteAdvanceInput.addEventListener('drop', event => event.preventDefault());
+  deleteAdvanceInput.addEventListener('input', refreshDeleteAdvanceState);
+  const advanceDrawer = document.getElementById('advanceDrawer');
+  document.getElementById('openAdvanceDrawer').addEventListener('click', () => advanceDrawer.showModal());
+  document.getElementById('closeAdvanceDrawer').addEventListener('click', () => advanceDrawer.close());
+  document.getElementById('cancelAdvanceDrawer').addEventListener('click', () => advanceDrawer.close());
+</script>
+{% endblock %}

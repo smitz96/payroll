@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Holiday Management</h1>
+<form method="post" class="tool-panel mb-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="row g-2">
+    <div class="col-md-3">
+      <div class="date-entry">
+        <input class="form-control" id="holidayDateText" name="date" placeholder="DD-MM-YYYY" inputmode="numeric" autocomplete="off" required>
+        <input class="form-control date-picker" id="holidayDatePicker" type="date" aria-label="Select holiday date">
+      </div>
+    </div>
+    <div class="col-md-3"><input class="form-control" name="name" placeholder="Holiday Name" required></div>
+    <div class="col-md-2">
+      <select class="form-select" name="holiday_type" required>
+        {% for value, label in holiday_types.items() %}
+        <option value="{{ value }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><input class="form-control" name="notes" placeholder="Notes"></div>
+    <div class="col-md-1"><button class="btn btn-primary w-100">Add</button></div>
+  </div>
+  <p class="text-muted mb-0 mt-2">Recurring holidays repeat every year on the same date. Variable holidays apply only to the selected date and must be entered each year.</p>
+</form>
+<table class="table smart-table"><thead><tr><th>Date</th><th>Name</th><th>Type</th><th>Notes</th><th></th></tr></thead><tbody>
+{% for h in holidays %}
+<tr><td>{{ h.date }}</td><td>{{ h.name }}</td><td>{{ holiday_types.get(h.holiday_type, 'Variable Holiday') }}</td><td>{{ h.notes }}</td><td><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ h.id }}"><button class="btn btn-sm btn-outline-danger">Delete</button></form></td></tr>
+{% endfor %}
+</tbody></table>
+<script>
+  const holidayDateText = document.getElementById('holidayDateText');
+  const holidayDatePicker = document.getElementById('holidayDatePicker');
+
+  function toDisplayDate(value) {
+    const parts = value.split('-');
+    if (parts.length !== 3) return value;
+    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  }
+
+  function toPickerDate(value) {
+    const parts = value.split('-');
+    if (parts.length !== 3) return '';
+    if (parts[0].length === 4) return value;
+    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  }
+
+  holidayDatePicker.addEventListener('change', () => {
+    if (holidayDatePicker.value) {
+      holidayDateText.value = toDisplayDate(holidayDatePicker.value);
+      holidayDateText.focus();
+    }
+  });
+
+  holidayDateText.addEventListener('blur', () => {
+    holidayDatePicker.value = toPickerDate(holidayDateText.value.trim());
+  });
+</script>
+{% endblock %}

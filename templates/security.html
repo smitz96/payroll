@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="page-title">Change Password</h1>
+<form method="post" class="tool-panel">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label class="form-label">Current Password</label>
+  <input class="form-control mb-3" name="current_password" type="password" required>
+  <label class="form-label">New Password</label>
+  <input class="form-control mb-3" name="new_password" type="password" minlength="8" required>
+  <label class="form-label">Confirm New Password</label>
+  <input class="form-control mb-3" name="confirm_password" type="password" minlength="8" required>
+  <button class="btn btn-primary">Update Password</button>
+</form>
+{% endblock %}

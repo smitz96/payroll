@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% from "icons.html" import icon %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h1 class="page-title">Monthly Payroll {{ month_label or month }}</h1>
+    <p class="text-muted mb-0">
+      Current automatic payroll rule: <strong>Wage Type Monthly only</strong>
+      <span class="badge text-bg-{{ 'warning' if is_finalized else 'success' }}">{{ 'Finalized / Locked' if is_finalized else 'Draft' }}</span>
+    </p>
+  </div>
+  <div class="d-flex gap-2">
+  {% if is_finalized %}
+  <button type="button" class="btn btn-outline-primary" id="openUnlockPayroll">Unlock Payroll</button>
+  {% else %}
+  <a class="btn btn-outline-primary" href="{{ url_for('attendance_manager.month', month=month) }}">Open Attendance Manager</a>
+  <form method="post" onsubmit="return confirm('Recalculate payroll from submitted attendance data? This will remove manual overrides and reset adjustment, loan, and leave encashment values for this month.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="calculate">
+    <button class="btn btn-success" {% if attendance_count and not payroll_month.attendance_submitted %}disabled title="Submit attendance from Attendance Manager first"{% endif %}>Recalculate Payroll</button>
+  </form>
+  <form method="post" onsubmit="return confirm('Recheck the current holiday calendar and update payroll? Manual employee changes will be kept.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="recheck_holidays">
+    <button class="btn btn-outline-primary" {% if attendance_count and not payroll_month.attendance_submitted %}disabled title="Submit attendance from Attendance Manager first"{% endif %}>Recheck Holidays</button>
+  </form>
+  <button type="button" class="btn btn-outline-danger" id="openFinalizePayroll">Finalize Payroll</button>
+  {% endif %}
+  <button type="button" class="btn btn-outline-danger" id="openDeletePayroll">Delete Payroll</button>
+  </div>
+</div>
+{% if is_finalized %}
+<div class="alert alert-warning">Payroll is finalized and locked. Unlock payroll before uploading CSVs, recalculating, or editing employee details.</div>
+{% endif %}
+<div class="summary-grid mb-4">
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("attendance") }}</span><span>Attendance Rows</span><strong>{{ attendance_count }}</strong><small>Imported attendance records</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("users") }}</span><span>Wage Employees</span><strong>{{ salaries|length }}</strong><small>{{ wage_types|join(", ") if wage_types else "No wage type loaded" }}</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("review") }}</span><span>Review Items</span><strong>{{ missing_salary|length + mismatches|length }}</strong><small>Missing salary and name mismatches</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("processed") }}</span><span>Status</span><strong>{{ payroll_month.status }}</strong><small>{{ "Locked from changes" if is_finalized else "Ready for edits" }}</small></div>
+</div>
+{% if attendance_count and not payroll_month.attendance_submitted %}
+<div class="alert alert-warning">
+  Attendance has been uploaded but not submitted. Open Attendance Manager, review/edit punches, then Submit & Calculate Payroll.
+  <a class="btn btn-sm btn-outline-primary ms-2" href="{{ url_for('attendance_manager.month', month=month) }}">Open Attendance Manager</a>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="tool-panel">
+      <label class="form-label">Attendance Manager</label>
+      <div class="status-detail mb-3">
+        Import or re-import attendance CSV/XLSX, review bulk punches, then submit attendance before payroll calculation.
+      </div>
+      <a class="btn btn-primary" href="{{ url_for('attendance_manager.month', month=month) }}">{{ "Review Attendance" if attendance_count else "Import Attendance" }}</a>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <form method="post" class="tool-panel">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="salary">
+      <label class="form-label">Wage Master</label>
+      <div class="status-detail mb-3">Wage type and salary are loaded from Employee Master for active employees.</div>
+      <button class="btn btn-primary" {% if is_finalized %}disabled{% endif %}>Load Wage From Master</button>
+      <a class="btn btn-outline-primary ms-2" href="{{ url_for('master.index') }}">Open Master</a>
+    </form>
+  </div>
+</div>
+<div class="alert alert-info">Attendance rows: {{ attendance_count }} | Wage employees: {{ salaries|length }} | Wage types found: {{ wage_types|join(", ") if wage_types else "None" }}</div>
+<form method="post" class="tool-panel mb-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="leave_encashment">
+  <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+    <label class="form-check mb-0">
+      <input class="form-check-input" type="checkbox" name="encash_all_leaves" {% if payroll_month.encash_all_leaves %}checked{% endif %} {% if is_finalized %}disabled{% endif %}>
+      <span><strong>Encash all available leaves for this payroll month</strong></span>
+    </label>
+    <button class="btn btn-outline-primary" {% if is_finalized %}disabled{% endif %}>Save Leave Encashment Setting</button>
+  </div>
+  <p class="text-muted mb-0 mt-2">When enabled, all available leave balance is encashed for every employee. Open an employee detail page to disable encashment for that employee only.</p>
+</form>
+{% if missing_salary %}
+<div class="alert alert-warning"><strong>Attendance Employees Missing Salary Data</strong><br>{% for id, name in missing_salary.items() %}Salary data not present for Employee ID {{ id }} - {{ name }}<br>{% endfor %}</div>
+{% endif %}
+{% if mismatches %}
+<div class="alert alert-warning"><strong>Name mismatches</strong><br>{% for id, attendance_name, salary_name in mismatches %}{{ id }}: employee name differs between Attendance and Wage Master. Matched using Employee ID. Attendance: {{ attendance_name }}, Wage Master: {{ salary_name }}<br>{% endfor %}</div>
+{% endif %}
+<div class="module-card">
+<div class="module-card-header">
+  <h2 class="module-card-title">Payroll Employees <span class="text-muted">{{ salaries|length }}</span></h2>
+  <div class="module-card-actions">
+    <a class="btn btn-outline-secondary" href="{{ url_for('reports.payroll_summary_pdf', month=month) }}" target="_blank" rel="noopener">Payroll Summary PDF</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('reports.overtime_pdf', month=month) }}" target="_blank" rel="noopener">OT Report PDF</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('reports.less_hours_pdf', month=month) }}" target="_blank" rel="noopener">Less Hours Report PDF</a>
+    <a class="btn btn-primary" href="{{ url_for('reports.final_report_pdf', month=month) }}" target="_blank" rel="noopener">Final PDF Report</a>
+  </div>
+</div>
+<div class="table-responsive">
+<table class="table table-sm align-middle smart-table">
+  <thead><tr><th>Employee</th><th>Wage Type</th><th>Status</th><th>Base Salary</th><th>Final Payable Salary</th><th>Warnings</th><th>Action</th></tr></thead>
+  <tbody>
+    {% for s in salaries %}
+    {% set r = results.get(s.employee_id) %}
+    <tr>
+      <td class="employee-cell"><strong>{{ s.name }}</strong><span>{{ s.employee_id }}</span></td>
+      <td>{{ s.salary_type or "Missing" }}</td>
+      <td><span class="badge text-bg-{{ 'success' if r and r.calculation_status == 'Calculated' else 'warning' }}">{{ r.calculation_status if r else 'Not Calculated' }}</span></td>
+      <td>{{ s.salary }}</td>
+      <td>{% if r and r.final_salary is not none %}{{ r.final_salary }}{% else %}<strong>Not Calculated</strong>{% endif %}</td>
+      <td>{{ s.warning }} {{ r.message if r else "" }}</td>
+      <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.employee', month=month, employee_id=s.employee_id) }}">Details</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<div class="table-footer">
+  <span class="pagination-status">Showing 1 - {{ salaries|length }} of {{ salaries|length }} Results</span>
+  <div class="d-flex gap-2"><span class="page-chip is-active">1</span></div>
+</div>
+</div>
+<div class="mt-3 d-flex gap-2 flex-wrap">
+  <a class="btn btn-outline-secondary" href="{{ url_for('reports.payroll_summary_pdf', month=month) }}" target="_blank" rel="noopener">Payroll Summary PDF</a>
+  <a class="btn btn-outline-secondary" href="{{ url_for('reports.attendance_detail_pdf', month=month) }}" target="_blank" rel="noopener">Detailed Attendance PDF</a>
+  <a class="btn btn-outline-secondary" href="{{ url_for('reports.overtime_pdf', month=month) }}" target="_blank" rel="noopener">OT Report PDF</a>
+  <a class="btn btn-outline-secondary" href="{{ url_for('reports.less_hours_pdf', month=month) }}" target="_blank" rel="noopener">Less Hours Report PDF</a>
+  <a class="btn btn-outline-secondary" href="{{ url_for('reports.errors_pdf', month=month) }}" target="_blank" rel="noopener">Error Report PDF</a>
+  <a class="btn btn-primary" href="{{ url_for('reports.final_report_pdf', month=month) }}" target="_blank" rel="noopener">Final PDF Report</a>
+</div>
+
+{% if not is_finalized %}
+<dialog class="confirm-dialog" id="finalizePayrollDialog">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="finalize">
+    <div class="dialog-header">
+      <h2 class="section-title">Finalize Payroll {{ month }}</h2>
+      <button type="button" class="dialog-close" id="closeFinalizePayroll">x</button>
+    </div>
+    <p class="text-muted">Uploads, calculation, and employee changes will be locked until payroll is unlocked.</p>
+    <label class="form-label">Admin Password</label>
+    <input class="form-control mb-3" name="admin_password" type="password" autocomplete="current-password" required>
+    <div class="d-flex gap-2 justify-content-between">
+      <button type="button" class="btn btn-outline-secondary" id="cancelFinalizePayroll">Cancel</button>
+      <button class="btn btn-outline-danger">Finalize Payroll</button>
+    </div>
+  </form>
+</dialog>
+{% else %}
+<dialog class="confirm-dialog" id="unlockPayrollDialog">
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="unlock">
+    <div class="dialog-header">
+      <h2 class="section-title">Unlock Payroll {{ month }}</h2>
+      <button type="button" class="dialog-close" id="closeUnlockPayroll">x</button>
+    </div>
+    <p class="text-muted">Unlocking allows uploads, recalculation, and employee changes for this payroll month.</p>
+    <label class="form-label">Admin Password</label>
+    <input class="form-control mb-3" name="admin_password" type="password" autocomplete="current-password" required>
+    <div class="d-flex gap-2 justify-content-between">
+      <button type="button" class="btn btn-outline-secondary" id="cancelUnlockPayroll">Cancel</button>
+      <button class="btn btn-outline-primary">Unlock Payroll</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+<dialog class="confirm-dialog" id="deletePayrollDialog">
+  <form method="post" id="deletePayrollForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="delete">
+    <div class="dialog-header">
+      <h2 class="section-title">Delete Payroll {{ month }}</h2>
+      <button type="button" class="dialog-close" id="closeDeletePayroll">x</button>
+    </div>
+    <p class="text-muted">This will permanently delete payroll month {{ month }}, including attendance rows, salary rows, results, manual overrides, and leave ledger rows for this month.</p>
+    <label class="form-label">Type permanently delete to confirm</label>
+    <input class="form-control mb-3" id="deleteConfirmationInput" name="delete_confirmation" autocomplete="off" spellcheck="false">
+    <div class="d-flex gap-2 justify-content-between">
+      <button type="button" class="btn btn-outline-secondary" id="cancelDeletePayroll">Cancel</button>
+      <button class="btn btn-outline-danger" id="confirmDeletePayroll" disabled>Permanently Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+  const deleteDialog = document.getElementById('deletePayrollDialog');
+  const openDelete = document.getElementById('openDeletePayroll');
+  const closeDelete = document.getElementById('closeDeletePayroll');
+  const cancelDelete = document.getElementById('cancelDeletePayroll');
+  const deleteInput = document.getElementById('deleteConfirmationInput');
+  const confirmDelete = document.getElementById('confirmDeletePayroll');
+  const requiredDeleteText = 'permanently delete';
+
+  function refreshDeleteState() {
+    confirmDelete.disabled = deleteInput.value.trim().toLowerCase() !== requiredDeleteText;
+  }
+
+  openDelete.addEventListener('click', () => {
+    deleteInput.value = '';
+    refreshDeleteState();
+    deleteDialog.showModal();
+    deleteInput.focus();
+  });
+  closeDelete.addEventListener('click', () => deleteDialog.close());
+  cancelDelete.addEventListener('click', () => deleteDialog.close());
+  deleteInput.addEventListener('paste', event => event.preventDefault());
+  deleteInput.addEventListener('drop', event => event.preventDefault());
+  deleteInput.addEventListener('input', refreshDeleteState);
+
+  const finalizeDialog = document.getElementById('finalizePayrollDialog');
+  const openFinalize = document.getElementById('openFinalizePayroll');
+  if (finalizeDialog && openFinalize) {
+    openFinalize.addEventListener('click', () => finalizeDialog.showModal());
+    document.getElementById('closeFinalizePayroll').addEventListener('click', () => finalizeDialog.close());
+    document.getElementById('cancelFinalizePayroll').addEventListener('click', () => finalizeDialog.close());
+  }
+
+  const unlockDialog = document.getElementById('unlockPayrollDialog');
+  const openUnlock = document.getElementById('openUnlockPayroll');
+  if (unlockDialog && openUnlock) {
+    openUnlock.addEventListener('click', () => unlockDialog.showModal());
+    document.getElementById('closeUnlockPayroll').addEventListener('click', () => unlockDialog.close());
+    document.getElementById('cancelUnlockPayroll').addEventListener('click', () => unlockDialog.close());
+  }
+</script>
+{% endblock %}

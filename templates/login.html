@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SMARTfill Payroll</title>
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='img/favicon.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/favicon.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body class="login-body">
+  <main class="login-shell">
+    <section class="login-panel">
+      <div class="login-brand">
+        <img src="{{ url_for('static', filename='img/smartfill-logo.png') }}" alt="SMARTfill" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <div class="brand-mark">SMARTfill</div>
+      </div>
+      <p class="brand-kicker">Weigh Fill Check</p>
+      <h1>Attendance & Payroll Management</h1>
+      <p class="login-copy">Precision payroll control for the team behind world-class weighing and filling systems.</p>
+      {% for category, message in get_flashed_messages(with_categories=true) %}
+        <div class="alert alert-{{ category }}">{{ message }}</div>
+      {% endfor %}
+      {% if active_session_user %}
+      <div class="alert alert-warning">
+        User {{ active_session_user.username }} is already logged in from another browser or device.
+      </div>
+      <form method="post" action="{{ url_for('auth.login') }}" class="mb-3">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="force_login">
+        <button class="btn btn-primary w-100" type="submit">Logout There and Login Here</button>
+      </form>
+      <form method="post" action="{{ url_for('auth.login') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="cancel_force_login">
+        <button class="btn btn-outline-secondary w-100" type="submit">Cancel</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ url_for('auth.login') }}" autocomplete="on" id="loginForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="form-label" for="username">Username</label>
+        <input class="form-control mb-3" id="username" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="text" required>
+        <label class="form-label" for="password">Password</label>
+        <input class="form-control mb-2" id="password" name="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" id="showPassword" autocomplete="off" onclick="document.getElementById('password').type=this.checked?'text':'password'">
+          <label class="form-check-label" for="showPassword">Show Password</label>
+        </div>
+        <button class="btn btn-primary w-100" type="submit">Login</button>
+      </form>
+      {% endif %}
+    </section>
+  </main>
+  <script>
+    (function () {
+      const form = document.getElementById('loginForm');
+      if (!form) return;
+      const fields = [document.getElementById('username'), document.getElementById('password')];
+      fields.forEach(field => {
+        field.addEventListener('keydown', event => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            if (form.requestSubmit) {
+              form.requestSubmit();
+            } else {
+              form.submit();
+            }
+          }
+        });
+      });
+    }());
+  </script>
+</body>
+</html>
