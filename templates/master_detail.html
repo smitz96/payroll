@@ -27,7 +27,7 @@
       <label class="form-label">Wage Type</label>
       <select class="form-select" name="wage_type" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
         <option value="Monthly" {% if employee.normalized_salary_type == 'MONTHLY' %}selected{% endif %}>Monthly</option>
-        <option value="Daily" {% if employee.normalized_salary_type == 'DAILY' %}selected{% endif %}>Daily Wage</option>
+        <option value="Daily" {% if employee.normalized_salary_type == 'DAILY' %}selected{% endif %}>Daily</option>
       </select>
     </div>
     <div class="col-md-3">

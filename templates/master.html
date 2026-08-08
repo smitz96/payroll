@@ -69,11 +69,11 @@
         <label class="form-label">Wage Type</label>
         <select class="form-select mb-3" name="wage_type" required>
           <option value="Monthly">Monthly</option>
-          <option value="Daily">Daily Wage</option>
+          <option value="Daily">Daily</option>
         </select>
         <label class="form-label">Wage / Salary</label>
         <input class="form-control mb-3" name="salary" inputmode="decimal" required>
-        <p class="text-muted mb-0">Once an active employee is set as Monthly or Daily Wage, wage type cannot be changed. Mark the employee as left or terminated first, then add the same employee under a new Employee ID with the updated wage group.</p>
+        <p class="text-muted mb-0">Once an active employee is set as Monthly or Daily, wage type cannot be changed. Mark the employee as left or terminated first, then add the same employee under a new Employee ID with the updated wage group.</p>
       </section>
     </div>
     <div class="drawer-footer">
@@ -107,7 +107,7 @@
         <label class="form-label">Wage Type</label>
         <select class="form-select mb-3" name="wage_type" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
           <option value="Monthly" {% if employee.normalized_salary_type == 'MONTHLY' %}selected{% endif %}>Monthly</option>
-          <option value="Daily" {% if employee.normalized_salary_type == 'DAILY' %}selected{% endif %}>Daily Wage</option>
+          <option value="Daily" {% if employee.normalized_salary_type == 'DAILY' %}selected{% endif %}>Daily</option>
         </select>
         <label class="form-label">Wage / Salary</label>
         <input class="form-control mb-3" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
