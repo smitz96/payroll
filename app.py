@@ -5,6 +5,7 @@ from flask_wtf import CSRFProtect
 
 from attendance import db
 from attendance.authentication import init_admin_user
+from attendance.employee_defaults import backfill_default_weekoffs
 from attendance.utils import format_ist_datetime
 from config import Config
 
@@ -100,6 +101,8 @@ def create_app(test_config=None):
         db.create_all()
         ensure_schema_columns()
         init_admin_user()
+        backfill_default_weekoffs()
+        db.session.commit()
     from routes.auth import bp as auth_bp
     from routes.advances import bp as advances_bp
     from routes.attendance_manager import bp as attendance_manager_bp

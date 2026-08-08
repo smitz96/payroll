@@ -524,7 +524,7 @@ def test_salary_import_auto_creates_weekoff_and_leave_defaults(tmp_path, app):
         assert warnings == []
         rule = WeekOffRule.query.filter_by(employee_id="51").one()
         assert rule.sunday == "WEEK_OFF_ALL"
-        assert rule.confirmed_at is None
+        assert rule.confirmed_at is not None
         opening = LeaveLedger.query.filter_by(employee_id="51", transaction_type="OPENING").one()
         assert opening.amount == Decimal("0.0")
 

@@ -1,6 +1,7 @@
 from datetime import date
 
 from attendance import db
+from attendance.employee_defaults import backfill_default_weekoffs
 from attendance.models import AuditLog, AttendanceRecord, Employee, WeekOffRule
 from attendance.payroll_rules import classify_monthly_attendance
 from attendance.weekoffs import is_week_off_for_date, selected_weekoff_codes
@@ -56,3 +57,21 @@ def test_weekoff_page_saves_and_audits(client, app):
         assert AuditLog.query.filter_by(action="Week Off Rules Changed").count() == 1
     assert b"Normal Shift" in response.data
     assert b"Factory Shift" not in response.data
+
+
+def test_backfill_default_weekoffs_assigns_sunday_to_existing_employees(app):
+    with app.app_context():
+        db.session.add(Employee(id="8", name="Existing Worker"))
+        db.session.commit()
+
+        created = backfill_default_weekoffs()
+        db.session.commit()
+
+        assert created == ["8 - Existing Worker"]
+        rule = WeekOffRule.query.filter_by(employee_id="8").one()
+        assert rule.sunday == "WEEK_OFF_ALL"
+        assert rule.monday == "WORKING"
+        assert rule.confirmed_at is not None
+        assert is_week_off_for_date("8", date(2026, 7, 5)) is True
+        assert is_week_off_for_date("8", date(2026, 7, 6)) is False
+        assert AuditLog.query.filter_by(action="Default Week Off Backfilled").count() == 1
