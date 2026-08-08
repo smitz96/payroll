@@ -340,6 +340,22 @@ def test_payroll_month_loads_salary_from_active_master(client, app):
         assert AuditLog.query.filter_by(action="Wage Master Loaded").count() == 1
 
 
+def test_payroll_month_employee_table_has_sortable_id_column(client, app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="10", name="Zed Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000"), adjustment=Decimal("0"), loan=Decimal("0")))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="2", name="Alpha Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("25000"), adjustment=Decimal("0"), loan=Decimal("0")))
+        db.session.commit()
+    client.post("/login", data={"username": "admin", "password": "12345"})
+    page = client.get("/payroll/2026-07")
+    assert b">ID" in page.data
+    assert b"sort=id" in page.data
+    assert b"sort=name" in page.data
+    assert page.data.index(b"<td>2</td>") < page.data.index(b"<td>10</td>")
+    descending = client.get("/payroll/2026-07?sort=id&order=desc")
+    assert descending.data.index(b"<td>10</td>") < descending.data.index(b"<td>2</td>")
+
+
 def test_employee_attendance_rows_show_calculated_status_and_errors_first(app):
     with app.app_context():
         ok_record = AttendanceRecord(

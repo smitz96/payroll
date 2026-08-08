@@ -41,6 +41,19 @@ def display_month(month):
     return f"{calendar.month_name[month_number]} {year}"
 
 
+def employee_id_sort_value(value):
+    text = str(value or "").strip()
+    if text.isdigit():
+        return (0, int(text))
+    return (1, text.lower())
+
+
+def salary_sort_value(salary, sort):
+    if sort == "name":
+        return (str(salary.name or "").lower(), employee_id_sort_value(salary.employee_id))
+    return employee_id_sort_value(salary.employee_id)
+
+
 def audit_money(value):
     return f"{decimal_money(value):.2f}"
 
@@ -411,13 +424,20 @@ def month(month):
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("payroll.month", month=month))
-    salaries = SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id).all()
+    sort = request.args.get("sort", "id")
+    if sort not in {"id", "name"}:
+        sort = "id"
+    order = request.args.get("order", "asc")
+    if order not in {"asc", "desc"}:
+        order = "asc"
+    salaries = SalaryRecord.query.filter_by(payroll_month=month).all()
+    salaries = sorted(salaries, key=lambda salary: salary_sort_value(salary, sort), reverse=order == "desc")
     results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
     attendance_count = AttendanceRecord.query.filter_by(payroll_month=month).count()
     missing_salary = attendance_missing_salary(month)
     mismatches = name_mismatches(month)
     wage_types = sorted({s.normalized_salary_type or "MISSING" for s in salaries})
-    return render_template("payroll_month.html", month=month, month_label=display_month(month), payroll_month=payroll_month, is_finalized=payroll_month.status == "FINALIZED", salaries=salaries, results=results, attendance_count=attendance_count, missing_salary=missing_salary, mismatches=mismatches, wage_types=wage_types)
+    return render_template("payroll_month.html", month=month, month_label=display_month(month), payroll_month=payroll_month, is_finalized=payroll_month.status == "FINALIZED", salaries=salaries, results=results, attendance_count=attendance_count, missing_salary=missing_salary, mismatches=mismatches, wage_types=wage_types, sort=sort, order=order)
 
 
 @bp.route("/<month>/employee/<employee_id>", methods=["GET", "POST"])

@@ -97,12 +97,28 @@
 </div>
 <div class="table-responsive">
 <table class="table table-sm align-middle smart-table">
-  <thead><tr><th>Employee</th><th>Wage Type</th><th>Status</th><th>Base Salary</th><th>Final Payable Salary</th><th>Warnings</th><th>Action</th></tr></thead>
+  <thead>
+    <tr>
+      <th>
+        <a class="sort-link" href="{{ url_for('payroll.month', month=month, sort='id', order='desc' if sort == 'id' and order == 'asc' else 'asc') }}">ID{% if sort == 'id' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if order == 'asc' else 'Descending' }}">{{ '↑' if order == 'asc' else '↓' }}</span>{% endif %}</a>
+      </th>
+      <th>
+        <a class="sort-link" href="{{ url_for('payroll.month', month=month, sort='name', order='desc' if sort == 'name' and order == 'asc' else 'asc') }}">Employee{% if sort == 'name' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if order == 'asc' else 'Descending' }}">{{ '↑' if order == 'asc' else '↓' }}</span>{% endif %}</a>
+      </th>
+      <th>Wage Type</th>
+      <th>Status</th>
+      <th>Base Salary</th>
+      <th>Final Payable Salary</th>
+      <th>Warnings</th>
+      <th>Action</th>
+    </tr>
+  </thead>
   <tbody>
     {% for s in salaries %}
     {% set r = results.get(s.employee_id) %}
     <tr>
-      <td class="employee-cell"><strong>{{ s.name }}</strong><span>{{ s.employee_id }}</span></td>
+      <td>{{ s.employee_id }}</td>
+      <td class="employee-cell"><strong>{{ s.name }}</strong></td>
       <td>{{ s.salary_type or "Missing" }}</td>
       <td><span class="badge text-bg-{{ 'success' if r and r.calculation_status == 'Calculated' else 'warning' }}">{{ r.calculation_status if r else 'Not Calculated' }}</span></td>
       <td>{{ s.salary }}</td>
