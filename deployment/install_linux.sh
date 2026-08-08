@@ -13,7 +13,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 apt-get update
-apt-get install -y git python3 python3-venv python3-pip build-essential
+apt-get install -y git python3 python3-venv python3-pip python3-dev build-essential
 
 if ! getent group "$APP_USER" >/dev/null 2>&1; then
   groupadd --system "$APP_USER"
