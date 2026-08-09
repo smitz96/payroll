@@ -3,9 +3,17 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
   <div>
     <h1 class="page-title">Employees</h1>
-    <p class="text-muted mb-0">Maintain employee wage, salary, and payroll status.</p>
+    <p class="text-muted mb-0">Maintain employee department, designation, wage, and payroll status.</p>
   </div>
 </div>
+
+{# Suggest values already seen in the attendance sheet so manual entries stay consistent. #}
+<datalist id="departmentOptions">
+  {% for value in employees|map(attribute='department')|select|unique|sort %}<option value="{{ value }}"></option>{% endfor %}
+</datalist>
+<datalist id="designationOptions">
+  {% for value in employees|map(attribute='designation')|select|unique|sort %}<option value="{{ value }}"></option>{% endfor %}
+</datalist>
 
 <div class="module-card">
 <div class="module-card-header">
@@ -18,7 +26,7 @@
 </div>
 <div class="table-responsive">
   <table class="table table-sm smart-table sticky-id-name-table" style="--sticky-id-width: 150px; --sticky-name-width: 320px;">
-    <thead><tr><th>Employee ID</th><th>Name</th><th>Wage Type</th><th>Salary</th><th>OT</th><th>Less Hours</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Employee ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Wage Type</th><th>Salary</th><th>Ignore OT</th><th>Ignore Less Hours</th><th>Status</th><th></th></tr></thead>
     <tbody>
       {% for employee in employees %}
       <tr>
@@ -28,10 +36,12 @@
             <strong>{{ employee.name }}</strong>
           </button>
         </td>
+        <td>{{ employee.department or "—" }}</td>
+        <td>{{ employee.designation or "—" }}</td>
         <td>{{ employee.salary_type or "Not Set" }}</td>
         <td>{{ employee.salary or 0 }}</td>
-        <td>{{ "Enabled" if employee.ot_enabled else "Disabled" }}</td>
-        <td>{{ "Ignored" if employee.less_hours_exempt else "Deducted" }}</td>
+        <td>{{ "Yes" if employee.ot_ignored else "No" }}</td>
+        <td>{{ "Yes" if employee.less_hours_ignored else "No" }}</td>
         <td><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></td>
         <td>
           {% if employee.employment_status == 'ACTIVE' %}
@@ -42,7 +52,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="8" class="text-muted">No employee master records found.</td></tr>
+      <tr><td colspan="10" class="text-muted">No employee master records found.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -58,14 +68,19 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="drawer-header">
       <h2 class="section-title mb-0">Import Employee Master</h2>
-      <button class="dialog-close" type="button" data-close-dialog="importEmployeeMasterDrawer">x</button>
+      <button class="dialog-close" type="button" data-close-dialog="importEmployeeMasterDrawer">&times;</button>
     </div>
     <div class="drawer-body">
       <section class="drawer-section">
         <h3>Bulk Wage Update</h3>
-        <p class="text-muted">Upload the exported CSV after editing only Wage Type and Salary. Employee ID is used for matching; names and other fields are ignored.</p>
+        <p class="text-muted">Upload the exported CSV after editing wage, salary breakup, and compliance columns. Employee ID is the match key.</p>
         <input class="form-control mb-3" type="file" name="employee_master_csv" accept=".csv,text/csv" required>
-        <div class="alert alert-warning mb-0">Active employee wage type cannot be changed once set. Mark the employee as left or terminated, then create a new Employee ID.</div>
+        <ul class="import-rules">
+          <li>Employee ID cannot be changed and unknown IDs are rejected.</li>
+          <li>A Name in the file must match the stored name. Rename from the employee page instead.</li>
+          <li>Wage type cannot be changed once set. Mark the employee left or terminated, then create a new Employee ID.</li>
+          <li>Basic Salary, HRA, Allowance and Conveyance Allowance must add up to Salary, and apply to monthly wage only.</li>
+        </ul>
       </section>
     </div>
     <div class="drawer-footer">
@@ -79,9 +94,10 @@
   <form method="post" action="{{ url_for('master.index') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="save">
+    <input type="hidden" name="master_controls_present" value="1">
     <div class="drawer-header">
       <h2 class="section-title mb-0">Add Employee</h2>
-      <button class="dialog-close" type="button" data-close-dialog="addEmployeeDrawer">x</button>
+      <button class="dialog-close" type="button" data-close-dialog="addEmployeeDrawer">&times;</button>
     </div>
     <div class="drawer-body">
       <section class="drawer-section">
@@ -90,13 +106,53 @@
         <input class="form-control mb-3" name="employee_id" required>
         <label class="form-label">Employee Name</label>
         <input class="form-control mb-3" name="name" required>
+        <label class="form-label">Department</label>
+        <input class="form-control mb-3" name="department" list="departmentOptions" placeholder="e.g. Electrical Production" autocomplete="off">
+        <label class="form-label">Designation</label>
+        <input class="form-control mb-3" name="designation" list="designationOptions" placeholder="e.g. Wireman" autocomplete="off">
+        <div class="status-detail mb-3">Both are filled automatically from the attendance sheet on import. Set them here for employees added manually.</div>
         <label class="form-label">Wage Type</label>
         <select class="form-select mb-3" name="wage_type" required>
           <option value="Monthly">Monthly</option>
           <option value="Daily">Daily</option>
         </select>
-        <label class="form-label">Wage / Salary</label>
-        <input class="form-control mb-3" name="salary" inputmode="decimal" required>
+        <label class="form-label">Salary</label>
+        <input class="form-control mb-3" name="salary" inputmode="decimal" required data-salary-total>
+        <div class="monthly-only" data-monthly-only hidden>
+          <h4 class="form-subhead">Salary breakup</h4>
+          <div class="breakup-grid">
+            <div><label class="form-label" for="add_basic_salary">Basic Salary</label>
+              <input class="form-control" id="add_basic_salary" name="basic_salary" value="0" inputmode="decimal" data-breakup></div>
+            <div><label class="form-label" for="add_hra">HRA</label>
+              <input class="form-control" id="add_hra" name="hra" value="0" inputmode="decimal" data-breakup></div>
+            <div><label class="form-label" for="add_allowance">Allowance</label>
+              <input class="form-control" id="add_allowance" name="allowance" value="0" inputmode="decimal" data-breakup></div>
+            <div><label class="form-label" for="add_conveyance_allowance">Conveyance Allowance</label>
+              <input class="form-control" id="add_conveyance_allowance" name="conveyance_allowance" value="0" inputmode="decimal" data-breakup></div>
+          </div>
+          <div class="breakup-total" data-breakup-total>Leave all four at 0 if the breakup is not captured yet.</div>
+
+          <h4 class="form-subhead">Compliance</h4>
+          <label class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="pf_enabled" >
+            <span>PF applicable</span>
+          </label>
+          <label class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" name="esic_enabled" >
+            <span>ESIC applicable</span>
+          </label>
+        </div>
+        <h4 class="form-subhead">Payroll exceptions</h4>
+        <label class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="ot_ignored">
+          <span>Ignore OT</span>
+        </label>
+        <div class="status-detail mb-3">When ticked, overtime minutes are still reported but payable OT and OT amount stay zero.</div>
+        <label class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="less_hours_ignored">
+          <span>Ignore Less Hours</span>
+        </label>
+        <div class="status-detail mb-3">When ticked, short-hours shortage is not deducted. Full-day and half-day counting still applies.</div>
         <p class="text-muted mb-0">Once an active employee is set as Monthly or Daily, wage type cannot be changed. Mark the employee as left or terminated first, then add the same employee under a new Employee ID with the updated wage group.</p>
       </section>
     </div>
@@ -116,7 +172,7 @@
     <input type="hidden" name="master_controls_present" value="1">
     <div class="drawer-header">
       <h2 class="section-title mb-0">Edit Details {{ employee.name }}</h2>
-      <button class="dialog-close" type="button" data-close-dialog="employeeDrawer{{ loop.index }}">x</button>
+      <button class="dialog-close" type="button" data-close-dialog="employeeDrawer{{ loop.index }}">&times;</button>
     </div>
     <div class="drawer-body">
       {% if employee.employment_status != 'ACTIVE' %}
@@ -128,25 +184,60 @@
         <input class="form-control mb-3" value="{{ employee.id }}" readonly>
         <label class="form-label">Employee Name</label>
         <input class="form-control mb-3" name="name" value="{{ employee.name }}" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <label class="form-label">Department</label>
+        <input class="form-control mb-3" name="department" value="{{ employee.department or '' }}" list="departmentOptions" autocomplete="off" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <label class="form-label">Designation</label>
+        <input class="form-control mb-3" name="designation" value="{{ employee.designation or '' }}" list="designationOptions" autocomplete="off" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
         <label class="form-label">Wage Type</label>
         <select class="form-select mb-3" name="wage_type" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
           <option value="Monthly" {% if employee.normalized_salary_type == 'MONTHLY' %}selected{% endif %}>Monthly</option>
           <option value="Daily" {% if employee.normalized_salary_type == 'DAILY' %}selected{% endif %}>Daily</option>
         </select>
-        <label class="form-label">Wage / Salary</label>
-        <input class="form-control mb-3" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <label class="form-label">Salary</label>
+        <input class="form-control mb-3" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required data-salary-total {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <div class="monthly-only" data-monthly-only hidden>
+          <h4 class="form-subhead">Salary breakup</h4>
+          <div class="breakup-grid">
+            <div><label class="form-label" for="edit_{{ loop.index }}_basic_salary">Basic Salary</label>
+              <input class="form-control" id="edit_{{ loop.index }}_basic_salary" name="basic_salary" value="{{ employee.basic_salary or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+            <div><label class="form-label" for="edit_{{ loop.index }}_hra">HRA</label>
+              <input class="form-control" id="edit_{{ loop.index }}_hra" name="hra" value="{{ employee.hra or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+            <div><label class="form-label" for="edit_{{ loop.index }}_allowance">Allowance</label>
+              <input class="form-control" id="edit_{{ loop.index }}_allowance" name="allowance" value="{{ employee.allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+            <div><label class="form-label" for="edit_{{ loop.index }}_conveyance_allowance">Conveyance Allowance</label>
+              <input class="form-control" id="edit_{{ loop.index }}_conveyance_allowance" name="conveyance_allowance" value="{{ employee.conveyance_allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+          </div>
+          <div class="breakup-total" data-breakup-total>Leave all four at 0 if the breakup is not captured yet.</div>
+
+          <h4 class="form-subhead">Compliance</h4>
+          <label class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="pf_enabled" {% if employee.pf_enabled %}checked{% endif %}  {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+            <span>PF applicable</span>
+          </label>
+          <label class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" name="esic_enabled" {% if employee.esic_enabled %}checked{% endif %}  {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+            <span>ESIC applicable</span>
+          </label>
+        </div>
         <div class="drawer-detail-grid mb-3">
           <div><span>Status</span><strong>{{ employee.employment_status }}</strong></div>
-          <div><span>OT Eligible</span><strong>{{ "Enabled" if employee.ot_enabled else "Disabled" }}</strong></div>
-          <div><span>Less Hours</span><strong>{{ "Ignored" if employee.less_hours_exempt else "Deducted" }}</strong></div>
+          <div><span>Department</span><strong>{{ employee.department or "Not set" }}</strong></div>
+          <div><span>Designation</span><strong>{{ employee.designation or "Not set" }}</strong></div>
+          {% if employee.normalized_salary_type == 'MONTHLY' %}
+          <div><span>PF</span><strong>{{ "Yes" if employee.pf_enabled else "No" }}</strong></div>
+          <div><span>ESIC</span><strong>{{ "Yes" if employee.esic_enabled else "No" }}</strong></div>
+          {% endif %}
+          <div><span>Ignore OT</span><strong>{{ "Yes" if employee.ot_ignored else "No" }}</strong></div>
+          <div><span>Ignore Less Hours</span><strong>{{ "Yes" if employee.less_hours_ignored else "No" }}</strong></div>
         </div>
+        <h4 class="form-subhead">Payroll exceptions</h4>
         <label class="form-check mb-3">
-          <input class="form-check-input" type="checkbox" name="ot_enabled" {% if employee.ot_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
-          <span>OT Eligible</span>
+          <input class="form-check-input" type="checkbox" name="ot_ignored" {% if employee.ot_ignored %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+          <span>Ignore OT</span>
         </label>
         <label class="form-check mb-3">
-          <input class="form-check-input" type="checkbox" name="less_hours_exempt" {% if employee.less_hours_exempt %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
-          <span>Ignore Less Hours Deduction</span>
+          <input class="form-check-input" type="checkbox" name="less_hours_ignored" {% if employee.less_hours_ignored %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+          <span>Ignore Less Hours</span>
         </label>
         <p class="text-muted mb-0">Wage type cannot be changed for an active employee once set. Mark the employee as left or terminated before adding a new Employee ID with another wage group.</p>
       </section>
@@ -172,7 +263,7 @@
         <h2 class="section-title mb-1">Disable Employee</h2>
         <p class="text-muted mb-0" id="disableEmployeeLabel"></p>
       </div>
-      <button class="dialog-close" type="button" id="closeDisableEmployee">x</button>
+      <button class="dialog-close" type="button" id="closeDisableEmployee">&times;</button>
     </div>
     <label class="form-label">Status</label>
     <select class="form-select mb-3" name="employment_status" required>
@@ -200,7 +291,7 @@
         <h2 class="section-title mb-1">Enable Employee</h2>
         <p class="text-muted mb-0" id="enableEmployeeLabel"></p>
       </div>
-      <button class="dialog-close" type="button" id="closeEnableEmployee">x</button>
+      <button class="dialog-close" type="button" id="closeEnableEmployee">&times;</button>
     </div>
     <p class="text-muted">This will mark the employee as active again and allow payroll master edits.</p>
     <label class="form-label" for="enableConfirmationInput">Type confirm to continue</label>
@@ -264,5 +355,7 @@
   enableInput.addEventListener('paste', event => event.preventDefault());
   enableInput.addEventListener('drop', event => event.preventDefault());
   enableInput.addEventListener('input', refreshEnableState);
+
 </script>
+{% include "_salary_breakup.html" %}
 {% endblock %}

@@ -25,12 +25,12 @@
     <span class="badge text-bg-{{ 'warning' if snapshot.status == 'FINALIZED' else 'success' }}">{{ snapshot.status }}</span>
   </div>
   <div class="report-snapshot-grid">
-    <div><span>Salary Employees</span><strong>{{ snapshot.salary_count }}</strong></div>
-    <div><span>Attendance Rows</span><strong>{{ snapshot.attendance_count }}</strong></div>
+    <div><span>Salary employees</span><strong>{{ snapshot.salary_count }}</strong></div>
+    <div><span>Attendance rows</span><strong>{{ snapshot.attendance_count }}</strong></div>
     <div><span>Processed</span><strong>{{ snapshot.processed_count }}</strong></div>
-    <div><span>Review Items</span><strong class="{{ 'text-danger' if snapshot.review_count else '' }}">{{ snapshot.review_count }}</strong></div>
-    <div><span>Total Payable</span><strong>{{ snapshot.total_payable }}</strong></div>
-    <div><span>Total Deductions</span><strong>{{ snapshot.total_deductions }}</strong></div>
+    <div><span>Review items</span><strong class="{{ 'text-danger' if snapshot.review_count else '' }}">{{ snapshot.review_count }}</strong></div>
+    <div><span>Total payable</span><strong>{{ snapshot.total_payable }}</strong></div>
+    <div><span>Total deductions</span><strong>{{ snapshot.total_deductions }}</strong></div>
   </div>
 </section>
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, url_for
 from flask_wtf import CSRFProtect
 
 from attendance import db
@@ -15,6 +15,7 @@ csrf = CSRFProtect()
 def ensure_schema_columns():
     inspector = db.inspect(db.engine)
     tables = inspector.get_table_names()
+    stale_employee_columns = []
     if "user" in tables:
         user_columns = {column["name"] for column in inspector.get_columns("user")}
         if "active_session_token" not in user_columns:
@@ -43,16 +44,35 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN normalized_salary_type VARCHAR(80)"))
         if "salary" not in employee_columns:
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN salary NUMERIC(12, 2) NOT NULL DEFAULT 0"))
-        if "ot_enabled" not in employee_columns:
-            db.session.execute(db.text("ALTER TABLE employee ADD COLUMN ot_enabled BOOLEAN NOT NULL DEFAULT 1"))
-        if "less_hours_exempt" not in employee_columns:
-            db.session.execute(db.text("ALTER TABLE employee ADD COLUMN less_hours_exempt BOOLEAN NOT NULL DEFAULT 0"))
+        # `ot_enabled` was inverted into `ot_ignored`, and `less_hours_exempt` renamed
+        # to `less_hours_ignored`, so both columns now read the same way as the form.
+        if "ot_ignored" not in employee_columns:
+            db.session.execute(db.text("ALTER TABLE employee ADD COLUMN ot_ignored BOOLEAN NOT NULL DEFAULT 0"))
+            if "ot_enabled" in employee_columns:
+                db.session.execute(db.text(
+                    "UPDATE employee SET ot_ignored = CASE WHEN ot_enabled = 0 THEN 1 ELSE 0 END"
+                ))
+        if "less_hours_ignored" not in employee_columns:
+            db.session.execute(db.text("ALTER TABLE employee ADD COLUMN less_hours_ignored BOOLEAN NOT NULL DEFAULT 0"))
+            if "less_hours_exempt" in employee_columns:
+                db.session.execute(db.text("UPDATE employee SET less_hours_ignored = less_hours_exempt"))
+        stale_employee_columns = [name for name in ("ot_enabled", "less_hours_exempt") if name in employee_columns]
         if "employment_status" not in employee_columns:
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN employment_status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'"))
         if "inactive_at" not in employee_columns:
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN inactive_at DATETIME"))
         if "inactive_reason" not in employee_columns:
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN inactive_reason TEXT"))
+        for column, definition in (
+            ("basic_salary", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
+            ("hra", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
+            ("allowance", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
+            ("conveyance_allowance", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
+            ("pf_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("esic_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+        ):
+            if column not in employee_columns:
+                db.session.execute(db.text(f"ALTER TABLE employee ADD COLUMN {column} {definition}"))
     if "payroll_result" in tables:
         payroll_columns = {column["name"] for column in inspector.get_columns("payroll_result")}
         if "loan_deduction" not in payroll_columns:
@@ -71,6 +91,18 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE payroll_month ADD COLUMN encash_all_leaves BOOLEAN NOT NULL DEFAULT 0"))
         if "attendance_submitted" not in payroll_month_columns:
             db.session.execute(db.text("ALTER TABLE payroll_month ADD COLUMN attendance_submitted BOOLEAN NOT NULL DEFAULT 0"))
+        if "monthly_finalized_at" not in payroll_month_columns:
+            db.session.execute(db.text("ALTER TABLE payroll_month ADD COLUMN monthly_finalized_at DATETIME"))
+            # Months finalized before per-wage-type locking existed were finalized as a
+            # whole, so backfill both groups from the old single timestamp.
+            db.session.execute(db.text(
+                "UPDATE payroll_month SET monthly_finalized_at = finalized_at WHERE status = 'FINALIZED'"
+            ))
+        if "daily_finalized_at" not in payroll_month_columns:
+            db.session.execute(db.text("ALTER TABLE payroll_month ADD COLUMN daily_finalized_at DATETIME"))
+            db.session.execute(db.text(
+                "UPDATE payroll_month SET daily_finalized_at = finalized_at WHERE status = 'FINALIZED'"
+            ))
     if "attendance_record" in tables:
         attendance_columns = {column["name"] for column in inspector.get_columns("attendance_record")}
         if "punches_json" not in attendance_columns:
@@ -85,6 +117,34 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE holiday ADD COLUMN holiday_type VARCHAR(24) NOT NULL DEFAULT 'VARIABLE'"))
     db.session.commit()
 
+    # Superseded columns are dropped only after the data has been migrated and
+    # committed, each in its own transaction: DROP COLUMN needs SQLite 3.35+, and a
+    # failure here must not roll back the migration above.
+    for stale in stale_employee_columns:
+        try:
+            db.session.execute(db.text(f"ALTER TABLE employee DROP COLUMN {stale}"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+
+def register_static_versioning(app):
+    """Stamp static URLs with the file's mtime.
+
+    Flask serves static files with a long max-age, so a CSS or JS change would
+    otherwise keep showing the browser's cached copy after a server update.
+    """
+    def versioned_url_for(endpoint, **values):
+        if endpoint == "static" and "filename" in values and "v" not in values:
+            file_path = Path(app.static_folder) / values["filename"]
+            try:
+                values["v"] = int(file_path.stat().st_mtime)
+            except OSError:
+                pass
+        return url_for(endpoint, **values)
+
+    app.jinja_env.globals["url_for"] = versioned_url_for
+
 
 def create_app(test_config=None):
     app = Flask(__name__)
@@ -92,6 +152,7 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
     app.jinja_env.filters["ist_datetime"] = format_ist_datetime
+    register_static_versioning(app)
     Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)
     Path("data").mkdir(exist_ok=True)
     db.init_app(app)

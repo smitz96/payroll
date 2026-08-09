@@ -9,6 +9,7 @@ from zipfile import ZipFile
 from attendance import db
 from attendance.employee_defaults import ensure_employee_defaults
 from attendance.models import AttendanceRecord, AuditLog, Employee, PayrollMonth, SalaryRecord
+from attendance.settings import MONTHLY_RULES as CFG
 from attendance.utils import clean, decimal_money, minutes_to_duration, normalize_salary_type, parse_csv_date, parse_duration
 
 ATTENDANCE_REQUIRED = [
@@ -157,17 +158,39 @@ def _time_to_minutes(value):
     return parsed.hour * 60 + parsed.minute
 
 
-def _working_minutes_from_punches(punches):
-    if len(punches) < 2:
-        return None
-    total = 0
+def _punch_sessions(punches):
+    """Pair punches into In/Out sessions as (minutes, rolled_past_midnight)."""
+    sessions = []
     for index in range(0, len(punches) - 1, 2):
         start = _time_to_minutes(punches[index])
         end = _time_to_minutes(punches[index + 1])
-        if end < start:
+        rolled = end < start
+        if rolled:
             end += 24 * 60
-        total += end - start
-    return total
+        sessions.append((end - start, rolled))
+    return sessions
+
+
+def _working_minutes_from_punches(punches):
+    if len(punches) < 2:
+        return None
+    return sum(minutes for minutes, _rolled in _punch_sessions(punches))
+
+
+def implausible_session_minutes(punches):
+    """Length of the longest reversed-looking In/Out session, else 0.
+
+    An Out punch typed before its In punch rolls past midnight and would otherwise
+    be paid as a very long day plus overtime. Only sessions that actually rolled
+    over are candidates: a long same-day shift (in 09:35, out 22:19) is real work
+    and must still be paid. Of those, only ones longer than MAX_SESSION_MINUTES are
+    flagged, so a genuine night shift is left alone.
+    """
+    if not punches or len(punches) < 2:
+        return 0
+    limit = CFG["MAX_SESSION_MINUTES"]
+    rolled_over = [minutes for minutes, rolled in _punch_sessions(punches) if rolled and minutes > limit]
+    return max(rolled_over, default=0)
 
 
 def parse_punch_times(value):
@@ -214,9 +237,13 @@ def _attendance_rows_from_daily_punch_xlsx(path):
             raw_value = row[column_index] if len(row) > column_index else ""
             punches = _parse_punch_times(raw_value)
             total_minutes = _working_minutes_from_punches(punches)
-            warning = ""
+            warning_parts = []
             if len(punches) % 2 == 1:
-                warning = "Odd punch count"
+                warning_parts.append("Odd punch count")
+            long_session = implausible_session_minutes(punches)
+            if long_session:
+                warning_parts.append(f"Punch out before punch in ({minutes_to_duration(long_session)} session)")
+            warning = "; ".join(warning_parts)
             normalized_rows.append({
                 **base,
                 "Date": punch_date.isoformat(),
@@ -241,35 +268,60 @@ def attendance_rows_from_upload(path):
     return list(_dict_reader(path))
 
 
-def ensure_employee_master_from_attendance(employee_id, name, row):
-    employee = db.session.get(Employee, employee_id)
-    created = employee is None
-    if created:
-        employee = Employee(
-            id=employee_id,
-            name=name or employee_id,
-            salary_type="",
-            normalized_salary_type="",
-            salary=0,
-            employment_status="ACTIVE",
-            ot_enabled=True,
-            less_hours_exempt=False,
-        )
-    else:
-        employee.name = employee.name or name or employee_id
+def update_employee_from_attendance(employee, name, row):
+    """Refresh an existing master record from the attendance sheet.
 
+    Employees are never created here: they must be added to Employee Master first,
+    so payroll always runs against a wage type and salary someone has reviewed.
+    """
+    employee.name = employee.name or name or employee.id
     department = clean(row.get("Department"))
     designation = clean(row.get("Designation"))
     employee.department = department or employee.department
     employee.designation = designation or employee.designation
     db.session.add(employee)
-    if created:
-        db.session.flush()
-    return employee, created
+    return employee
+
+
+def unknown_attendance_employees(rows):
+    """Employee IDs present in the sheet but missing from Employee Master, in sheet order."""
+    known = {employee.id for employee in Employee.query.all()}
+    missing = {}
+    for row in rows:
+        employee_id = clean(row.get("Employee ID"))
+        if not employee_id or employee_id in known or employee_id in missing:
+            continue
+        missing[employee_id] = clean(row.get("Employee Name")) or employee_id
+    return missing
+
+
+class UnknownEmployeesError(ValueError):
+    """Raised when the attendance sheet references employees that are not in the master."""
+
+    def __init__(self, missing):
+        self.missing = missing
+        listed = ", ".join(f"{employee_id} - {name}" for employee_id, name in list(missing.items())[:10])
+        if len(missing) > 10:
+            listed += f", and {len(missing) - 10} more"
+        super().__init__(
+            f"{len(missing)} employee(s) in the attendance sheet are not in Employee Master: {listed}. "
+            "Add them under Employees first, then upload the attendance sheet again. "
+            "No attendance data was changed."
+        )
 
 
 def import_attendance_csv(path, month, actor="admin"):
     ensure_month(month)
+    # Everything that can reject the upload runs before any existing data is touched,
+    # so a failed import leaves the month exactly as it was.
+    rows = attendance_rows_from_upload(path)
+    missing = [name for name in ATTENDANCE_REQUIRED if name not in (rows[0].keys() if rows else [])]
+    if missing:
+        raise ValueError("Attendance CSV missing columns: " + ", ".join(missing))
+    unknown = unknown_attendance_employees(rows)
+    if unknown:
+        raise UnknownEmployeesError(unknown)
+
     payroll_month = PayrollMonth.query.get(month)
     if payroll_month:
         payroll_month.attendance_submitted = False
@@ -277,13 +329,8 @@ def import_attendance_csv(path, month, actor="admin"):
     from attendance.models import AttendanceOverride, PayrollResult
     AttendanceOverride.query.filter_by(payroll_month=month).delete()
     PayrollResult.query.filter_by(payroll_month=month).delete()
-    rows = attendance_rows_from_upload(path)
-    missing = [name for name in ATTENDANCE_REQUIRED if name not in (rows[0].keys() if rows else [])]
     warnings = []
     default_details = []
-    auto_created_masters = []
-    if missing:
-        raise ValueError("Attendance CSV missing columns: " + ", ".join(missing))
     duplicate_keys = Counter((clean(r.get("Employee ID")), clean(r.get("Date"))) for r in rows)
     imported = 0
     for row in rows:
@@ -292,9 +339,7 @@ def import_attendance_csv(path, month, actor="admin"):
         if not employee_id:
             warnings.append("Attendance row missing Employee ID")
             continue
-        employee, master_created = ensure_employee_master_from_attendance(employee_id, name, row)
-        if master_created:
-            auto_created_masters.append(f"{employee_id} - {employee.name}")
+        update_employee_from_attendance(db.session.get(Employee, employee_id), name, row)
         created_defaults = ensure_employee_defaults(employee_id)
         if created_defaults:
             default_details.append(f"{employee_id} - {name or employee_id}: {', '.join(created_defaults)}")
@@ -327,6 +372,11 @@ def import_attendance_csv(path, month, actor="admin"):
         if clean(row.get("_Punch Warning")):
             status = "NEEDS_REVIEW"
             warning_parts.append(clean(row.get("_Punch Warning")))
+        elif punches:
+            long_session = implausible_session_minutes(punches)
+            if long_session:
+                status = "NEEDS_REVIEW"
+                warning_parts.append(f"Punch out before punch in ({minutes_to_duration(long_session)} session)")
         record = AttendanceRecord(
             payroll_month=month,
             employee_id=employee_id,
@@ -349,9 +399,6 @@ def import_attendance_csv(path, month, actor="admin"):
         db.session.add(record)
         imported += 1
     db.session.add(AuditLog(actor=actor, action="Attendance Uploaded", detail=f"{Path(path).name}: {imported} rows"))
-    if auto_created_masters:
-        detail = f"{Path(path).name}: " + " | ".join(auto_created_masters)
-        db.session.add(AuditLog(actor=actor, action="Employee Master Auto Created", detail=detail))
     if default_details:
         db.session.add(AuditLog(actor=actor, action="Employee Defaults Created", detail=" | ".join(default_details)))
     db.session.commit()

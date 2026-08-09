@@ -1,9 +1,8 @@
-import calendar
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 
-from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 
@@ -19,7 +18,17 @@ from attendance.parser import ensure_month, import_attendance_csv
 from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, total_paid_days
 from attendance.settings import MONTHLY_RULES as CFG
-from attendance.utils import decimal_money, money
+from attendance.utils import decimal_money, display_month, is_valid_payroll_month, money
+from attendance.wage_groups import (
+    GROUP_LABELS,
+    any_group_finalized,
+    employee_locked,
+    finalize_group,
+    group_summary,
+    is_group_finalized,
+    normalize_group,
+    unlock_group,
+)
 
 bp = Blueprint("payroll", __name__, url_prefix="/payroll")
 
@@ -31,14 +40,6 @@ OVERRIDE_OPTIONS = [
 ]
 LOCKED_MESSAGE = "Payroll is finalized and locked. Unlock payroll before making changes."
 DELETE_CONFIRMATION_TEXT = "permanently delete"
-
-
-def display_month(month):
-    try:
-        year, month_number = (int(part) for part in month.split("-"))
-    except (AttributeError, ValueError):
-        return month
-    return f"{calendar.month_name[month_number]} {year}"
 
 
 def employee_id_sort_value(value):
@@ -260,9 +261,85 @@ def save_employee_detail_changes(month, employee_id):
     return saved_overrides
 
 
-def is_payroll_finalized(month):
+def is_payroll_finalized(month, employee_id=None):
+    """Locked state. With an employee, follows that employee's wage group."""
+    if employee_id is not None:
+        return employee_locked(month, employee_id)
     payroll_month = db.session.get(PayrollMonth, month)
     return bool(payroll_month and payroll_month.status == "FINALIZED")
+
+
+def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count, results, locked=False):
+    """The five stages of a payroll month, in order, with the first unfinished one marked current.
+
+    Each step carries everything needed to act on it, so the stepper is the only
+    place these actions live. A step may offer a link (`href`) and/or a POST action
+    (`action`); actions stay available on completed steps so wages can be reloaded
+    after Employee Master changes.
+    """
+    calculated_count = len([r for r in results.values() if r.final_salary is not None])
+    steps = [
+        {
+            "key": "attendance",
+            "label": "Import attendance",
+            "done": attendance_count > 0,
+            "detail": f"{attendance_count} row(s) imported" if attendance_count else "Upload the punch CSV or XLSX",
+            "href": url_for("attendance_manager.month", month=month),
+            "cta": "Review attendance" if attendance_count else "Import attendance",
+        },
+        {
+            "key": "wages",
+            "label": "Load wages",
+            "done": salary_count > 0,
+            "detail": f"{salary_count} wage record(s)" if salary_count else "Pull wage type and salary from Employee Master",
+            "href": url_for("master.index"),
+            "cta": "Employee Master",
+            "action": None if locked else "salary",
+            "action_label": "Reload wages" if salary_count else "Load wages from master",
+            "action_hint": "Wage type and salary come from Employee Master. Employees with a zero salary or an inactive status are skipped.",
+        },
+        {
+            "key": "submit",
+            "label": "Review & submit",
+            "done": bool(payroll_month.attendance_submitted),
+            "detail": "Attendance submitted" if payroll_month.attendance_submitted else "Fix punch errors, then submit",
+            "href": url_for("attendance_manager.month", month=month),
+            "cta": "Attendance Manager",
+        },
+        {
+            "key": "calculate",
+            "label": "Calculate payroll",
+            "done": calculated_count > 0,
+            "detail": f"{calculated_count} employee(s) calculated" if calculated_count else "Run the payroll calculation",
+            "href": "#run-calculation",
+            "cta": "Run calculation",
+        },
+        {
+            "key": "finalize",
+            "label": "Finalize",
+            "done": payroll_month.status == "FINALIZED",
+            "detail": "Locked" if payroll_month.status == "FINALIZED" else "Lock each wage type when it is signed off",
+            "href": "#wage-locks",
+            "cta": "Finalize",
+        },
+    ]
+    # A step is actionable only once everything before it is done. Steps that are
+    # already done stay actionable so wages can be reloaded or attendance revisited.
+    prerequisites_met = True
+    for step in steps:
+        step["enabled"] = step["done"] or prerequisites_met
+        step["blocked_reason"] = "" if step["enabled"] else "Complete the earlier steps first"
+        prerequisites_met = prerequisites_met and step["done"]
+    current_marked = False
+    for step in steps:
+        if not step["done"] and not current_marked:
+            step["state"] = "current"
+            current_marked = True
+        elif step["done"]:
+            step["state"] = "done"
+        else:
+            step["state"] = "todo"
+    return steps
 
 
 def save_finalized_csv_exports(month):
@@ -288,11 +365,27 @@ def delete_payroll_month(month):
     return counts
 
 
-def clear_manual_payroll_modifications(month):
-    override_count = AttendanceOverride.query.filter_by(payroll_month=month).delete()
-    loan_skip_count = LoanInstallmentSkip.query.filter_by(payroll_month=month).delete()
+def clear_manual_payroll_modifications(month, wage_group=None):
+    """Wipe manual edits for the month, optionally only for one wage group."""
+    group = normalize_group(wage_group)
+    scoped_ids = None
+    if group:
+        scoped_ids = {
+            salary.employee_id
+            for salary in SalaryRecord.query.filter_by(payroll_month=month, normalized_salary_type=group).all()
+        }
+    override_query = AttendanceOverride.query.filter_by(payroll_month=month)
+    skip_query = LoanInstallmentSkip.query.filter_by(payroll_month=month)
+    if scoped_ids is not None:
+        override_query = override_query.filter(AttendanceOverride.employee_id.in_(scoped_ids or {""}))
+        skip_query = skip_query.filter(LoanInstallmentSkip.employee_id.in_(scoped_ids or {""}))
+    override_count = override_query.delete(synchronize_session=False)
+    loan_skip_count = skip_query.delete(synchronize_session=False)
     salary_reset_count = 0
-    for salary in SalaryRecord.query.filter_by(payroll_month=month).all():
+    salary_query = SalaryRecord.query.filter_by(payroll_month=month)
+    if group:
+        salary_query = salary_query.filter_by(normalized_salary_type=group)
+    for salary in salary_query.all():
         if decimal_money(salary.adjustment) != 0 or decimal_money(salary.loan) != 0 or getattr(salary, "leave_encashment_enabled", False) or getattr(salary, "leave_encashment_disabled", False) or Decimal(getattr(salary, "leave_encashment_days", 0) or 0) != 0 or decimal_money(getattr(salary, "leave_encashment_amount", 0)) != 0:
             salary_reset_count += 1
         salary.adjustment = 0
@@ -305,7 +398,10 @@ def clear_manual_payroll_modifications(month):
     db.session.add(AuditLog(
         actor=current_username(),
         action="Manual Payroll Modifications Cleared",
-        detail=f"{month}: {override_count} override row(s) deleted; {loan_skip_count} loan skip row(s) deleted; {salary_reset_count} salary adjustment/loan/leave encashment row(s) reset",
+        detail=(
+            f"{month}: scope {GROUP_LABELS.get(group, 'All wage types')}; {override_count} override row(s) deleted; "
+            f"{loan_skip_count} loan skip row(s) deleted; {salary_reset_count} salary adjustment/loan/leave encashment row(s) reset"
+        ),
     ))
     db.session.flush()
     return override_count, salary_reset_count, loan_skip_count
@@ -318,6 +414,9 @@ def new():
         month = request.form.get("month")
         if not month:
             flash("Select a payroll month.", "danger")
+            return redirect(url_for("payroll.new"))
+        if not is_valid_payroll_month(month):
+            flash("Select a valid payroll month in YYYY-MM format.", "danger")
             return redirect(url_for("payroll.new"))
         ensure_month(month)
         db.session.add(AuditLog(actor=current_username(), action="Payroll Month Created", detail=month))
@@ -341,6 +440,10 @@ def save_upload(file, month, label):
 @bp.route("/<month>", methods=["GET", "POST"])
 @login_required
 def month(month):
+    # Without this, a malformed month reaches calendar.month_name and 500s, and any
+    # GET would create a junk PayrollMonth row keyed on the bad string.
+    if not is_valid_payroll_month(month):
+        abort(404)
     payroll_month = ensure_month(month)
     if request.method == "POST":
         action = request.form.get("action")
@@ -349,21 +452,25 @@ def month(month):
                 if not verify_admin_password():
                     flash("Admin password is required to finalize payroll.", "danger")
                     return redirect(url_for("payroll.month", month=month))
+                group = normalize_group(request.form.get("wage_group"))
+                if not group:
+                    flash("Select the wage type to finalize.", "danger")
+                    return redirect(url_for("payroll.month", month=month))
                 summary_path, attendance_path = save_finalized_csv_exports(month)
-                payroll_month.status = "FINALIZED"
-                payroll_month.finalized_at = datetime.utcnow()
-                db.session.add(AuditLog(actor=current_username(), action="Payroll Finalized", detail=f"{month} locked; saved {summary_path.name}, {attendance_path.name}"))
+                finalize_group(payroll_month, group, current_username(), f"saved {summary_path.name}, {attendance_path.name}")
                 db.session.commit()
-                flash("Payroll finalized and locked.", "success")
+                flash(f"{GROUP_LABELS[group]} wage payroll finalized and locked.", "success")
             elif action == "unlock":
                 if not verify_admin_password():
                     flash("Admin password is required to unlock payroll.", "danger")
                     return redirect(url_for("payroll.month", month=month))
-                payroll_month.status = "DRAFT"
-                payroll_month.finalized_at = None
-                db.session.add(AuditLog(actor=current_username(), action="Payroll Unlocked", detail=f"{month} reopened for changes"))
+                group = normalize_group(request.form.get("wage_group"))
+                if not group:
+                    flash("Select the wage type to unlock.", "danger")
+                    return redirect(url_for("payroll.month", month=month))
+                unlock_group(payroll_month, group, current_username())
                 db.session.commit()
-                flash("Payroll unlocked. Changes are allowed again.", "success")
+                flash(f"{GROUP_LABELS[group]} wage payroll unlocked. Changes are allowed again.", "success")
             elif action == "delete":
                 confirmation = request.form.get("delete_confirmation", "").strip().lower()
                 if confirmation != DELETE_CONFIRMATION_TEXT:
@@ -378,7 +485,7 @@ def month(month):
                     db.session.commit()
                     flash(f"Payroll {month} permanently deleted.", "success")
                     return redirect(url_for("payroll.new"))
-            elif payroll_month.status == "FINALIZED":
+            elif action in {"leave_encashment", "attendance", "salary"} and any_group_finalized(payroll_month):
                 flash(LOCKED_MESSAGE, "danger")
             elif action == "leave_encashment":
                 enabled = request.form.get("encash_all_leaves") == "on"
@@ -415,18 +522,28 @@ def month(month):
                     if not payroll_month.attendance_submitted:
                         flash(f"{attendance_count} attendance row(s) are pending review. Submit attendance from Attendance Manager before calculating payroll.", "danger")
                         return redirect(url_for("attendance_manager.month", month=month))
-                override_count, salary_reset_count, loan_skip_count = clear_manual_payroll_modifications(month)
-                results = calculate_payroll_month(month, current_username())
-                flash(f"Payroll recalculated from CSV data for {len(results)} wage record(s). Cleared {override_count} override row(s), {loan_skip_count} loan skip row(s), and reset {salary_reset_count} adjustment/loan/leave encashment row(s).", "success")
+                group = normalize_group(request.form.get("wage_group"))
+                if group and is_group_finalized(payroll_month, group):
+                    flash(f"{GROUP_LABELS[group]} wage payroll is finalized. Unlock it before recalculating.", "danger")
+                    return redirect(url_for("payroll.month", month=month))
+                override_count, salary_reset_count, loan_skip_count = clear_manual_payroll_modifications(month, group)
+                results = calculate_payroll_month(month, current_username(), wage_group=group)
+                scope = f"{GROUP_LABELS[group]} wage" if group else "all open wage types"
+                flash(f"Reset and recalculated {scope} for {len(results)} wage record(s). Cleared {override_count} override row(s), {loan_skip_count} loan skip row(s), and reset {salary_reset_count} adjustment/loan/leave encashment row(s).", "success")
             elif action == "recheck_holidays":
                 if attendance_count := AttendanceRecord.query.filter_by(payroll_month=month).count():
                     if not payroll_month.attendance_submitted:
                         flash(f"{attendance_count} attendance row(s) are pending review. Submit attendance from Attendance Manager before rechecking holidays.", "danger")
                         return redirect(url_for("attendance_manager.month", month=month))
-                results = calculate_payroll_month(month, current_username())
+                group = normalize_group(request.form.get("wage_group"))
+                if group and is_group_finalized(payroll_month, group):
+                    flash(f"{GROUP_LABELS[group]} wage payroll is finalized. Unlock it before recalculating.", "danger")
+                    return redirect(url_for("payroll.month", month=month))
+                results = calculate_payroll_month(month, current_username(), wage_group=group)
                 db.session.add(AuditLog(actor=current_username(), action="Holiday Recheck", detail=f"{month}: payroll rerun against current holiday calendar for {len(results)} employee(s)"))
                 db.session.commit()
-                flash(f"Holidays rechecked and payroll updated for {len(results)} wage record(s). Manual employee changes were kept.", "success")
+                scope = f"{GROUP_LABELS[group]} wage" if group else "all open wage types"
+                flash(f"Recalculated {scope} for {len(results)} wage record(s). Manual employee changes were kept.", "success")
         except Exception as exc:
             flash(str(exc), "danger")
         return redirect(url_for("payroll.month", month=month))
@@ -453,14 +570,43 @@ def month(month):
     missing_salary = attendance_missing_salary(month)
     mismatches = name_mismatches(month)
     wage_types = sorted({s.normalized_salary_type or "MISSING" for s in salaries})
-    return render_template("payroll_month.html", month=month, month_label=display_month(month), payroll_month=payroll_month, is_finalized=payroll_month.status == "FINALIZED", salaries=salaries, monthly_salaries=monthly_salaries, daily_salaries=daily_salaries, other_salaries=other_salaries, results=results, attendance_count=attendance_count, missing_salary=missing_salary, mismatches=mismatches, wage_types=wage_types, sort=sort, order=order)
+    wage_filter = normalize_group(request.args.get("wage")) if request.args.get("wage") else None
+    groups = group_summary(month, payroll_month)
+    steps = payroll_workflow_steps(month, payroll_month, attendance_count, len(salaries), results, locked=any_group_finalized(payroll_month))
+    total_payable = sum((Decimal(r.final_salary) for r in results.values() if r.final_salary is not None), Decimal("0"))
+    return render_template(
+        "payroll_month.html",
+        month=month,
+        month_label=display_month(month),
+        payroll_month=payroll_month,
+        is_finalized=payroll_month.status == "FINALIZED",
+        salaries=salaries,
+        monthly_salaries=monthly_salaries,
+        daily_salaries=daily_salaries,
+        other_salaries=other_salaries,
+        results=results,
+        attendance_count=attendance_count,
+        missing_salary=missing_salary,
+        mismatches=mismatches,
+        wage_types=wage_types,
+        steps=steps,
+        groups=groups,
+        wage_filter=wage_filter,
+        any_finalized=any_group_finalized(payroll_month),
+        total_payable=f"{total_payable:,.2f}",
+        review_count=len([r for r in results.values() if r.calculation_status != "Calculated"]) + len(missing_salary),
+        sort=sort,
+        order=order,
+    )
 
 
 @bp.route("/<month>/employee/<employee_id>", methods=["GET", "POST"])
 @login_required
 def employee(month, employee_id):
+    if not is_valid_payroll_month(month):
+        abort(404)
     if request.method == "POST":
-        if is_payroll_finalized(month):
+        if is_payroll_finalized(month, employee_id):
             flash(LOCKED_MESSAGE, "danger")
             return redirect(url_for("payroll.employee", month=month, employee_id=employee_id))
         action = request.form.get("action", "save")
@@ -511,5 +657,5 @@ def employee(month, employee_id):
         attendance_rows=attendance_rows,
         overrides=overrides,
         override_options=OVERRIDE_OPTIONS,
-        is_finalized=is_payroll_finalized(month),
+        is_finalized=is_payroll_finalized(month, employee_id),
     )

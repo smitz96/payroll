@@ -1,5 +1,6 @@
-import csv
 import calendar
+import csv
+import re
 from io import BytesIO, StringIO
 from decimal import Decimal
 from pathlib import Path
@@ -22,10 +23,44 @@ ONES = [
     "seventeen", "eighteen", "nineteen",
 ]
 TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+
+# Print palette mirrors the iOS system colours used by static/css/app.css, using the
+# text-safe variants so the paper output keeps the same contrast as the screen.
+INK = colors.HexColor("#1C1C1E")           # label
+MUTED = colors.HexColor("#6B6B70")         # secondaryLabel, flattened for print
+FAINT = colors.HexColor("#8E8E93")         # tertiaryLabel
+SEPARATOR = colors.HexColor("#D8D8DC")     # hairline
+SURFACE = colors.white
+SURFACE_SOFT = colors.HexColor("#F2F2F7")  # secondarySystemBackground
+ZEBRA = colors.HexColor("#FAFAFC")
+TINT = colors.HexColor("#0069DE")          # system blue (fill)
+TINT_TEXT = colors.HexColor("#0050C8")     # system blue (text-safe)
+TINT_WASH = colors.HexColor("#EBF2FD")
+GREEN_TEXT = colors.HexColor("#1B7032")
+RED_TEXT = colors.HexColor("#B3000C")
+ORANGE_TEXT = colors.HexColor("#9A4A00")
+GREEN_WASH = colors.HexColor("#E8F7EC")
+ORANGE_WASH = colors.HexColor("#FDF0E3")
+RED_WASH = colors.HexColor("#FCEBEC")
+
+# Kept for the brand lockup only; the report chrome itself is system-coloured.
 BRAND_BLUE = colors.HexColor("#0C306A")
 BRAND_GREEN = colors.HexColor("#A6CE15")
-BRAND_MUTED = colors.HexColor("#657386")
+BRAND_MUTED = MUTED
+CARD_RADIUS = 7
 LOGO_PATH = Path(__file__).resolve().parent.parent / "static" / "img" / "smartfill-logo.png"
+
+
+def _status_colours(status):
+    """Wash and text colour for a calculation or attendance status."""
+    text = str(status or "").strip().lower()
+    if text in {"calculated", "full day present", "full day", "week off worked", "paid"}:
+        return GREEN_WASH, GREEN_TEXT
+    if text in {"needs review", "punch error", "half day present", "half day", "pending"}:
+        return ORANGE_WASH, ORANGE_TEXT
+    if "lop" in text or text in {"absent / attendance missing", "attendance missing", "skipped"}:
+        return RED_WASH, RED_TEXT
+    return SURFACE_SOFT, MUTED
 
 
 def payroll_month_days(month):
@@ -61,19 +96,23 @@ def payroll_summary_csv(month):
     writer = csv.writer(out)
     month_days = payroll_month_days(month)
     writer.writerow([
-        "Employee ID", "Name", "Department", "Wage Type", "Payroll Rule Status", "Salary",
+        "Employee ID", "Name", "Department", "Designation", "Wage Type", "Payroll Rule Status", "Salary",
         "Month Days", "Paid Working Days", "Week Offs", "Total Paid Days", "Full Days", "Half Days", "Paid Leave", "LOP", "Opening Leave",
         "Leave Earned", "Leave Used", "Closing Leave", "Working Hour Deduction",
         "LOP Deduction", "Overtime", "Adjustment", "Leave Encashment Days", "Leave Encashment Amount", "Loan Deduction", "Advance Salary Deduction", "Final Salary", "Calculation Status",
     ])
     salaries = {s.employee_id: s for s in SalaryRecord.query.filter_by(payroll_month=month).all()}
     results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
+    # The Department column existed but was always blank; employee master now holds it.
+    employees = {e.id: e for e in Employee.query.all()}
     for employee_id, salary in salaries.items():
         result = results.get(employee_id)
+        employee = employees.get(employee_id)
         writer.writerow([
             employee_id,
             salary.name,
-            "",
+            (employee.department if employee else "") or "",
+            (employee.designation if employee else "") or "",
             salary.salary_type,
             result.calculation_status if result else "Not Calculated",
             salary.salary,
@@ -198,27 +237,35 @@ def calculated_results_for_month(month):
     ]
 
 
-def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, landscape_page=True):
+def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, landscape_page=True, kpis=None, status_column=None):
     buffer = BytesIO()
     pagesize = landscape(A4) if landscape_page else A4
-    doc = SimpleDocTemplate(buffer, pagesize=pagesize, leftMargin=8 * mm, rightMargin=8 * mm, topMargin=8 * mm, bottomMargin=10 * mm)
+    doc = SimpleDocTemplate(buffer, pagesize=pagesize, leftMargin=11 * mm, rightMargin=11 * mm, topMargin=11 * mm, bottomMargin=14 * mm)
     styles = getSampleStyleSheet()
-    cell_style = ParagraphStyle("ReportCell", parent=styles["Normal"], fontSize=font_size, leading=font_size + 1.5)
-    header_style = ParagraphStyle("ReportHeaderCell", parent=cell_style, fontName="Helvetica-Bold", textColor=colors.HexColor("#0C306A"))
-    if not rows:
-        rows = [["No records found"] + [""] * (len(headers) - 1)]
-    table_rows = [[Paragraph(str(value), header_style) for value in headers]]
-    for row in rows:
-        table_rows.append([Paragraph(str(value or ""), cell_style) for value in row])
-    if not col_widths:
-        available_width = pagesize[0] - doc.leftMargin - doc.rightMargin
-        col_widths = [available_width / len(headers)] * len(headers)
+    cell_style = ParagraphStyle("ReportCell", parent=styles["Normal"], fontSize=font_size, leading=font_size + 2.2, textColor=INK)
+    header_style = ParagraphStyle(
+        "ReportHeaderCell",
+        parent=cell_style,
+        fontName="Helvetica-Bold",
+        fontSize=font_size - 0.4,
+        textColor=MUTED,
+    )
+    empty_style = ParagraphStyle("ReportEmpty", parent=cell_style, textColor=FAINT)
     available_width = pagesize[0] - doc.leftMargin - doc.rightMargin
-    story = [
-        _report_brand_header(title, subtitle, styles, available_width),
-        Spacer(1, 6),
-        _table(table_rows, col_widths=col_widths, font_size=font_size),
-    ]
+    if not col_widths:
+        col_widths = [available_width / len(headers)] * len(headers)
+
+    table_rows = [[Paragraph(str(value).upper(), header_style) for value in headers]]
+    if rows:
+        for row in rows:
+            table_rows.append([Paragraph(str(value if value not in (None, "") else "—"), cell_style) for value in row])
+    else:
+        table_rows.append([Paragraph("No records found", empty_style)] + [Paragraph("", cell_style)] * (len(headers) - 1))
+
+    story = [_report_brand_header(title, subtitle, styles, available_width), Spacer(1, 9)]
+    if kpis:
+        story.extend([_kpi_row(kpis, available_width), Spacer(1, 9)])
+    story.append(_table(table_rows, col_widths=col_widths, font_size=font_size, status_column=status_column if rows else None))
     page_callback = _titled_page_callback(title)
     doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
     buffer.seek(0)
@@ -227,12 +274,18 @@ def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, lan
 
 def build_payroll_summary_pdf(month):
     names = employee_name_map(month)
+    designations = {employee.id: employee.designation or "" for employee in Employee.query.all()}
     rows = []
+    total_payable = Decimal("0")
+    total_deduction = Decimal("0")
     for result in calculated_results_for_month(month):
         salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=result.employee_id).first()
+        total_payable += Decimal(result.final_salary or 0)
+        total_deduction += Decimal(result.total_deduction or 0)
         rows.append([
             result.employee_id,
             names.get(result.employee_id, result.employee_id),
+            designations.get(result.employee_id, ""),
             salary.salary_type if salary else "",
             pdf_money(salary.salary) if salary else "",
             payroll_month_days(month),
@@ -248,11 +301,18 @@ def build_payroll_summary_pdf(month):
         ])
     return report_pdf(
         "Payroll Summary",
-        f"Payroll Month: {display_month(month)}",
-        ["ID", "Employee", "Wage Type", "Base", "Days", "Working", "Week Off", "Total Paid", "Leave", "LOP", "Deduction", "Addition", "Payable", "Status"],
+        display_month(month),
+        ["ID", "Employee", "Designation", "Wage Type", "Base", "Days", "Working", "Week Off", "Total Paid", "Leave", "LOP", "Deduction", "Addition", "Payable", "Status"],
         rows,
-        col_widths=[13 * mm, 34 * mm, 19 * mm, 20 * mm, 12 * mm, 16 * mm, 17 * mm, 18 * mm, 14 * mm, 12 * mm, 22 * mm, 19 * mm, 22 * mm, 24 * mm],
+        col_widths=[11 * mm, 30 * mm, 28 * mm, 16 * mm, 18 * mm, 11 * mm, 15 * mm, 15 * mm, 16 * mm, 12 * mm, 11 * mm, 20 * mm, 18 * mm, 21 * mm, 21 * mm],
         font_size=6.2,
+        status_column=14,
+        kpis=[
+            ("Employees", len(rows)),
+            ("Total payable", pdf_money(total_payable)),
+            ("Total deductions", pdf_money(total_deduction)),
+            ("Payroll month", display_month(month)),
+        ],
     )
 
 
@@ -271,13 +331,20 @@ def build_attendance_detail_pdf(month):
             rec.parse_status,
             rec.warning or "",
         ])
+    review_rows = sum(1 for row in rows if row[7] != "OK")
     return report_pdf(
-        "Detailed Attendance Report",
-        f"Payroll Month: {display_month(month)}",
+        "Detailed Attendance",
+        f"{display_month(month)} · Every imported punch day",
         ["ID", "Employee", "Date", "Day", "In", "Out", "Working Hours", "Status", "Warning"],
         rows,
         col_widths=[13 * mm, 42 * mm, 22 * mm, 22 * mm, 20 * mm, 20 * mm, 25 * mm, 24 * mm, 86 * mm],
         font_size=6.2,
+        kpis=[
+            ("Attendance rows", f"{len(rows):,}"),
+            ("Employees", len({row[0] for row in rows})),
+            ("Needs review", f"{review_rows:,}"),
+            ("Payroll month", display_month(month)),
+        ],
     )
 
 
@@ -300,13 +367,21 @@ def build_overtime_report_pdf(month):
                 payable_ot,
                 pdf_money(ot_amount),
             ])
+    total_minutes = sum(int(row[6] or 0) for row in rows)
+    total_amount = sum(Decimal(str(row[7]).replace(",", "") or 0) for row in rows)
     return report_pdf(
         "Overtime Report",
-        f"Payroll Month: {display_month(month)} | Rows where payable overtime is greater than zero",
+        f"{display_month(month)} · Only days with payable overtime",
         ["ID", "Employee", "Date", "In Time", "Out Time", "Working Hours", "OT Paid Minutes", "OT Amount"],
         rows,
         col_widths=[16 * mm, 58 * mm, 26 * mm, 26 * mm, 26 * mm, 32 * mm, 36 * mm, 32 * mm],
         font_size=7,
+        kpis=[
+            ("Overtime days", len(rows)),
+            ("Employees", len({row[0] for row in rows})),
+            ("Payable minutes", f"{total_minutes:,}"),
+            ("Overtime amount", pdf_money(total_amount)),
+        ],
     )
 
 
@@ -329,13 +404,21 @@ def build_less_hours_report_pdf(month):
                 shortage,
                 pdf_money(deduction),
             ])
+    total_minutes = sum(int(row[6] or 0) for row in rows)
+    total_deduction = sum(Decimal(str(row[7]).replace(",", "") or 0) for row in rows)
     return report_pdf(
         "Less Hours Report",
-        f"Payroll Month: {display_month(month)} | Rows where less-hours deduction is greater than zero",
+        f"{display_month(month)} · Only days with a short-hours deduction",
         ["ID", "Employee", "Date", "In Time", "Out Time", "Working Hours", "Less Minutes", "Deduction"],
         rows,
         col_widths=[16 * mm, 58 * mm, 26 * mm, 26 * mm, 26 * mm, 32 * mm, 32 * mm, 36 * mm],
         font_size=7,
+        kpis=[
+            ("Short days", len(rows)),
+            ("Employees", len({row[0] for row in rows})),
+            ("Short minutes", f"{total_minutes:,}"),
+            ("Total deduction", pdf_money(total_deduction)),
+        ],
     )
 
 
@@ -351,13 +434,20 @@ def build_error_report_pdf(month):
     for result in PayrollResult.query.filter_by(payroll_month=month).order_by(PayrollResult.employee_id):
         if result.calculation_status != "Calculated":
             rows.append(["Payroll", result.employee_id, names.get(result.employee_id, ""), result.message or result.calculation_status])
+    area_counts = {area: sum(1 for row in rows if row[0] == area) for area in ("Salary", "Attendance", "Payroll")}
     return report_pdf(
         "Error Report",
-        f"Payroll Month: {display_month(month)}",
+        f"{display_month(month)} · Items to resolve before finalizing",
         ["Area", "Employee ID", "Employee", "Issue"],
         rows,
         col_widths=[28 * mm, 26 * mm, 56 * mm, 160 * mm],
         font_size=7,
+        kpis=[
+            ("Total issues", len(rows)),
+            ("Attendance", area_counts["Attendance"]),
+            ("Payroll", area_counts["Payroll"]),
+            ("Wage data", area_counts["Salary"]),
+        ],
     )
 
 
@@ -590,76 +680,127 @@ def _salary_slip_header(month, salary, result, styles, compact=False):
         fontName="Helvetica-Bold",
         textColor=colors.HexColor("#172033"),
     )
-    left = _brand_logo(width=27 * mm if compact else 34 * mm, height=9.5 * mm if compact else 12 * mm)
-    middle = [
+    employee = db.session.get(Employee, employee_id) if employee_id else None
+    role_bits = [bit for bit in [(employee.designation if employee else ""), (employee.department if employee else "")] if bit]
+    status = result.calculation_status if result else "Not Calculated"
+    _wash, status_colour = _status_colours(status)
+    status_style = ParagraphStyle("SlipStatus", parent=meta_style, fontName="Helvetica-Bold", textColor=status_colour)
+
+    left = [
         Paragraph("Salary Slip", title_style),
-        Paragraph(f"Payroll Month: {display_month(month)}", meta_style),
-        Paragraph("SMARTfill Payroll", meta_style),
+        Paragraph(display_month(month), meta_style),
+    ]
+    middle = [
+        Paragraph(f"{employee_id} &middot; {employee_name}", employee_style),
+        Paragraph(" &middot; ".join(role_bits) if role_bits else "Designation not set", meta_style),
     ]
     right = [
-        Paragraph(f"Employee ID: {employee_id}", meta_style),
-        Paragraph(f"Employee Name: {employee_name}", employee_style),
-        Paragraph(f"Status: {result.calculation_status if result else 'Not Calculated'}", meta_style),
+        Paragraph(status, status_style),
+        Paragraph("SMARTfill Payroll", meta_style),
     ]
-    table = Table([[left, middle, right]], colWidths=[36 * mm, 55 * mm, 103 * mm] if compact else [44 * mm, 64 * mm, 88 * mm])
+    table = Table(
+        [[left, middle, right, _brand_logo(width=26 * mm if compact else 30 * mm, height=9 * mm if compact else 10.5 * mm)]],
+        colWidths=[40 * mm, 76 * mm, 44 * mm, 34 * mm] if compact else [44 * mm, 74 * mm, 40 * mm, 38 * mm],
+    )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-        ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#D9E2EC")),
-        ("LINEABOVE", (0, 0), (-1, 0), 2.0, BRAND_GREEN),
+        ("BACKGROUND", (0, 0), (-1, -1), SURFACE_SOFT),
+        ("BOX", (0, 0), (-1, -1), 0.5, SEPARATOR),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4 if compact else 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4 if compact else 6),
+        ("ALIGN", (2, 0), (2, 0), "RIGHT"),
+        ("ALIGN", (3, 0), (3, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 5 if compact else 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5 if compact else 8),
     ]))
+    table.cornerRadii = [CARD_RADIUS] * 4
     return table
 
 
 def _report_brand_header(title, subtitle, styles, available_width, compact=False):
-    title_size = 10 if compact else 13
-    subtitle_size = 6.5 if compact else 8
+    """iOS large-title masthead: heavy tight title, muted subtitle, logo to the right."""
+    title_size = 12 if compact else 17
+    subtitle_size = 6.5 if compact else 8.5
     title_style = ParagraphStyle(
         "BrandedReportTitle",
         parent=styles["Heading1"],
         fontName="Helvetica-Bold",
         fontSize=title_size,
         leading=title_size + 2,
-        textColor=BRAND_BLUE,
+        textColor=INK,
+        spaceAfter=0,
     )
     subtitle_style = ParagraphStyle(
         "BrandedReportSubtitle",
         parent=styles["Normal"],
         fontSize=subtitle_size,
-        leading=subtitle_size + 2,
-        textColor=BRAND_MUTED,
+        leading=subtitle_size + 3,
+        textColor=MUTED,
     )
-    right = [
-        Paragraph(title, title_style),
-        Paragraph(subtitle, subtitle_style),
-        Paragraph("SMARTfill Payroll", subtitle_style),
-    ]
-    logo_width = 36 * mm
-    table = Table([[_brand_logo(width=logo_width, height=12.5 * mm), right]], colWidths=[44 * mm, available_width - 44 * mm])
+    left = [Paragraph(title, title_style), Paragraph(subtitle, subtitle_style)]
+    logo_width = 30 * mm if compact else 34 * mm
+    table = Table(
+        [[left, _brand_logo(width=logo_width, height=10 * mm if compact else 11.5 * mm)]],
+        colWidths=[available_width - logo_width - 8 * mm, logo_width + 8 * mm],
+    )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-        ("BOX", (0, 0), (-1, -1), 0.7, colors.HexColor("#D9E2EC")),
-        ("LINEABOVE", (0, 0), (-1, 0), 2.0, BRAND_GREEN),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.6, SEPARATOR),
+    ]))
+    return table
+
+
+def _kpi_row(items, available_width, compact=False):
+    """A row of iOS metric tiles: muted caption above a large tight value."""
+    if not items:
+        return Spacer(1, 0)
+    label_size = 5.6 if compact else 7
+    value_size = 9 if compact else 12.5
+    label_style = ParagraphStyle("KpiLabel", fontName="Helvetica", fontSize=label_size, leading=label_size + 2, textColor=MUTED)
+    value_style = ParagraphStyle("KpiValue", fontName="Helvetica-Bold", fontSize=value_size, leading=value_size + 2, textColor=INK)
+    cells = [[Paragraph(label, label_style), Paragraph(str(value), value_style)] for label, value in items]
+    width = available_width / len(items)
+    table = Table([[Table([[c[0]], [c[1]]], colWidths=[width - 6]) for c in cells]], colWidths=[width] * len(items))
+    inner = TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, 0), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BACKGROUND", (0, 0), (-1, -1), SURFACE_SOFT),
+        ("BOX", (0, 0), (-1, -1), 0.5, SEPARATOR),
+    ])
+    for cell_table in table._cellvalues[0]:
+        cell_table.setStyle(inner)
+        cell_table.cornerRadii = [CARD_RADIUS] * 4
+    table.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (0, 0), 0),
+        ("RIGHTPADDING", (-1, 0), (-1, 0), 0),
+        ("LEFTPADDING", (1, 0), (-1, 0), 3),
+        ("RIGHTPADDING", (0, 0), (-2, 0), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     return table
 
 
 def _pdf_header_footer(canvas, doc):
+    """Hairline rule with muted footer text, matching the app's separator treatment."""
     canvas.saveState()
-    canvas.setFont("Helvetica", 8)
-    canvas.setFillColor(BRAND_BLUE)
-    canvas.drawString(doc.leftMargin, 6 * mm, "SMARTfill Payroll")
-    canvas.setFillColor(BRAND_MUTED)
-    canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, 6 * mm, f"Page {doc.page}")
+    baseline = 7.5 * mm
+    canvas.setStrokeColor(SEPARATOR)
+    canvas.setLineWidth(0.5)
+    canvas.line(doc.leftMargin, baseline + 3.5 * mm, doc.pagesize[0] - doc.rightMargin, baseline + 3.5 * mm)
+    canvas.setFont("Helvetica", 7.5)
+    canvas.setFillColor(MUTED)
+    canvas.drawString(doc.leftMargin, baseline, "SMARTfill Payroll")
+    canvas.setFillColor(FAINT)
+    canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, baseline, f"Page {doc.page}")
     canvas.restoreState()
 
 
@@ -672,40 +813,81 @@ def _titled_page_callback(title):
     return callback
 
 
-def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None, blank_columns=None):
-    table = Table(data, colWidths=col_widths, repeatRows=1 if header else 0)
-    pad = 1 if font_size <= 5.8 else 4
+def _status_column_style(data, column, header=True):
+    """Colour a status column per row, mirroring the status badges in the web UI."""
+    style = []
+    start = 1 if header else 0
+    for index in range(start, len(data)):
+        cell = data[index][column] if column < len(data[index]) else ""
+        text = getattr(cell, "text", cell)
+        # Paragraph.text keeps the source markup, so strip any tags before matching.
+        text = re.sub(r"<[^>]+>", "", str(text)).strip()
+        if not text or text == "—":
+            continue
+        _wash, colour = _status_colours(text)
+        if colour is not MUTED:
+            style.append(("TEXTCOLOR", (column, index), (column, index), colour))
+    return style
+
+
+def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None, blank_columns=None, status_column=None):
+    """An iOS-style list: rounded card, hairline row separators, no vertical rules.
+
+    The previous look was a full grid with a tinted header band. Apple's tables
+    separate rows with a single hairline and let whitespace do the column work, so
+    the grid is dropped in favour of zebra banding and generous padding.
+    """
+    compact = font_size <= 5.8
+    table = Table(
+        data,
+        colWidths=col_widths,
+        repeatRows=1 if header else 0,
+        cornerRadii=[CARD_RADIUS] * 4,
+    )
+    pad_y = 1.5 if compact else 4.5
+    pad_x = 3 if compact else 6
     highlight_rows = highlight_rows or []
     blank_columns = blank_columns or []
     style = [
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), font_size),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAF1F8")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#0C306A")),
-        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D9E2EC")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), pad),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
+        ("TEXTCOLOR", (0, 0), (-1, -1), INK),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), pad_x),
+        ("RIGHTPADDING", (0, 0), (-1, -1), pad_x),
+        ("TOPPADDING", (0, 0), (-1, -1), pad_y),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), pad_y),
+        ("BACKGROUND", (0, 0), (-1, -1), SURFACE),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.4, SEPARATOR),
+        ("BOX", (0, 0), (-1, -1), 0.5, SEPARATOR),
     ]
-    if not header:
-        style[0] = ("FONTNAME", (0, 0), (-1, -1), "Helvetica")
-        style[2] = ("BACKGROUND", (0, 0), (-1, -1), colors.white)
+    if header:
+        style.extend([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("BACKGROUND", (0, 0), (-1, 0), SURFACE_SOFT),
+            ("TEXTCOLOR", (0, 0), (-1, 0), MUTED),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.6, SEPARATOR),
+            ("TOPPADDING", (0, 0), (-1, 0), pad_y + 1),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), pad_y + 1),
+        ])
+        # Zebra banding, which reads better than rules on wide landscape tables.
+        for index in range(2, len(data), 2):
+            style.append(("BACKGROUND", (0, index), (-1, index), ZEBRA))
+    else:
+        style.append(("FONTNAME", (0, 0), (-1, -1), "Helvetica"))
     for row in highlight_rows:
         style.extend([
-            ("BACKGROUND", (0, row), (-1, row), colors.HexColor("#F5F9E8")),
-            ("TEXTCOLOR", (0, row), (-1, row), colors.HexColor("#0C306A")),
+            ("BACKGROUND", (0, row), (-1, row), TINT_WASH),
+            ("TEXTCOLOR", (0, row), (-1, row), TINT_TEXT),
             ("FONTNAME", (0, row), (-1, row), "Helvetica-Bold"),
         ])
+    if status_column is not None:
+        style.extend(_status_column_style(data, status_column, header=header))
+    # Spacer columns used by the two-up compact slip; keep them invisible.
     for column in blank_columns:
         style.extend([
-            ("BACKGROUND", (column, 0), (column, -1), colors.white),
-            ("TEXTCOLOR", (column, 0), (column, -1), colors.white),
-            ("LINEBEFORE", (column, 0), (column, -1), 0.35, colors.white),
-            ("LINEAFTER", (column, 0), (column, -1), 0.35, colors.white),
-            ("LINEABOVE", (column, 0), (column, -1), 0.35, colors.white),
-            ("LINEBELOW", (column, 0), (column, -1), 0.35, colors.white),
+            ("BACKGROUND", (column, 0), (column, -1), SURFACE),
+            ("TEXTCOLOR", (column, 0), (column, -1), SURFACE),
+            ("LINEBELOW", (column, 0), (column, -1), 0, SURFACE),
         ])
     table.setStyle(TableStyle(style))
     return table

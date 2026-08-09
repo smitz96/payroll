@@ -80,7 +80,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="drawer-header">
       <h2 class="section-title mb-0">Import Leave Balance</h2>
-      <button class="dialog-close" type="button" data-close-dialog="importLeaveBalanceDrawer">x</button>
+      <button class="dialog-close" type="button" data-close-dialog="importLeaveBalanceDrawer">&times;</button>
     </div>
     <div class="drawer-body">
       <section class="drawer-section">
@@ -106,7 +106,7 @@
     <input type="hidden" name="current_balance_{{ employee.id }}" value="{{ row.current_balance }}">
     <div class="drawer-header">
       <h2 class="section-title mb-0">Edit Leave Balance {{ employee.name }}</h2>
-      <button class="dialog-close" type="button" data-close-dialog="leaveDrawer{{ loop.index }}">x</button>
+      <button class="dialog-close" type="button" data-close-dialog="leaveDrawer{{ loop.index }}">&times;</button>
     </div>
     <div class="drawer-body">
       <section class="drawer-section">

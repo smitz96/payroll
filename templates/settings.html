@@ -1,15 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
 <h1 class="page-title">Settings</h1>
-<div class="alert alert-info">Current payroll configuration applies to <strong>Wage Type: Monthly</strong>.</div>
+<div class="alert alert-info">These attendance and hour rules drive <strong>Monthly</strong> wage payroll. <strong>Daily</strong> wage payroll uses the same hour thresholds but pays per present day instead of a fixed monthly salary.</div>
 <div class="row g-3">
   <div class="col-lg-8">
     <div class="tool-panel">
-      <h2 class="section-title">Monthly Attendance, Salary & Leave Rules</h2>
-      <table class="table table-sm">
-        {% for key, value in monthly_rules.items() %}
-        <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+      <h2 class="section-title">Attendance, Salary &amp; Leave Rules</h2>
+      <p class="text-muted">Every rule below is read directly by the payroll calculation.</p>
+      <table class="table table-sm smart-table">
+        <thead><tr><th>Rule</th><th>Value</th><th>Effect</th></tr></thead>
+        <tbody>
+        {% for rule in monthly_rules %}
+        <tr>
+          <th>{{ rule.label }}</th>
+          <td><strong>{{ rule.value }}</strong></td>
+          <td class="text-muted">{{ rule.detail }}</td>
+        </tr>
         {% endfor %}
+        </tbody>
       </table>
     </div>
   </div>
@@ -29,22 +37,22 @@
     </div>
     <div class="tool-panel mt-3">
       <h2 class="section-title">Security</h2>
-      <a class="btn btn-primary" href="{{ url_for('settings.security') }}">Change Password</a>
+      <a class="btn btn-primary" href="{{ url_for('settings.security') }}">Change password</a>
     </div>
     <div class="tool-panel mt-3">
-      <h2 class="section-title">Server Update</h2>
+      <h2 class="section-title">Server update</h2>
       <p class="text-muted">Run the server update script. This pulls the latest GitHub code, reinstalls dependencies, migrates the database, and restarts the service.</p>
       <form method="post" action="{{ url_for('settings.git_pull') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label class="form-label" for="admin_password">Admin Password</label>
+        <label class="form-label" for="admin_password">Admin password</label>
         <input class="form-control mb-3" id="admin_password" name="admin_password" type="password" autocomplete="current-password" required>
-        <button class="btn btn-primary w-100" type="submit">Update App</button>
+        <button class="btn btn-primary w-100" type="submit">Update app</button>
       </form>
     </div>
     <div class="tool-panel danger-zone mt-3">
-      <h2 class="section-title">Reset All Data</h2>
+      <h2 class="section-title">Reset all data</h2>
       <p class="text-muted">Clear employees, payroll months, attendance, wage records, leave balances, week offs, holidays, loans, advances, and activity logs. Admin login is kept.</p>
-      <button class="btn btn-outline-danger w-100" type="button" id="openResetDataDialog">Reset All Data</button>
+      <button class="btn btn-outline-danger w-100" type="button" id="openResetDataDialog">Reset all data</button>
     </div>
   </div>
 </div>
@@ -54,10 +62,10 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="dialog-header">
       <div>
-        <h2 class="mb-2">Reset All Data</h2>
+        <h2 class="mb-2">Reset all data</h2>
         <p class="text-muted mb-0">This will permanently clear all app data and activity logs. This cannot be undone.</p>
       </div>
-      <button type="button" class="dialog-close" id="closeResetDataDialog">x</button>
+      <button type="button" class="dialog-close" id="closeResetDataDialog">&times;</button>
     </div>
     <div class="change-summary">
       <strong>Admin login will remain.</strong>
@@ -65,9 +73,11 @@
     </div>
     <label class="form-label" for="resetDataConfirmationInput">Type permanently delete to confirm</label>
     <input class="form-control mb-3" id="resetDataConfirmationInput" name="reset_confirmation" autocomplete="off" spellcheck="false">
+    <label class="form-label" for="resetDataPassword">Admin password</label>
+    <input class="form-control mb-3" id="resetDataPassword" name="admin_password" type="password" autocomplete="current-password" required>
     <div class="d-flex justify-content-end gap-2">
       <button class="btn btn-outline-secondary" type="button" id="cancelResetDataDialog">Cancel</button>
-      <button class="btn btn-outline-danger" type="submit" id="confirmResetData" disabled>Reset All Data</button>
+      <button class="btn btn-outline-danger" type="submit" id="confirmResetData" disabled>Reset all data</button>
     </div>
   </form>
 </dialog>
@@ -79,12 +89,18 @@
   const confirmResetData = document.getElementById('confirmResetData');
   const requiredResetText = 'permanently delete';
 
+  const resetDataPassword = document.getElementById('resetDataPassword');
+
   function refreshResetDataState() {
-    confirmResetData.disabled = resetDataInput.value.trim().toLowerCase() !== requiredResetText;
+    const phraseOk = resetDataInput.value.trim().toLowerCase() === requiredResetText;
+    confirmResetData.disabled = !(phraseOk && resetDataPassword.value.length > 0);
   }
+
+  resetDataPassword.addEventListener('input', refreshResetDataState);
 
   openResetDataDialog.addEventListener('click', () => {
     resetDataInput.value = '';
+    resetDataPassword.value = '';
     refreshResetDataState();
     resetDataDialog.showModal();
     resetDataInput.focus();

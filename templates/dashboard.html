@@ -2,16 +2,16 @@
 {% from "icons.html" import icon %}
 {% block content %}
 {% set card_icons = {
-  "Salary Employees": "users",
-  "Attendance Rows": "attendance",
-  "Employees Processed": "processed",
-  "Total Base Salary": "salary",
-  "Total Payable Salary": "salary",
-  "Total Deductions": "deduction",
-  "Over Time Amount": "overtime",
-  "Review Items": "review",
-  "Less Hours": "less-hours",
-  "Average Payable": "average"
+  "Salary employees": "users",
+  "Attendance rows": "attendance",
+  "Employees processed": "processed",
+  "Total base salary": "salary",
+  "Total payable Salary": "salary",
+  "Total deductions": "deduction",
+  "Overtime amount": "overtime",
+  "Review items": "review",
+  "Less hours": "less-hours",
+  "Average payable": "average"
 } %}
 <div class="dashboard-shell">
   <div class="dashboard-top">
@@ -30,7 +30,7 @@
       </form>
       {% endif %}
       {% if month %}
-      <a class="btn btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Review Payroll</a>
+      <a class="btn btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Review payroll</a>
       {% endif %}
     </div>
   </div>
@@ -38,20 +38,20 @@
   <section class="dashboard-hero">
     <div class="payroll-health">
       <div>
-        <span class="health-label">Current Month</span>
+        <span class="health-label">Current month</span>
         <strong>{{ payroll_health.selected_label }}</strong>
         <span class="badge text-bg-{{ 'warning' if payroll_health.is_finalized else 'success' }}">{{ 'Finalized / Locked' if payroll_health.is_finalized else 'Draft' }}</span>
       </div>
       <div class="health-progress">
         <div class="health-progress-top">
-          <span>Processing Progress</span>
+          <span>Processing progress</span>
           <strong>{{ payroll_health.completion }}%</strong>
         </div>
         <div class="progress-track"><div class="progress-bar" style="width: {{ payroll_health.completion }}%"></div></div>
         <small class="text-muted">{{ cards[2].value }} of {{ payroll_health.expected_employee_count }} employees processed</small>
       </div>
       <div>
-        <span class="health-label">Needs Attention</span>
+        <span class="health-label">Needs attention</span>
         <strong class="{{ 'text-danger' if payroll_health.review_count else '' }}">{{ payroll_health.review_count }}</strong>
       </div>
     </div>
@@ -71,8 +71,8 @@
   <div class="dashboard-grid dashboard-grid-ops">
     <section class="tool-panel dashboard-panel">
       <div class="panel-title-row">
-        <h2 class="section-title">Payroll Checklist</h2>
-        {% if month %}<a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Open Month</a>{% endif %}
+        <h2 class="section-title">Payroll checklist</h2>
+        {% if month %}<a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Open month</a>{% endif %}
       </div>
       <div class="checklist">
         {% for step in payroll_steps %}
@@ -96,7 +96,7 @@
 
     <section class="tool-panel dashboard-panel compact-panel">
       <div class="panel-title-row">
-        <h2 class="section-title">Calculation Status</h2>
+        <h2 class="section-title">Calculation status</h2>
       </div>
       {% if status_counts %}
       <div class="status-breakdown">
@@ -116,7 +116,7 @@
   <div class="dashboard-grid dashboard-grid-ops">
     <section class="tool-panel dashboard-panel">
       <div class="panel-title-row">
-        <h2 class="section-title">Review Queue</h2>
+        <h2 class="section-title">Review queue</h2>
         {% if month %}<a class="btn btn-sm btn-outline-primary" href="{{ url_for('reports.errors_pdf', month=month) }}" target="_blank" rel="noopener">Error PDF</a>{% endif %}
       </div>
       {% if review_items %}
@@ -142,7 +142,7 @@
         <a class="report-card" href="{{ url_for('payroll.month', month=month) }}"><span class="report-icon">{{ icon("payroll") }}</span><span><strong>Monthly Payroll</strong><span>Upload, calculate, finalize</span></span></a>
         <a class="report-card" href="{{ url_for('reports.final_report_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("pdf") }}</span><span><strong>Salary Report</strong><span>Open final salary PDF</span></span></a>
         <a class="report-card" href="{{ url_for('reports.overtime_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("overtime") }}</span><span><strong>Overtime Report</strong><span>Employees with paid OT</span></span></a>
-        <a class="report-card" href="{{ url_for('reports.less_hours_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("less-hours") }}</span><span><strong>Less Hours Report</strong><span>Short working-hour deductions</span></span></a>
+        <a class="report-card" href="{{ url_for('reports.less_hours_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("less-hours") }}</span><span><strong>Less hours Report</strong><span>Short working-hour deductions</span></span></a>
         {% endif %}
         <a class="report-card" href="{{ url_for('leave_balances.index') }}"><span class="report-icon">{{ icon("leaf") }}</span><span><strong>Leave Balance</strong><span>Carry-forward report</span></span></a>
         <a class="report-card" href="{{ url_for('logs.index') }}"><span class="report-icon">{{ icon("logs") }}</span><span><strong>Activity Logs</strong><span>Audit trail and filters</span></span></a>
@@ -153,7 +153,7 @@
   <div class="dashboard-grid dashboard-grid-wide dashboard-secondary">
     <section class="tool-panel dashboard-panel">
       <div class="panel-title-row">
-        <h2 class="section-title">Recent Payroll Months</h2>
+        <h2 class="section-title">Recent payroll months</h2>
       </div>
       <div class="table-responsive">
         <table class="table table-sm smart-table">
@@ -180,7 +180,7 @@
 
     <section class="tool-panel dashboard-panel">
       <div class="panel-title-row">
-        <h2 class="section-title">Top Payable Employees</h2>
+        <h2 class="section-title">Top payable employees</h2>
       </div>
       {% if top_payables %}
       <div class="table-responsive mb-4 top-payable-table-wrap">
@@ -204,8 +204,8 @@
       {% endif %}
 
       <div class="panel-title-row">
-        <h2 class="section-title">Recent Logs</h2>
-        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('logs.index') }}">View All</a>
+        <h2 class="section-title">Recent logs</h2>
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('logs.index') }}">View all</a>
       </div>
       <div class="log-list">
         {% for log in recent_logs %}

@@ -14,7 +14,7 @@
   <input type="hidden" name="action" value="create">
   <div class="drawer-header">
     <h2 class="section-title mb-0">Add Advance</h2>
-    <button class="dialog-close" type="button" id="closeAdvanceDrawer">x</button>
+    <button class="dialog-close" type="button" id="closeAdvanceDrawer">&times;</button>
   </div>
   <div class="drawer-body">
   <div class="row g-2">
@@ -113,14 +113,14 @@
         <h2 class="section-title mb-1">Delete Advance Salary</h2>
         <p class="text-muted mb-0" id="deleteAdvanceLabel"></p>
       </div>
-      <button class="dialog-close" type="button" id="closeDeleteAdvance">x</button>
+      <button class="dialog-close" type="button" id="closeDeleteAdvance">&times;</button>
     </div>
     <p class="text-muted">This will permanently delete the selected advance salary record. Payroll calculations using this advance should be recalculated after deletion.</p>
     <label class="form-label" for="deleteAdvanceConfirmationInput">Type permanently delete to confirm</label>
     <input class="form-control mb-3" id="deleteAdvanceConfirmationInput" name="delete_confirmation" autocomplete="off" spellcheck="false">
     <div class="d-flex justify-content-end gap-2">
       <button class="btn btn-outline-secondary" type="button" id="cancelDeleteAdvance">Cancel</button>
-      <button class="btn btn-outline-danger" id="confirmDeleteAdvance" disabled>Permanently Delete</button>
+      <button class="btn btn-outline-danger" id="confirmDeleteAdvance" disabled>Permanently delete</button>
     </div>
   </form>
 </dialog>

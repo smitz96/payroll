@@ -10,7 +10,7 @@ from werkzeug.security import check_password_hash
 from attendance import db
 from attendance.authentication import change_password, login_required
 from attendance.models import AuditLog, User
-from attendance.settings import MONTHLY_RULES
+from attendance.settings import monthly_rule_rows
 from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
@@ -90,7 +90,7 @@ def index():
         "version": APP_VERSION,
         "release_at": latest_git_release_datetime(Path(current_app.root_path)) or "Not available",
     }
-    return render_template("settings.html", monthly_rules=MONTHLY_RULES, about=about)
+    return render_template("settings.html", monthly_rules=monthly_rule_rows(), about=about)
 
 
 @bp.route("/security", methods=["GET", "POST"])
@@ -123,6 +123,14 @@ def git_pull():
 @bp.route("/reset-data", methods=["POST"])
 @login_required
 def reset_data():
+    # This is the most destructive action in the app, so it is gated the same way
+    # as finalize/unlock/server-update: typed confirmation *and* the admin password.
+    user = db.session.get(User, session.get("user_id"))
+    password = request.form.get("admin_password", "")
+    if not user or not check_password_hash(user.password_hash, password):
+        flash("Admin password is incorrect. No data was reset.", "danger")
+        return redirect(url_for("settings.index"))
+
     confirmation = request.form.get("reset_confirmation", "").strip().lower()
     if confirmation != RESET_CONFIRMATION_TEXT:
         flash('Type "permanently delete" to reset all app data.', "danger")
@@ -130,5 +138,13 @@ def reset_data():
 
     deleted = reset_application_data()
     deleted_rows = sum(deleted.values())
+    # The audit log is one of the tables just cleared, so record the reset itself
+    # afterwards; otherwise there is no trace of who wiped the database.
+    db.session.add(AuditLog(
+        actor=user.username,
+        action="All Data Reset",
+        detail=f"{deleted_rows} row(s) deleted across {len(deleted)} table(s). Admin login kept.",
+    ))
+    db.session.commit()
     flash(f"All app data has been reset. {deleted_rows} row(s) deleted. Admin login was kept.", "success")
     return redirect(url_for("settings.index"))

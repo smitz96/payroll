@@ -1,9 +1,7 @@
 from datetime import date
-
-import calendar
 from decimal import Decimal
 
-from flask import Blueprint, Response, render_template, request
+from flask import Blueprint, Response, abort, render_template, request
 
 from attendance.authentication import login_required
 from attendance.calculator import attendance_missing_salary
@@ -25,18 +23,17 @@ from attendance.reports import (
     overtime_report_csv,
     payroll_summary_csv,
 )
+from attendance.utils import display_month, is_valid_payroll_month
 
 bp = Blueprint("reports", __name__, url_prefix="/reports")
 
 
-def display_month(month):
-    if not month:
-        return "Not started"
-    try:
-        year, month_number = (int(part) for part in month.split("-"))
-    except ValueError:
-        return month
-    return f"{calendar.month_name[month_number]} {year}"
+@bp.url_value_preprocessor
+def validate_month_value(endpoint, values):
+    # Every report route is keyed on <month>; a malformed value would otherwise
+    # reach the report builders and end up verbatim in a Content-Disposition header.
+    if values and "month" in values and not is_valid_payroll_month(values["month"]):
+        abort(404)
 
 
 def money(value):

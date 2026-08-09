@@ -1,4 +1,3 @@
-import calendar
 from decimal import Decimal
 
 from flask import Blueprint, render_template, request
@@ -8,8 +7,11 @@ from attendance.authentication import login_required
 from attendance.calculator import attendance_missing_salary
 from attendance.master import employee_active_for_payroll_month
 from attendance.models import AuditLog, AttendanceRecord, Employee, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
+from attendance.payroll_rules import PAYROLL_RULES
+from attendance.utils import display_month
 
 bp = Blueprint("dashboard", __name__)
+SUPPORTED_WAGE_TYPES = set(PAYROLL_RULES)
 
 
 def money(value):
@@ -24,16 +26,6 @@ def scoped_salaries(month):
 def scoped_results(month):
     results = PayrollResult.query.filter_by(payroll_month=month).all()
     return [result for result in results if employee_active_for_payroll_month(db.session.get(Employee, result.employee_id), month)]
-
-
-def display_month(month):
-    if not month:
-        return "Not started"
-    try:
-        year, month_number = (int(part) for part in month.split("-"))
-    except ValueError:
-        return month
-    return f"{calendar.month_name[month_number]} {year}"
 
 
 def month_snapshot(month):
@@ -66,8 +58,11 @@ def index():
     salaries = scoped_salaries(selected) if selected else []
     results = scoped_results(selected) if selected else []
     attendance_count = AttendanceRecord.query.filter_by(payroll_month=selected).count() if selected else 0
+    # DAILY has had a payroll rule since it was added to PAYROLL_RULES; only wage
+    # types with no rule at all are unsupported.
     monthly = [s for s in salaries if s.normalized_salary_type == "MONTHLY"]
-    unsupported = [s for s in salaries if s.normalized_salary_type != "MONTHLY"]
+    daily = [s for s in salaries if s.normalized_salary_type == "DAILY"]
+    unsupported = [s for s in salaries if s.normalized_salary_type not in SUPPORTED_WAGE_TYPES]
     calculated = [r for r in results if r.final_salary is not None and r.calculation_status in {"Calculated", "Needs Review"}]
     missing_salary = attendance_missing_salary(selected) if selected else {}
     expected_employee_count = max(len(salaries) + len(missing_salary), len(salaries), len(results))
@@ -110,24 +105,27 @@ def index():
             "deduction": money(result.total_deduction),
         })
     payroll_steps = [
-        {"label": "Attendance Uploaded", "done": attendance_count > 0, "detail": f"{attendance_count} rows", "target": "payroll"},
-        {"label": "Salary Uploaded", "done": len(salaries) > 0, "detail": f"{len(salaries)} employees", "target": "payroll"},
-        {"label": "Week Off Confirmed", "done": not unconfirmed_weekoff and len(salaries) > 0, "detail": f"{len(unconfirmed_weekoff)} pending", "target": "weekoffs"},
-        {"label": "Payroll Calculated", "done": expected_employee_count > 0 and len(calculated) == expected_employee_count, "detail": f"{len(calculated)} of {expected_employee_count} processed", "target": "payroll"},
-        {"label": "Review Cleared", "done": payroll_health["review_count"] == 0 and len(salaries) > 0, "detail": f"{payroll_health['review_count']} item(s)", "target": "errors"},
-        {"label": "Payroll Finalized", "done": payroll_health["is_finalized"], "detail": payroll_health["status"], "target": "payroll"},
+        {"label": "Attendance uploaded", "done": attendance_count > 0, "detail": f"{attendance_count} rows", "target": "payroll"},
+        {"label": "Salary uploaded", "done": len(salaries) > 0, "detail": f"{len(salaries)} employees", "target": "payroll"},
+        {"label": "Week off confirmed", "done": not unconfirmed_weekoff and len(salaries) > 0, "detail": f"{len(unconfirmed_weekoff)} pending", "target": "weekoffs"},
+        {"label": "Payroll calculated", "done": expected_employee_count > 0 and len(calculated) == expected_employee_count, "detail": f"{len(calculated)} of {expected_employee_count} processed", "target": "payroll"},
+        {"label": "Review cleared", "done": payroll_health["review_count"] == 0 and len(salaries) > 0, "detail": f"{payroll_health['review_count']} item(s)", "target": "errors"},
+        {"label": "Payroll finalized", "done": payroll_health["is_finalized"], "detail": payroll_health["status"], "target": "payroll"},
     ]
+    wage_mix = f"{len(monthly)} monthly, {len(daily)} daily"
+    if unsupported:
+        wage_mix += f", {len(unsupported)} unconfigured"
     cards = [
-        {"label": "Salary Employees", "value": len(salaries), "detail": f"{len(monthly)} monthly, {len(unsupported)} unsupported"},
-        {"label": "Attendance Rows", "value": attendance_count, "detail": "Imported attendance records"},
-        {"label": "Employees Processed", "value": len(calculated), "detail": f"{payroll_health['completion']}% complete"},
-        {"label": "Total Base Salary", "value": money(sum((Decimal(s.salary) for s in monthly), Decimal("0"))), "detail": "Monthly employees only"},
-        {"label": "Total Payable Salary", "value": money(sum((Decimal(r.final_salary) for r in calculated), Decimal("0"))), "detail": "Calculated payable amount"},
-        {"label": "Total Deductions", "value": money(sum((Decimal(r.total_deduction) for r in calculated), Decimal("0"))), "detail": "LOP, less hours, loan"},
-        {"label": "Over Time Amount", "value": money(sum((Decimal(r.ot_amount) for r in calculated), Decimal("0"))), "detail": "Payable overtime"},
-        {"label": "Review Items", "value": payroll_health["review_count"], "detail": "Missing salary, unconfirmed week off, errors"},
-        {"label": "Less Hours", "value": sum((int(r.less_hours_minutes or 0) for r in calculated), 0), "detail": "Total less-hours minutes"},
-        {"label": "Average Payable", "value": money((sum((Decimal(r.final_salary) for r in calculated), Decimal("0")) / len(calculated)) if calculated else Decimal("0")), "detail": "Per processed employee"},
+        {"label": "Salary employees", "value": len(salaries), "detail": wage_mix},
+        {"label": "Attendance rows", "value": attendance_count, "detail": "Imported attendance records"},
+        {"label": "Employees processed", "value": len(calculated), "detail": f"{payroll_health['completion']}% complete"},
+        {"label": "Total base salary", "value": money(sum((Decimal(s.salary) for s in monthly), Decimal("0"))), "detail": f"Monthly wage only, excludes {len(daily)} daily"},
+        {"label": "Total payable salary", "value": money(sum((Decimal(r.final_salary) for r in calculated), Decimal("0"))), "detail": "Calculated payable amount"},
+        {"label": "Total deductions", "value": money(sum((Decimal(r.total_deduction) for r in calculated), Decimal("0"))), "detail": "LOP, less hours, loan"},
+        {"label": "Overtime amount", "value": money(sum((Decimal(r.ot_amount) for r in calculated), Decimal("0"))), "detail": "Payable overtime"},
+        {"label": "Review items", "value": payroll_health["review_count"], "detail": "Missing salary, unconfirmed week off, errors"},
+        {"label": "Less hours", "value": sum((int(r.less_hours_minutes or 0) for r in calculated), 0), "detail": "Total less-hours minutes"},
+        {"label": "Average payable", "value": money((sum((Decimal(r.final_salary) for r in calculated), Decimal("0")) / len(calculated)) if calculated else Decimal("0")), "detail": "Per processed employee"},
     ]
     month_rows = [month_snapshot(item) for item in months[:6]]
     month_options = [{"value": item.month, "label": display_month(item.month)} for item in months]

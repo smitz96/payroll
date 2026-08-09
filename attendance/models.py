@@ -24,9 +24,19 @@ class Employee(db.Model):
     designation = db.Column(db.String(160))
     salary_type = db.Column(db.String(80))
     normalized_salary_type = db.Column(db.String(80), index=True)
+    # `salary` stays the figure payroll is calculated from. For monthly wage employees
+    # it can optionally be broken up into the components below, which must add up to it.
     salary = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
-    ot_enabled = db.Column(db.Boolean, default=True, nullable=False)
-    less_hours_exempt = db.Column(db.Boolean, default=False, nullable=False)
+    basic_salary = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
+    hra = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
+    allowance = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
+    conveyance_allowance = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
+    pf_enabled = db.Column(db.Boolean, default=False, nullable=False)
+    esic_enabled = db.Column(db.Boolean, default=False, nullable=False)
+    # Both flags read the same way as the UI: ticked means "skip this rule for this
+    # employee". `ot_ignored` replaced an inverted `ot_enabled` column.
+    ot_ignored = db.Column(db.Boolean, default=False, nullable=False)
+    less_hours_ignored = db.Column(db.Boolean, default=False, nullable=False)
     employment_status = db.Column(db.String(32), default="ACTIVE", nullable=False)
     inactive_at = db.Column(db.DateTime)
     inactive_reason = db.Column(db.Text)
@@ -36,10 +46,14 @@ class Employee(db.Model):
 
 class PayrollMonth(db.Model):
     month = db.Column(db.String(7), primary_key=True)
+    # `status` stays the overall roll-up (FINALIZED only once every wage group with
+    # employees is finalized); the per-group timestamps below are the source of truth.
     status = db.Column(db.String(32), default="DRAFT", nullable=False)
     encash_all_leaves = db.Column(db.Boolean, default=False, nullable=False)
     attendance_submitted = db.Column(db.Boolean, default=False, nullable=False)
     finalized_at = db.Column(db.DateTime)
+    monthly_finalized_at = db.Column(db.DateTime)
+    daily_finalized_at = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 

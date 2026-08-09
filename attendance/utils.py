@@ -1,3 +1,4 @@
+import calendar
 import re
 from datetime import datetime, time, timezone
 from decimal import Decimal, ROUND_DOWN
@@ -41,6 +42,22 @@ def minutes_to_duration(minutes):
 
 def floor_to_interval(minutes, interval=15):
     return (int(minutes) // interval) * interval
+
+
+MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def is_valid_payroll_month(value):
+    """True for a well-formed YYYY-MM payroll month key."""
+    return bool(MONTH_RE.match(clean(value)))
+
+
+def display_month(value):
+    """Format a payroll month key as 'July 2026'; returns the input if malformed."""
+    if not is_valid_payroll_month(value):
+        return value or "Not started"
+    year, month_number = (int(part) for part in str(value).split("-"))
+    return f"{calendar.month_name[month_number]} {year}"
 
 
 def parse_csv_date(value):

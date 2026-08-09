@@ -14,7 +14,7 @@
   <input type="hidden" name="action" value="create">
   <div class="drawer-header">
     <h2 class="section-title mb-0">Add Loan</h2>
-    <button class="dialog-close" type="button" id="closeLoanDrawer">x</button>
+    <button class="dialog-close" type="button" id="closeLoanDrawer">&times;</button>
   </div>
   <div class="drawer-body">
   <div class="row g-2">
@@ -62,7 +62,7 @@
   </div>
   <div class="table-responsive">
     <table class="table table-sm smart-table">
-      <thead><tr><th>Sr.</th><th>Loan</th><th>Employee</th><th>Start Date</th><th>Current Installment</th><th>Pending Loan Amount</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Sr.</th><th>Loan</th><th>Employee</th><th>Start Date</th><th>Current Installment</th><th>Pending loan amount</th><th>Status</th><th></th></tr></thead>
       <tbody>
         {% for row in in_progress_rows %}
         {% set loan = row.loan %}
@@ -138,14 +138,14 @@
         <h2 class="section-title mb-1">Delete Loan</h2>
         <p class="text-muted mb-0" id="deleteLoanLabel"></p>
       </div>
-      <button class="dialog-close" type="button" id="closeDeleteLoan">x</button>
+      <button class="dialog-close" type="button" id="closeDeleteLoan">&times;</button>
     </div>
     <p class="text-muted">This will permanently delete the selected loan. Payroll calculations using this loan should be recalculated after deletion.</p>
     <label class="form-label" for="deleteLoanConfirmationInput">Type permanently delete to confirm</label>
     <input class="form-control mb-3" id="deleteLoanConfirmationInput" name="delete_confirmation" autocomplete="off" spellcheck="false">
     <div class="d-flex justify-content-end gap-2">
       <button class="btn btn-outline-secondary" type="button" id="cancelDeleteLoan">Cancel</button>
-      <button class="btn btn-outline-danger" id="confirmDeleteLoan" disabled>Permanently Delete</button>
+      <button class="btn btn-outline-danger" id="confirmDeleteLoan" disabled>Permanently delete</button>
     </div>
   </form>
 </dialog>

@@ -1,14 +1,15 @@
 # SMARTfill Attendance & Payroll Management
 
-SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly payroll, preserving leave balances, and opening auditable payroll PDF reports.
+SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
-Current supported automatic payroll rule:
+Current supported automatic payroll rules:
 
 ```text
 Wage Type = Monthly
+Wage Type = Daily
 ```
 
-All other wage types are imported, preserved, displayed, and marked as `Payroll Rules Not Configured`. They are never calculated with Monthly rules and never shown as a zero final salary.
+All other wage types are imported, preserved, displayed, and marked as `Payroll Rules Not Configured`. They are never calculated with Monthly or Daily rules and never shown as a zero final salary.
 
 ## Initial Login
 
@@ -59,7 +60,7 @@ ID -> Employee ID
 Adjustment -> Manual Adjustment
 ```
 
-Wage type is normalized with `strip().upper()`. Only `MONTHLY` resolves to a configured payroll rule.
+Wage type is normalized with `strip().upper()`. `MONTHLY` and `DAILY` resolve to configured payroll rules.
 
 ## Monthly Rules
 
@@ -71,26 +72,82 @@ Wage type is normalized with `strip().upper()`. Only `MONTHLY` resolves to a con
 - Less than 3h00m: full-day LOP.
 - OT threshold: only after 9h15m / 555 minutes.
 - OT rounding: complete 15-minute eligible blocks, floor only.
-- Sunday: week off.
-- Leave earned: paid working days / 12, truncated to one decimal.
+- Sunday: default week off, configurable per employee.
+- Leave earned: `(paid days + week offs + holidays + leave used) / days in month x 2`, truncated to one decimal. A full month therefore earns 2 leaves.
 - Current-month earned leave can be used in the same month.
 - Full-day LOP: Monthly Salary / 30.
 - Half-day LOP: Monthly Salary / 60.
 - Hourly rate: Monthly Salary / (30 x 9).
+- A single In/Out pair longer than 12 hours is flagged as a punch error, not paid. This catches an Out punch entered before its In punch, which would otherwise roll past midnight and be paid with overtime.
+
+Every value above lives in `attendance/settings.py` and is shown, with its effect, on the Settings page.
+
+## Daily Rules
+
+- Present days are paid at the daily rate; holidays are paid, week offs are not.
+- Working a week off counts as a normal paid working day.
+- No leave balance, leave earned, or leave encashment.
+- Short-hours and overtime use the same thresholds as Monthly, against the daily rate.
+
+## Working Days With No Punches
+
+A working day with no punches is neither paid nor deducted. It stays as `Needs Review` until punches are entered in Attendance Manager, or an override (`Paid Leave`, `Unpaid Leave / LOP`, and so on) is set on the employee payroll page. Attendance Manager highlights these days and offers a `No punch days` filter.
 
 ## Workflow
 
-1. Login.
-2. Open or create a payroll month.
-3. Upload Attendance CSV.
-4. Load wage data from Employee Master.
-5. Review warnings and wage types.
-6. Calculate payroll.
-7. Review employee detail and overrides.
-8. Recalculate after changes.
-9. Export summary, detailed attendance, and error CSV reports.
+The payroll month page shows these five steps and highlights the one you are on. A step is only actionable once every step before it is done; until then its buttons are dimmed and inert. Completed steps stay actionable so wages can be reloaded or attendance revisited.
+
+1. **Import Attendance** - upload the punch CSV or XLSX in Attendance Manager. Every Employee ID in the sheet must already exist in Employee Master; unknown IDs abort the whole import and are listed on screen. A default Sunday week off and a zero opening leave balance are created for employees that do not have them yet.
+2. **Load Wages** - set wage type and salary in Employee Master, then `Load Wage From Master`. Employees with a zero salary or an inactive status are skipped.
+3. **Review & Submit** - fix odd punches and no-punch days in Attendance Manager, then submit. Payroll cannot be calculated until attendance is submitted.
+4. **Calculate Payroll** - two paths:
+   - `Recalculate` in the Run calculation panel - re-runs against the current holiday calendar, week offs, loans, and advances while preserving manual overrides, adjustments, manual loan amounts, and leave encashment.
+   - `Reset & Recalculate` in the page header, next to `Delete payroll` - clears all of those manual edits for the month first, then recalculates from scratch. It sits with the other destructive actions rather than beside the everyday one.
+5. **Finalize** - Monthly and Daily wage payroll are finalized **separately**. Each has its own lock on the payroll month page, and locking one leaves the other open for edits and recalculation. Finalizing writes the summary and attendance CSVs to `output/csv`. Both finalizing and unlocking require the admin password.
+
+The month as a whole only shows `Finalized` once every wage type that has employees is finalized. Recalculation never touches a finalized wage group, so Daily can be re-run after Monthly is signed off. `View monthly only` / `View daily only` filter the page to one wage type and scope both recalculate buttons to that group.
 
 Recalculation replaces payroll results and leave ledger rows for that month, so type changes do not duplicate historical result rows.
+
+### Employee Master Fields
+
+Every employee has a wage type and a `Salary`, which is the figure payroll is calculated from.
+
+Monthly wage employees additionally have:
+
+- **Salary breakup** - `Basic Salary`, `HRA`, `Allowance`, `Conveyance Allowance`. All four must add up to `Salary` exactly. Leaving all four at zero means the breakup has not been captured yet and is allowed; once any one is filled in, the total has to reconcile. The form shows a running total and the shortfall or excess as you type.
+- **Compliance** - `PF` and `ESIC` yes/no flags.
+
+Every employee, monthly or daily, also has **Payroll exceptions**:
+
+- **Ignore OT** - overtime minutes are still reported as raw OT, but payable OT and OT amount stay zero.
+- **Ignore Less Hours** - short-hours shortage is not deducted. Full-day and half-day counting still applies.
+
+Both read as "skip this rule for this employee", and both default to off. `Ignore OT` replaced an inverted `OT eligible` flag; existing databases are migrated automatically, so an employee who previously had OT disabled comes through with `Ignore OT` ticked.
+
+Both groups are hidden for Daily wage employees and are never stored for them. The breakup is recorded for compliance and payslip presentation; payroll continues to calculate from `Salary`.
+
+### Employee Master Import Rules
+
+`Employee ID` is the match key and can never be changed by an import.
+
+- Unknown Employee IDs are rejected.
+- A `Name` column must match the stored name. Import cannot rename an employee - correct the name on the employee page instead. This keeps a bulk file from silently reassigning payroll to a different person when a spelling changes.
+- Wage type cannot be changed once set.
+- Breakup columns must reconcile with `Salary`, and are rejected on a daily wage row.
+- Any column missing from the file leaves the stored value untouched, so an older export still imports cleanly.
+
+A rejected row aborts the whole import; nothing is partially applied.
+
+### Import Order
+
+Employee Master first. Attendance and Leave Balance imports both reject Employee IDs that are not already in the master, so employees are always added deliberately with a reviewed wage type and salary.
+
+```text
+Employee Master  ->  Attendance (CSV/XLSX)  ->  Leave Balance CSV
+```
+
+A rejected attendance upload changes nothing: validation of columns and Employee IDs runs before any existing attendance for the month is cleared.
 
 ## Tests
 

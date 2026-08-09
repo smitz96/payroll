@@ -6,6 +6,7 @@ from flask import Blueprint, Response, flash, redirect, render_template, request
 from attendance import db
 from attendance.authentication import current_username, login_required
 from attendance.master import (
+    EMPLOYEE_MASTER_EXPORT_COLUMNS,
     MASTER_IMPORT_REQUIRED_COLUMNS,
     apply_employee_master_import,
     disable_master_employee,
@@ -83,7 +84,7 @@ def index():
 def export_csv():
     return csv_response(
         "employee_master.csv",
-        ["Employee ID", "Name", "Wage Type", "Salary"],
+        EMPLOYEE_MASTER_EXPORT_COLUMNS,
         employee_master_export_rows(),
     )
 

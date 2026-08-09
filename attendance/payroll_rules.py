@@ -70,8 +70,8 @@ class MonthlyPayrollRule(PayrollRule):
         details = []
         needs_review = []
         employee = db.session.get(Employee, salary_record.employee_id)
-        ot_enabled = False if employee and employee.ot_enabled is False else True
-        less_hours_exempt = bool(employee and employee.less_hours_exempt)
+        ot_ignored = bool(employee and employee.ot_ignored)
+        less_hours_ignored = bool(employee and employee.less_hours_ignored)
 
         classified_rows = []
         for rec in sorted(attendance_records, key=lambda item: item.date):
@@ -103,7 +103,7 @@ class MonthlyPayrollRule(PayrollRule):
             elif row["status"] in {"Punch Error", "Needs Review"}:
                 needs_review.append(f"{rec.date}: {row['status']}")
 
-            shortage = 0 if less_hours_exempt else calculate_monthly_shortage(actual)
+            shortage = 0 if less_hours_ignored else calculate_monthly_shortage(actual)
             shortage_amount = Decimal("0")
             rounded = row["rounded_minutes"]
             if shortage and row["status"] == "Full Day Present":
@@ -112,7 +112,7 @@ class MonthlyPayrollRule(PayrollRule):
                 less_deduction += shortage_amount
             raw_ot, rounded_ot, ot_value = calculate_monthly_overtime(actual, quarter_rate)
             ot_minutes += raw_ot
-            if not ot_enabled:
+            if ot_ignored:
                 rounded_ot = 0
                 ot_value = Decimal("0")
             payable_ot += rounded_ot
@@ -234,8 +234,8 @@ class DailyPayrollRule(PayrollRule):
         details = []
         needs_review = []
         employee = db.session.get(Employee, salary_record.employee_id)
-        ot_enabled = False if employee and employee.ot_enabled is False else True
-        less_hours_exempt = bool(employee and employee.less_hours_exempt)
+        ot_ignored = bool(employee and employee.ot_ignored)
+        less_hours_ignored = bool(employee and employee.less_hours_ignored)
 
         for rec in sorted(attendance_records, key=lambda item: item.date):
             override = overrides.get(rec.date)
@@ -256,7 +256,7 @@ class DailyPayrollRule(PayrollRule):
             elif row["status"] in {"Punch Error", "Needs Review"}:
                 needs_review.append(f"{rec.date}: {row['status']}")
 
-            shortage = 0 if less_hours_exempt else calculate_monthly_shortage(actual)
+            shortage = 0 if less_hours_ignored else calculate_monthly_shortage(actual)
             shortage_amount = Decimal("0")
             rounded = row["rounded_minutes"]
             if shortage and row["status"] in {"Full Day Present", "Week Off Worked"}:
@@ -265,7 +265,7 @@ class DailyPayrollRule(PayrollRule):
                 less_deduction += shortage_amount
             raw_ot, rounded_ot, ot_value = calculate_monthly_overtime(actual, quarter_rate)
             ot_minutes += raw_ot
-            if not ot_enabled:
+            if ot_ignored:
                 rounded_ot = 0
                 ot_value = Decimal("0")
             payable_ot += rounded_ot
@@ -481,7 +481,8 @@ def days_in_payroll_month(payroll_month):
 def calculate_monthly_leave_earned(eligible_leave_days, days_in_month):
     if not days_in_month:
         return Decimal("0.0")
-    return truncate_one_decimal((Decimal(eligible_leave_days) / Decimal(days_in_month)) * Decimal("2"))
+    earn_rate = Decimal(CFG["LEAVE_EARNED_PER_MONTH"])
+    return truncate_one_decimal((Decimal(eligible_leave_days) / Decimal(days_in_month)) * earn_rate)
 
 
 PAYROLL_RULES = {"MONTHLY": MonthlyPayrollRule(), "DAILY": DailyPayrollRule()}

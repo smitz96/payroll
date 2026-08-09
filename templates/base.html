@@ -24,15 +24,23 @@
       </a>
       <nav class="rail-nav" aria-label="Primary">
         <a class="rail-link {{ 'is-active' if endpoint.startswith('dashboard.') else '' }}" href="{{ url_for('dashboard.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M4 11.5 12 5l8 6.5V20H5v-7.5Z"></path><path d="M9 20v-6h6v6"></path></svg></span><span>Dashboard</span></a>
+
+        <span class="rail-group">Run Payroll</span>
+        <a class="rail-link {{ 'is-active' if endpoint.startswith('payroll.') else '' }}" href="{{ url_for('payroll.new') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M6 3h10l4 4v14H6z"></path><path d="M16 3v5h4"></path><path d="M9 13h6"></path><path d="M9 17h4"></path></svg></span><span>Payroll</span></a>
+        <a class="rail-link {{ 'is-active' if endpoint.startswith('attendance_manager.') else '' }}" href="{{ url_for('attendance_manager.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16"></path><path d="M4 12h16"></path><path d="M4 19h16"></path><path d="M8 5v14"></path><path d="M16 5v14"></path></svg></span><span>Attendance</span></a>
+        <a class="rail-link {{ 'is-active' if endpoint.startswith('reports.') else '' }}" href="{{ url_for('reports.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M5 20V4h14v16z"></path><path d="M8 9h8"></path><path d="M8 13h8"></path><path d="M8 17h5"></path></svg></span><span>Reports</span></a>
+
+        <span class="rail-group">People</span>
         <a class="rail-link {{ 'is-active' if endpoint.startswith('master.') else '' }}" href="{{ url_for('master.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M16 20v-1.5c0-2.2-1.8-4-4-4H8c-2.2 0-4 1.8-4 4V20"></path><circle cx="10" cy="8" r="4"></circle><path d="M19 8v6"></path><path d="M16 11h6"></path></svg></span><span>Employees</span></a>
         <a class="rail-link {{ 'is-active' if endpoint.startswith('weekoffs.') else '' }}" href="{{ url_for('weekoffs.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M7 3v3"></path><path d="M17 3v3"></path><path d="M4 8h16"></path><rect x="4" y="5" width="16" height="16" rx="2"></rect><path d="m9 15 2 2 4-5"></path></svg></span><span>Week Offs</span></a>
         <a class="rail-link {{ 'is-active' if endpoint.startswith('leave_balances.') else '' }}" href="{{ url_for('leave_balances.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M12 21c4-3 7-6.5 7-10a7 7 0 0 0-14 0c0 3.5 3 7 7 10Z"></path><path d="M9 11h6"></path><path d="M12 8v6"></path></svg></span><span>Leave Balance</span></a>
-        <a class="rail-link {{ 'is-active' if endpoint.startswith('payroll.') else '' }}" href="{{ url_for('payroll.new') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M6 3h10l4 4v14H6z"></path><path d="M16 3v5h4"></path><path d="M9 13h6"></path><path d="M9 17h4"></path></svg></span><span>Payroll</span></a>
-        <a class="rail-link {{ 'is-active' if endpoint.startswith('attendance_manager.') else '' }}" href="{{ url_for('attendance_manager.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16"></path><path d="M4 12h16"></path><path d="M4 19h16"></path><path d="M8 5v14"></path><path d="M16 5v14"></path></svg></span><span>Attendance</span></a>
+        <a class="rail-link {{ 'is-active' if endpoint.startswith('holidays.') else '' }}" href="{{ url_for('holidays.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M12 3v3"></path><path d="M18.4 5.6 16.3 7.7"></path><path d="M21 12h-3"></path><path d="M5.6 5.6 7.7 7.7"></path><path d="M3 12h3"></path><path d="M8 21h8"></path><path d="M9 18c-1.9-1-3-3-3-5.2A6 6 0 0 1 18 13c0 2.1-1.1 4-3 5"></path></svg></span><span>Holidays</span></a>
+
+        <span class="rail-group">Money</span>
         <a class="rail-link {{ 'is-active' if endpoint.startswith('loans.') else '' }}" href="{{ url_for('loans.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4z"></path><circle cx="12" cy="12" r="2.5"></circle><path d="M7 10v4"></path><path d="M17 10v4"></path></svg></span><span>Loans</span></a>
         <a class="rail-link {{ 'is-active' if endpoint.startswith('advances.') else '' }}" href="{{ url_for('advances.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M6 4h12v16H6z"></path><path d="M9 8h6"></path><path d="M9 12h6"></path><path d="M9 16h4"></path></svg></span><span>Advances</span></a>
-        <a class="rail-link {{ 'is-active' if endpoint.startswith('holidays.') else '' }}" href="{{ url_for('holidays.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M12 3v3"></path><path d="M18.4 5.6 16.3 7.7"></path><path d="M21 12h-3"></path><path d="M5.6 5.6 7.7 7.7"></path><path d="M3 12h3"></path><path d="M8 21h8"></path><path d="M9 18c-1.9-1-3-3-3-5.2A6 6 0 0 1 18 13c0 2.1-1.1 4-3 5"></path></svg></span><span>Holidays</span></a>
-        <a class="rail-link {{ 'is-active' if endpoint.startswith('reports.') else '' }}" href="{{ url_for('reports.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M5 20V4h14v16z"></path><path d="M8 9h8"></path><path d="M8 13h8"></path><path d="M8 17h5"></path></svg></span><span>Reports</span></a>
+
+        <span class="rail-group">System</span>
         <a class="rail-link {{ 'is-active' if endpoint.startswith('logs.') else '' }}" href="{{ url_for('logs.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"></path><path d="M8 8h8"></path><path d="M8 12h5"></path><path d="M8 16h7"></path></svg></span><span>Activity Logs</span></a>
         <a class="rail-link {{ 'is-active' if endpoint.startswith('settings.') else '' }}" href="{{ url_for('settings.index') }}"><span class="rail-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M4.9 4.9 7 7"></path><path d="m17 17 2.1 2.1"></path><path d="M2 12h3"></path><path d="M19 12h3"></path><path d="m4.9 19.1 2.1-2.1"></path><path d="m17 7 2.1-2.1"></path></svg></span><span>Settings</span></a>
       </nav>
@@ -52,9 +60,21 @@
         </div>
       </header>
       <main class="app-content">
-        {% for category, message in get_flashed_messages(with_categories=true) %}
-          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">{{ message }}<button class="btn-close" data-bs-dismiss="alert"></button></div>
-        {% endfor %}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-stack" id="flashStack">
+          {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible" role="alert">
+            <span>{{ message }}</span>
+            <button class="btn-close" type="button" aria-label="Dismiss message" data-dismiss-alert>&times;</button>
+          </div>
+          {% endfor %}
+          {% if messages|length > 3 %}
+          <button class="btn btn-outline-secondary btn-sm flash-clear" type="button" id="flashClearAll">Dismiss all {{ messages|length }} messages</button>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% endwith %}
         {% block content %}{% endblock %}
       </main>
     </div>
@@ -80,6 +100,28 @@
       toggle.addEventListener('click', function () {
         applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
       });
+    }());
+
+    // Flash dismissal. The markup used to rely on Bootstrap's dismiss data attribute,
+    // but no Bootstrap bundle is loaded here, so the close buttons never did anything.
+    (function () {
+      var stack = document.getElementById('flashStack');
+      if (!stack) {
+        return;
+      }
+      stack.addEventListener('click', function (event) {
+        var button = event.target.closest('[data-dismiss-alert]');
+        if (button) {
+          button.closest('.alert').remove();
+        }
+        if (!stack.querySelector('.alert')) {
+          stack.remove();
+        }
+      });
+      var clearAll = document.getElementById('flashClearAll');
+      if (clearAll) {
+        clearAll.addEventListener('click', function () { stack.remove(); });
+      }
     }());
   </script>
 </body>

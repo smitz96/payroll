@@ -1,26 +1,18 @@
-import calendar
 from pathlib import Path
 
-from flask import Blueprint, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.utils import secure_filename
 
 from attendance import db
 from attendance.authentication import current_username, login_required
 from attendance.calculator import calculate_payroll_month
 from attendance.models import AttendanceRecord, AuditLog, PayrollMonth, PayrollResult, SalaryRecord
-from attendance.parser import import_attendance_csv, parse_punch_times, working_minutes_from_punches
-from attendance.utils import minutes_to_duration
+from attendance.parser import UnknownEmployeesError, implausible_session_minutes, import_attendance_csv, parse_punch_times, working_minutes_from_punches
+from attendance.utils import display_month, is_valid_payroll_month, minutes_to_duration
+from attendance.weekoffs import is_week_off_for_date
 
 bp = Blueprint("attendance_manager", __name__, url_prefix="/attendance")
 ALLOWED_UPLOADS = {".csv", ".xlsx"}
-
-
-def display_month(month):
-    try:
-        year, month_number = (int(part) for part in month.split("-"))
-    except (AttributeError, ValueError):
-        return month
-    return f"{calendar.month_name[month_number]} {year}"
 
 
 def is_payroll_finalized(month):
@@ -58,6 +50,9 @@ def apply_punches(record, punches):
         warnings.append("Odd punch count")
     if not punches:
         warnings.append("Missing punch and working hours")
+    long_session = implausible_session_minutes(punches)
+    if long_session:
+        warnings.append(f"Punch out before punch in ({minutes_to_duration(long_session)} session)")
     record.parse_status = "NEEDS_REVIEW" if warnings else "OK"
     record.warning = "; ".join(warnings)
 
@@ -77,13 +72,11 @@ def attendance_grid(month):
         .order_by(AttendanceRecord.employee_id, AttendanceRecord.date)
         .all()
     )
-    dates = []
+    week_off_dates = {}
     date_seen = set()
     rows_by_employee = {}
     for record in records:
-        if record.date not in date_seen:
-            dates.append(record.date)
-            date_seen.add(record.date)
+        date_seen.add(record.date)
         employee = rows_by_employee.setdefault(record.employee_id, {
             "employee_id": record.employee_id,
             "name": record.employee_name or record.employee_id,
@@ -92,16 +85,32 @@ def attendance_grid(month):
             "cells": {},
         })
         punches = punch_list(record)
+        week_off = week_off_dates.get((record.employee_id, record.date))
+        if week_off is None:
+            week_off = is_week_off_for_date(record.employee_id, record.date)
+            week_off_dates[(record.employee_id, record.date)] = week_off
         employee["cells"][record.date] = {
             "record": record,
             "punches": punches,
             "punch_text": "\n".join(punches),
             "odd": len(punches) % 2 == 1,
+            # A working day with no punches is an unexplained absence: it is neither
+            # paid nor deducted until someone sets an override, so it must be visible.
+            "missing": not punches and not week_off,
+            "week_off": week_off,
             "warning": record.warning or "",
         }
+    # Sorted explicitly: first-seen order is only correct when every employee has
+    # every date, which is not true for row-per-day CSV imports with gaps.
+    dates = sorted(date_seen)
     rows = list(rows_by_employee.values())
     for row in rows:
-        row["has_odd"] = any(cell["odd"] for cell in row["cells"].values())
+        cells = row["cells"].values()
+        row["odd_count"] = sum(1 for cell in cells if cell["odd"])
+        row["missing_count"] = sum(1 for cell in cells if cell["missing"])
+        row["has_odd"] = row["odd_count"] > 0
+        row["has_missing"] = row["missing_count"] > 0
+        row["needs_review"] = row["has_odd"] or row["has_missing"]
     return dates, rows
 
 
@@ -117,6 +126,8 @@ def index():
 @bp.route("/<month>", methods=["GET", "POST"])
 @login_required
 def month(month):
+    if not is_valid_payroll_month(month):
+        abort(404)
     payroll_month = db.session.get(PayrollMonth, month)
     if not payroll_month:
         flash("Payroll month not found.", "danger")
@@ -133,6 +144,12 @@ def month(month):
                 flash(f"{'Re-imported' if had_existing else 'Imported'} attendance: {count} rows. Review and submit before calculating payroll.", "success")
                 for warning in warnings:
                     flash(warning, "warning")
+            except UnknownEmployeesError as exc:
+                db.session.rollback()
+                flash(str(exc), "danger")
+                # Carry the missing list through the redirect so the page can offer a
+                # direct route to add them instead of just naming them in a flash.
+                session["unknown_attendance_employees"] = exc.missing
             except Exception as exc:
                 flash(str(exc), "danger")
             return redirect(url_for("attendance_manager.month", month=month))
@@ -174,9 +191,11 @@ def month(month):
     order = request.args.get("order", "asc")
     if order not in {"asc", "desc"}:
         order = "asc"
+    unknown_employees = session.pop("unknown_attendance_employees", None) or {}
     dates, employee_rows = attendance_grid(month)
     employee_rows = sorted(employee_rows, key=lambda row: employee_sort_value(row, sort), reverse=order == "desc")
-    odd_count = sum(1 for row in employee_rows for cell in row["cells"].values() if cell["odd"])
+    odd_count = sum(row["odd_count"] for row in employee_rows)
+    missing_count = sum(row["missing_count"] for row in employee_rows)
     return render_template(
         "attendance_manager.html",
         month=month,
@@ -185,6 +204,9 @@ def month(month):
         dates=dates,
         employee_rows=employee_rows,
         odd_count=odd_count,
+        missing_count=missing_count,
+        review_employee_count=sum(1 for row in employee_rows if row["needs_review"]),
+        unknown_employees=unknown_employees,
         is_finalized=is_payroll_finalized(month),
         sort=sort,
         order=order,

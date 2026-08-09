@@ -16,11 +16,32 @@
 {% endif %}
 
 <div class="summary-grid mb-4">
-  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("attendance") }}</span><span>Employees</span><strong>{{ employee_rows|length }}</strong><small>Imported attendance employees</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("attendance") }}</span><span>Employees</span><strong>{{ employee_rows|length }}</strong><small>{{ review_employee_count }} need review</small></div>
   <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("processed") }}</span><span>Dates</span><strong>{{ dates|length }}</strong><small>Payroll attendance days</small></div>
-  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("review") }}</span><span>Odd Punch Days</span><strong>{{ odd_count }}</strong><small>Marked with warning icon</small></div>
+  <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("review") }}</span><span>Days to fix</span><strong>{{ odd_count + missing_count }}</strong><small>{{ missing_count }} no punch, {{ odd_count }} odd punch</small></div>
   <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("salary") }}</span><span>Submission</span><strong>{{ "Submitted" if payroll_month.attendance_submitted else "Pending" }}</strong><small>{{ "Payroll can be calculated" if payroll_month.attendance_submitted else "Submit to calculate payroll" }}</small></div>
 </div>
+
+{% if unknown_employees %}
+<div class="tool-panel unknown-employee-panel mb-4">
+  <h2 class="section-title mb-1">{{ unknown_employees|length }} employee(s) are not in Employee Master</h2>
+  <p class="text-muted">Attendance was not imported. Add these employees under Employees with their wage type and salary, then upload the sheet again.</p>
+  <ul class="unknown-employee-list">
+    {% for employee_id, name in unknown_employees.items() %}
+    <li><strong>{{ employee_id }}</strong><span>{{ name }}</span></li>
+    {% endfor %}
+  </ul>
+  <a class="btn btn-primary" href="{{ url_for('master.index') }}">Open Employees</a>
+</div>
+{% endif %}
+
+{% if missing_count %}
+<div class="alert alert-warning">
+  <strong>{{ missing_count }} working day(s) have no punches.</strong>
+  A working day with no punches is neither paid nor deducted &mdash; it stays as "Needs Review" until you enter punches here, or set an override (Paid Leave / LOP) on the employee's payroll page.
+  Use the <strong>Needs review</strong> filter below to find them.
+</div>
+{% endif %}
 
 <form method="post" enctype="multipart/form-data" class="tool-panel mb-4">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -37,7 +58,7 @@
         {% endif %}
       </div>
     </div>
-    <button class="btn btn-primary" {% if is_finalized %}disabled{% endif %}>{{ "Re-import Attendance" if employee_rows else "Import Attendance" }}</button>
+    <button class="btn btn-primary" {% if is_finalized %}disabled{% endif %}>{{ "Re-import attendance" if employee_rows else "Import attendance" }}</button>
   </div>
 </form>
 
@@ -48,13 +69,15 @@
     <div class="attendance-title-actions">
       <h2 class="module-card-title">Daily Punch Report <span class="text-muted">{{ employee_rows|length }}</span></h2>
       <div class="attendance-filter" id="employeeFilter">
-        <button class="btn btn-outline-secondary btn-sm" type="button" id="openEmployeeFilter">Filter Employees <span id="employeeFilterButtonCount">All</span></button>
+        <button class="btn btn-outline-secondary btn-sm" type="button" id="openEmployeeFilter">Filter employees <span id="employeeFilterButtonCount">All</span></button>
         <div class="attendance-filter-menu" id="employeeFilterMenu" hidden>
           <div class="attendance-filter-search">
             <input class="form-control" id="employeeFilterSearch" type="search" placeholder="Search by employee name or ID" autocomplete="off">
             <select class="form-select" id="employeeFilterMode">
               <option value="all">All</option>
-              <option value="odd">Odd Punch</option>
+              <option value="review">Needs review</option>
+              <option value="missing">No punch days</option>
+              <option value="odd">Odd punch</option>
             </select>
           </div>
           <label class="attendance-filter-option attendance-filter-select-all">
@@ -63,15 +86,15 @@
           </label>
           <div class="attendance-filter-list" id="employeeFilterList">
             {% for employee in employee_rows %}
-            <label class="attendance-filter-option" data-filter-option data-search="{{ (employee.name ~ ' ' ~ employee.employee_id)|lower }}" data-has-odd="{{ '1' if employee.has_odd else '0' }}">
+            <label class="attendance-filter-option" data-filter-option data-search="{{ (employee.name ~ ' ' ~ employee.employee_id)|lower }}" data-has-odd="{{ '1' if employee.has_odd else '0' }}" data-has-missing="{{ '1' if employee.has_missing else '0' }}" data-needs-review="{{ '1' if employee.needs_review else '0' }}">
               <input class="form-check-input employee-filter-choice" type="checkbox" value="{{ employee.employee_id }}" checked>
-              <span><strong>{{ employee.name }}</strong><small>{{ employee.employee_id }}</small></span>
+              <span><strong>{{ employee.name }}</strong><small>{{ employee.employee_id }}{% if employee.needs_review %} &middot; {{ employee.missing_count + employee.odd_count }} to fix{% endif %}</small></span>
             </label>
             {% endfor %}
           </div>
           <div class="attendance-filter-count"><span id="employeeFilterSelectedCount">{{ employee_rows|length }} result selected</span></div>
           <div class="attendance-filter-footer">
-            <button class="btn btn-link" type="button" id="employeeFilterClear">Clear All</button>
+            <button class="btn btn-link" type="button" id="employeeFilterClear">Clear all</button>
             <div class="d-flex gap-2">
               <button class="btn btn-outline-secondary btn-sm" type="button" id="employeeFilterCancel">Cancel</button>
               <button class="btn btn-primary btn-sm" type="button" id="employeeFilterApply">Apply</button>
@@ -81,8 +104,8 @@
       </div>
     </div>
     <div class="module-card-actions">
-      <button class="btn btn-outline-primary" type="submit" data-attendance-action="save" {% if is_finalized %}disabled{% endif %}>Save Draft</button>
-      <button class="btn btn-primary" type="submit" data-attendance-action="submit" {% if is_finalized %}disabled{% endif %}>Submit & Calculate Payroll</button>
+      <button class="btn btn-outline-primary" type="submit" data-attendance-action="save" {% if is_finalized %}disabled{% endif %}>Save draft</button>
+      <button class="btn btn-primary" type="submit" data-attendance-action="submit" {% if is_finalized %}disabled{% endif %}>Submit &amp; calculate payroll</button>
     </div>
   </div>
   <div class="attendance-manager-wrap">
@@ -102,12 +125,15 @@
       </thead>
       <tbody>
         {% for employee in employee_rows %}
-        <tr class="attendance-row" data-employee-id="{{ employee.employee_id }}" data-employee-name="{{ employee.name|lower }}" data-has-odd="{{ '1' if employee.has_odd else '0' }}">
+        <tr class="attendance-row" data-employee-id="{{ employee.employee_id }}" data-employee-name="{{ employee.name|lower }}" data-has-odd="{{ '1' if employee.has_odd else '0' }}" data-has-missing="{{ '1' if employee.has_missing else '0' }}" data-needs-review="{{ '1' if employee.needs_review else '0' }}">
           <td class="sticky-col employee-id-col">{{ employee.employee_id }}</td>
-          <td class="sticky-col employee-name-col employee-cell"><strong>{{ employee.name }}</strong></td>
+          <td class="sticky-col employee-name-col employee-cell">
+            <strong>{{ employee.name }}</strong>
+            {% if employee.needs_review %}<span class="review-chip" title="{{ employee.missing_count }} day(s) with no punch, {{ employee.odd_count }} odd punch day(s)">{{ employee.missing_count + employee.odd_count }}</span>{% endif %}
+          </td>
           {% for day in dates %}
           {% set cell = employee.cells.get(day) %}
-          <td class="attendance-punch-cell {% if cell and cell.odd %}odd-punch-cell{% endif %}">
+          <td class="attendance-punch-cell {% if cell and cell.odd %}odd-punch-cell{% elif cell and cell.missing %}missing-punch-cell{% elif cell and cell.week_off %}week-off-cell{% endif %}">
             {% if cell %}
             <input type="hidden" name="punches_{{ cell.record.id }}" id="punches_{{ cell.record.id }}" value="{{ cell.punch_text }}">
             <button
@@ -124,8 +150,10 @@
               <span class="punch-lines" id="punch_display_{{ cell.record.id }}">
                 {% if cell.punches %}
                   {% for punch in cell.punches %}<span>{{ punch }}</span>{% endfor %}
+                {% elif cell.week_off %}
+                  <span class="punch-placeholder">Week off</span>
                 {% else %}
-                  <span>-</span>
+                  <span class="punch-placeholder">No punch</span>
                 {% endif %}
               </span>
               <span class="odd-punch-warning {% if not cell.odd %}d-none{% endif %}" id="punch_warning_{{ cell.record.id }}" title="Odd punch count">!</span>
@@ -163,7 +191,7 @@
         <h2>Attendance Log</h2>
         <p id="attendanceLogEmployee">Employee</p>
       </div>
-      <button type="button" class="dialog-close" id="closeAttendanceLog">x</button>
+      <button type="button" class="dialog-close" id="closeAttendanceLog">&times;</button>
     </div>
     <div class="attendance-log-body">
       <div class="attendance-log-date">
@@ -179,7 +207,7 @@
       </div>
     </div>
     <div class="attendance-log-footer">
-      <button type="button" class="btn btn-outline-secondary" id="deletePunches">Clear Punches</button>
+      <button type="button" class="btn btn-outline-secondary" id="deletePunches">Clear punches</button>
       <div class="d-flex gap-2">
         <button type="button" class="btn btn-outline-secondary" id="cancelAttendanceLog">Cancel</button>
         <button type="button" class="btn btn-primary" id="applyAttendanceLog">Apply</button>
@@ -301,12 +329,19 @@
     return employeeFilterOptions.filter(option => !option.classList.contains('d-none'));
   }
 
+  const MODE_FLAGS = { odd: 'hasOdd', missing: 'hasMissing', review: 'needsReview' };
+
+  function matchesModeFor(dataset, mode) {
+    const flag = MODE_FLAGS[mode];
+    return !flag || dataset[flag] === '1';
+  }
+
   function refreshFilterList() {
     const query = employeeFilterSearch.value.trim().toLowerCase();
     const mode = employeeFilterMode.value;
     employeeFilterOptions.forEach(option => {
       const matchesSearch = !query || option.dataset.search.includes(query);
-      const matchesMode = mode !== 'odd' || option.dataset.hasOdd === '1';
+      const matchesMode = matchesModeFor(option.dataset, mode);
       option.classList.toggle('d-none', !(matchesSearch && matchesMode));
       const checkbox = option.querySelector('.employee-filter-choice');
       checkbox.checked = draftEmployeeIds.has(checkbox.value);
@@ -323,8 +358,7 @@
     const matchingRows = [];
     attendanceRows.forEach(row => {
       const showEmployee = appliedEmployeeIds.has(row.dataset.employeeId);
-      const showMode = appliedFilterMode !== 'odd' || row.dataset.hasOdd === '1';
-      if (showEmployee && showMode) matchingRows.push(row);
+      if (showEmployee && matchesModeFor(row.dataset, appliedFilterMode)) matchingRows.push(row);
     });
     const perPageValue = attendanceRowsPerPage.value;
     const rowsPerPage = perPageValue === 'all' ? Math.max(matchingRows.length, 1) : Number(perPageValue);
@@ -337,8 +371,9 @@
     attendanceVisibleStatus.textContent = matchingRows.length
       ? `Showing ${startIndex + 1} - ${endIndex} of ${matchingRows.length} Results`
       : `Showing 0 - 0 of ${attendanceRows.length} Results`;
-    if (appliedFilterMode === 'odd') {
-      employeeFilterButtonCount.textContent = `${matchingRows.length} Odd`;
+    if (MODE_FLAGS[appliedFilterMode]) {
+      const modeLabel = employeeFilterMode.querySelector(`option[value="${appliedFilterMode}"]`).textContent;
+      employeeFilterButtonCount.textContent = `${matchingRows.length} ${modeLabel}`;
     } else if (appliedEmployeeIds.size === employeeFilterChoices.length) {
       employeeFilterButtonCount.textContent = 'All';
     } else {

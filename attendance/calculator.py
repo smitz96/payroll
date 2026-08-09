@@ -8,6 +8,7 @@ from attendance.models import (
     AuditLog,
     Employee,
     LeaveLedger,
+    PayrollMonth,
     PayrollResult,
     SalaryRecord,
     WeekOffRule,
@@ -15,6 +16,7 @@ from attendance.models import (
 from attendance.holidays import holiday_dates_for_records
 from attendance.master import employee_active_for_payroll_month
 from attendance.payroll_rules import UnsupportedPayrollResult, resolve_payroll_rule
+from attendance.wage_groups import GROUP_LABELS, finalized_groups, normalize_group
 
 
 def opening_leave_for(employee_id, month):
@@ -36,17 +38,45 @@ def opening_leave_for(employee_id, month):
     return format_leave(opening)
 
 
-def calculate_payroll_month(month, actor="admin"):
+def calculate_payroll_month(month, actor="admin", wage_group=None):
+    """Recalculate the month.
+
+    Finalized wage groups are never touched, so recalculating Daily cannot disturb a
+    Monthly payroll that has already been signed off. Pass `wage_group` to restrict
+    the run to a single group.
+    """
     unconfirmed = first_payroll_employees_without_confirmed_weekoff(month)
     if unconfirmed:
         raise ValueError("Week off must be selected before first payroll for: " + ", ".join(unconfirmed))
-    PayrollResult.query.filter_by(payroll_month=month).delete()
-    LeaveLedger.query.filter_by(payroll_month=month).delete()
+    payroll_month = db.session.get(PayrollMonth, month)
+    requested = normalize_group(wage_group)
+    skipped_groups = set(finalized_groups(payroll_month))
+
+    def in_scope(salary):
+        group = normalize_group(salary.normalized_salary_type)
+        if group and group in skipped_groups:
+            return False
+        if requested and group != requested:
+            return False
+        return True
+
+    protected_ids = {
+        salary.employee_id
+        for salary in SalaryRecord.query.filter_by(payroll_month=month).all()
+        if not in_scope(salary)
+    }
+    stale_results = PayrollResult.query.filter_by(payroll_month=month)
+    stale_ledger = LeaveLedger.query.filter_by(payroll_month=month)
+    if protected_ids:
+        stale_results = stale_results.filter(PayrollResult.employee_id.notin_(protected_ids))
+        stale_ledger = stale_ledger.filter(LeaveLedger.employee_id.notin_(protected_ids))
+    stale_results.delete(synchronize_session=False)
+    stale_ledger.delete(synchronize_session=False)
     db.session.flush()
     db.session.expunge_all()
     salary_records = [
         salary for salary in SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id).all()
-        if employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month)
+        if in_scope(salary) and employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month)
     ]
     attendance_by_employee = {}
     for record in AttendanceRecord.query.filter_by(payroll_month=month).all():
@@ -68,7 +98,8 @@ def calculate_payroll_month(month, actor="admin"):
     db.session.flush()
     for result in results:
         write_leave_ledger_for_result(result)
-    db.session.add(AuditLog(actor=actor, action="Payroll Calculated", detail=f"{month}: {len(results)} employees"))
+    scope = GROUP_LABELS.get(requested, "All wage types") if requested else "All open wage types"
+    db.session.add(AuditLog(actor=actor, action="Payroll Calculated", detail=f"{month}: {len(results)} employees; scope {scope}"))
     db.session.commit()
     return results
 

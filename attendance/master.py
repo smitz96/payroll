@@ -11,6 +11,51 @@ DISABLED_STATUSES = {"LEFT", "TERMINATED"}
 DISABLE_CONFIRMATION_TEXT = "confirm"
 MASTER_IMPORT_REQUIRED_COLUMNS = {"Employee ID", "Wage Type", "Salary"}
 
+# Monthly salary breakup. These are informational/compliance fields: payroll is still
+# calculated from `salary`, and the components must add up to it exactly.
+SALARY_COMPONENTS = (
+    ("basic_salary", "Basic Salary"),
+    ("hra", "HRA"),
+    ("allowance", "Allowance"),
+    ("conveyance_allowance", "Conveyance Allowance"),
+)
+COMPLIANCE_FLAGS = (("pf_enabled", "PF"), ("esic_enabled", "ESIC"))
+YES_VALUES = {"yes", "y", "true", "1", "enabled", "applicable"}
+NO_VALUES = {"no", "n", "false", "0", "disabled", "not applicable", ""}
+
+
+def parse_yes_no(value, field_name):
+    text = clean(value).lower()
+    if text in YES_VALUES:
+        return True
+    if text in NO_VALUES:
+        return False
+    raise ValueError(f"{field_name} must be Yes or No, got \"{value}\".")
+
+
+def component_total(values):
+    return sum((Decimal(value or 0) for value in values), Decimal("0"))
+
+
+def validate_salary_breakup(salary, components, label=""):
+    """Components must sum to salary, unless the breakup has not been entered at all.
+
+    An all-zero breakup means "not captured yet", which keeps existing records and
+    older import files valid. Once any component is filled in, the whole breakup has
+    to reconcile so the payslip figures can never disagree with the salary.
+    """
+    total = component_total(components.values())
+    if total == 0:
+        return
+    salary = Decimal(salary or 0)
+    if total != salary:
+        prefix = f"{label}: " if label else ""
+        parts = ", ".join(f"{name} {Decimal(components[key] or 0):.2f}" for key, name in SALARY_COMPONENTS)
+        raise ValueError(
+            f"{prefix}Salary breakup must add up to the salary. {parts} total {total:.2f}, "
+            f"but salary is {salary:.2f}. Difference {abs(total - salary):.2f}."
+        )
+
 
 def employee_sort_value(employee):
     return int(employee.id) if str(employee.id).isdigit() else str(employee.id).lower()
@@ -36,13 +81,30 @@ def employee_active_for_payroll_month(employee, payroll_month):
 def employee_master_export_rows():
     rows = []
     for employee in sorted(Employee.query.all(), key=employee_sort_value):
+        monthly = normalize_salary_type(employee.salary_type) == "MONTHLY"
         rows.append({
             "Employee ID": employee.id,
             "Name": employee.name,
+            "Department": employee.department or "",
+            "Designation": employee.designation or "",
             "Wage Type": employee.salary_type or "",
             "Salary": employee.salary or Decimal("0"),
+            # Breakup and compliance apply to monthly wage only; leave them blank for
+            # daily so the file cannot suggest they are editable there.
+            "Basic Salary": (employee.basic_salary or Decimal("0")) if monthly else "",
+            "HRA": (employee.hra or Decimal("0")) if monthly else "",
+            "Allowance": (employee.allowance or Decimal("0")) if monthly else "",
+            "Conveyance Allowance": (employee.conveyance_allowance or Decimal("0")) if monthly else "",
+            "PF": ("Yes" if employee.pf_enabled else "No") if monthly else "",
+            "ESIC": ("Yes" if employee.esic_enabled else "No") if monthly else "",
         })
     return rows
+
+
+EMPLOYEE_MASTER_EXPORT_COLUMNS = [
+    "Employee ID", "Name", "Department", "Designation", "Wage Type", "Salary",
+    "Basic Salary", "HRA", "Allowance", "Conveyance Allowance", "PF", "ESIC",
+]
 
 
 def apply_employee_master_import(rows, actor):
@@ -67,12 +129,31 @@ def apply_employee_master_import(rows, actor):
                 f"Row {row_number}: Wage type cannot be changed for active employee {employee_id}. "
                 "Mark the employee as left or terminated first, then add a new Employee ID."
             )
+        # Identity is fixed once a record exists: the ID is the match key and the name
+        # can only be corrected on the employee page, never silently by a bulk file.
+        imported_name = clean(row.get("Name"))
+        if imported_name and imported_name != (employee.name or ""):
+            raise ValueError(
+                f"Row {row_number}: Employee ID {employee_id} is already named \"{employee.name}\". "
+                f"Import cannot rename it to \"{imported_name}\". Edit the name on the employee page instead, "
+                "or correct the name in the file to match."
+            )
+
         salary = decimal_money(row.get("Salary"))
         if salary < 0:
             raise ValueError(f"Row {row_number}: Salary cannot be negative.")
 
         changes = []
         old_salary = Decimal(employee.salary or 0)
+        # Department and designation are optional in the import: a column that is
+        # absent leaves the stored value alone, so an older export still round-trips.
+        for field, label in (("Department", "Department"), ("Designation", "Designation")):
+            if field not in row:
+                continue
+            new_value = clean(row.get(field))
+            if new_value != (getattr(employee, field.lower()) or ""):
+                changes.append(f"{label} {getattr(employee, field.lower()) or 'Not Set'} -> {new_value or 'Not Set'}")
+                setattr(employee, field.lower(), new_value)
         if normalized_type and not existing_type:
             changes.append(f"Wage Type {employee.salary_type or 'Not Set'} -> {wage_type}")
             employee.salary_type = wage_type
@@ -80,6 +161,51 @@ def apply_employee_master_import(rows, actor):
         if old_salary != salary:
             changes.append(f"Salary {old_salary} -> {salary}")
             employee.salary = salary
+
+        effective_type = normalize_salary_type(employee.salary_type)
+        if effective_type == "MONTHLY":
+            components = {}
+            for key, label in SALARY_COMPONENTS:
+                if label not in row:
+                    components[key] = Decimal(getattr(employee, key) or 0)
+                    continue
+                try:
+                    value = decimal_money(row.get(label) or 0)
+                except ValueError as exc:
+                    raise ValueError(f"Row {row_number}: {exc}") from exc
+                if value < 0:
+                    raise ValueError(f"Row {row_number}: {label} cannot be negative.")
+                components[key] = value
+            validate_salary_breakup(employee.salary, components, label=f"Row {row_number}")
+            for key, label in SALARY_COMPONENTS:
+                if components[key] != Decimal(getattr(employee, key) or 0):
+                    changes.append(f"{label} {Decimal(getattr(employee, key) or 0)} -> {components[key]}")
+                    setattr(employee, key, components[key])
+            for key, label in COMPLIANCE_FLAGS:
+                if label not in row:
+                    continue
+                try:
+                    flag = parse_yes_no(row.get(label), f"Row {row_number}: {label}")
+                except ValueError as exc:
+                    raise ValueError(str(exc)) from exc
+                if flag != bool(getattr(employee, key)):
+                    changes.append(f"{label} {'Yes' if getattr(employee, key) else 'No'} -> {'Yes' if flag else 'No'}")
+                    setattr(employee, key, flag)
+        else:
+            # Reject breakup values on a daily wage row instead of silently dropping them.
+            for _key, label in SALARY_COMPONENTS:
+                if clean(row.get(label)) and decimal_money(row.get(label) or 0) != 0:
+                    raise ValueError(
+                        f"Row {row_number}: {label} only applies to monthly wage employees. "
+                        f"Employee {employee_id} is {employee.salary_type or 'not set'}."
+                    )
+            for _key, label in COMPLIANCE_FLAGS:
+                if clean(row.get(label)):
+                    raise ValueError(
+                        f"Row {row_number}: {label} only applies to monthly wage employees. "
+                        f"Employee {employee_id} is {employee.salary_type or 'not set'}."
+                    )
+
         if not changes:
             continue
         db.session.add(employee)
@@ -126,22 +252,58 @@ def save_master_employee(form, actor):
         "name": employee.name,
         "salary_type": employee.salary_type,
         "salary": Decimal(employee.salary or 0),
-        "ot_enabled": bool(employee.ot_enabled),
-        "less_hours_exempt": bool(employee.less_hours_exempt),
+        "department": employee.department or "",
+        "designation": employee.designation or "",
+        "ot_ignored": bool(employee.ot_ignored),
+        "less_hours_ignored": bool(employee.less_hours_ignored),
+        **{key: Decimal(getattr(employee, key) or 0) for key, _ in SALARY_COMPONENTS},
+        **{key: bool(getattr(employee, key)) for key, _ in COMPLIANCE_FLAGS},
     }
+
+    controls_present = "master_controls_present" in form
+
+    # The salary breakup and compliance flags only apply to monthly wage employees.
+    if normalized_type == "MONTHLY":
+        components = {}
+        for key, label in SALARY_COMPONENTS:
+            if key not in form:
+                components[key] = Decimal(getattr(employee, key) or 0)
+                continue
+            value = decimal_money(form.get(key) or 0)
+            if value < 0:
+                raise ValueError(f"{label} cannot be negative.")
+            components[key] = value
+        validate_salary_breakup(salary, components)
+        for key, value in components.items():
+            setattr(employee, key, value)
+        for key, label in COMPLIANCE_FLAGS:
+            if controls_present or key in form:
+                setattr(employee, key, form.get(key) == "on")
+    else:
+        # Daily wage has no breakup or statutory deductions; keep the columns clean.
+        for key, _ in SALARY_COMPONENTS:
+            setattr(employee, key, Decimal("0"))
+        for key, _ in COMPLIANCE_FLAGS:
+            setattr(employee, key, False)
     employee.name = name
     employee.salary_type = salary_type
     employee.normalized_salary_type = normalized_type
     employee.salary = salary
-    controls_present = "master_controls_present" in form
-    if controls_present or "ot_enabled" in form:
-        employee.ot_enabled = form.get("ot_enabled") == "on"
+    # Department and designation arrive with the attendance sheet, but the form is
+    # the manual source of truth, so a blank field here clears the stored value
+    # rather than being ignored.
+    if "department" in form:
+        employee.department = clean(form.get("department"))
+    if "designation" in form:
+        employee.designation = clean(form.get("designation"))
+    if controls_present or "ot_ignored" in form:
+        employee.ot_ignored = form.get("ot_ignored") == "on"
     elif created:
-        employee.ot_enabled = True
-    if controls_present or "less_hours_exempt" in form:
-        employee.less_hours_exempt = form.get("less_hours_exempt") == "on"
+        employee.ot_ignored = False
+    if controls_present or "less_hours_ignored" in form:
+        employee.less_hours_ignored = form.get("less_hours_ignored") == "on"
     elif created:
-        employee.less_hours_exempt = False
+        employee.less_hours_ignored = False
     employee.employment_status = ACTIVE_STATUS
     db.session.add(employee)
     created_defaults = ensure_employee_defaults(employee_id)
@@ -154,11 +316,27 @@ def save_master_employee(form, actor):
             changes.append(f"Wage Type {old_values['salary_type']} -> {employee.salary_type}")
         if old_values["salary"] != employee.salary:
             changes.append(f"Salary {old_values['salary']} -> {employee.salary}")
-        if old_values["ot_enabled"] != employee.ot_enabled:
-            changes.append(f"OT Eligible {'Yes' if old_values['ot_enabled'] else 'No'} -> {'Yes' if employee.ot_enabled else 'No'}")
-        if old_values["less_hours_exempt"] != employee.less_hours_exempt:
-            changes.append(f"Less Hours Deduction {'Ignored' if old_values['less_hours_exempt'] else 'Applied'} -> {'Ignored' if employee.less_hours_exempt else 'Applied'}")
-    detail = f"{employee_id} - {name}; Wage Type {salary_type}; Salary {salary}; OT {'Enabled' if employee.ot_enabled else 'Disabled'}; Less Hours {'Ignored' if employee.less_hours_exempt else 'Deducted'}"
+        if old_values["department"] != (employee.department or ""):
+            changes.append(f"Department {old_values['department'] or 'Not Set'} -> {employee.department or 'Not Set'}")
+        if old_values["designation"] != (employee.designation or ""):
+            changes.append(f"Designation {old_values['designation'] or 'Not Set'} -> {employee.designation or 'Not Set'}")
+        if old_values["ot_ignored"] != employee.ot_ignored:
+            changes.append(f"Ignore OT {'Yes' if old_values['ot_ignored'] else 'No'} -> {'Yes' if employee.ot_ignored else 'No'}")
+        if old_values["less_hours_ignored"] != employee.less_hours_ignored:
+            changes.append(f"Ignore Less Hours {'Yes' if old_values['less_hours_ignored'] else 'No'} -> {'Yes' if employee.less_hours_ignored else 'No'}")
+        for key, label in SALARY_COMPONENTS:
+            new_value = Decimal(getattr(employee, key) or 0)
+            if old_values[key] != new_value:
+                changes.append(f"{label} {old_values[key]} -> {new_value}")
+        for key, label in COMPLIANCE_FLAGS:
+            if old_values[key] != bool(getattr(employee, key)):
+                changes.append(f"{label} {'Yes' if old_values[key] else 'No'} -> {'Yes' if getattr(employee, key) else 'No'}")
+    detail = (
+        f"{employee_id} - {name}; Wage Type {salary_type}; Salary {salary}; "
+        f"Department {employee.department or 'Not Set'}; Designation {employee.designation or 'Not Set'}; "
+        f"Ignore OT {'Yes' if employee.ot_ignored else 'No'}; Ignore Less Hours {'Yes' if employee.less_hours_ignored else 'No'}; "
+        f"PF {'Yes' if employee.pf_enabled else 'No'}; ESIC {'Yes' if employee.esic_enabled else 'No'}"
+    )
     if changes:
         detail += "; Changes: " + " | ".join(changes)
     if created_defaults:

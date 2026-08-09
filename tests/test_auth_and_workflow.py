@@ -6,6 +6,7 @@ from io import BytesIO
 from html import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
 from pypdf import PdfReader
 from attendance import db
 from attendance.calculator import calculate_payroll_month
@@ -80,8 +81,9 @@ def test_single_active_admin_session_requires_takeover_confirmation(app):
 
     assert b"Dashboard" in first_browser.post("/login", data={"username": "admin", "password": "12345"}, follow_redirects=True).data
     blocked = second_browser.post("/login", data={"username": "admin", "password": "12345"})
-    assert b"already logged in from another browser or device" in blocked.data
-    assert b"Logout There and Login Here" in blocked.data
+    assert b"already signed in on another browser or device" in blocked.data
+    assert b"Sign out there and continue" in blocked.data
+    assert b'name="action" value="force_login"' in blocked.data
 
     takeover = second_browser.post("/login", data={"action": "force_login"}, follow_redirects=True)
     assert b"Dashboard" in takeover.data
@@ -193,7 +195,7 @@ def test_settings_app_update_requires_admin_password_and_logs(client, app, monke
     assert b"About" in page.data
     assert b"V0.01" in page.data
     assert b"08-08-2026 15:12:30" in page.data
-    assert b"Update App" in page.data
+    assert b"Update app" in page.data
     assert b'name="admin_password"' in page.data
 
     bad = client.post("/settings/git-pull", data={"admin_password": "wrong"}, follow_redirects=True)
@@ -226,17 +228,26 @@ def test_settings_reset_all_data_requires_phrase_and_clears_app_data(client, app
 
     client.post("/login", data={"username": "admin", "password": "12345"})
     page = client.get("/settings")
-    assert b"Reset All Data" in page.data
+    assert b"Reset all data" in page.data
     assert b'id="resetDataDialog"' in page.data
 
-    blocked = client.post("/settings/reset-data", data={"reset_confirmation": "delete"}, follow_redirects=True)
-    assert b"permanently delete" in blocked.data
+    no_password = client.post("/settings/reset-data", data={"reset_confirmation": "permanently delete"}, follow_redirects=True)
+    assert b"Admin password is incorrect" in no_password.data
+    with app.app_context():
+        assert Employee.query.count() == 1
+
+    wrong_password = client.post("/settings/reset-data", data={"reset_confirmation": "permanently delete", "admin_password": "nope"}, follow_redirects=True)
+    assert b"Admin password is incorrect" in wrong_password.data
+    with app.app_context():
+        assert Employee.query.count() == 1
+
+    blocked = client.post("/settings/reset-data", data={"reset_confirmation": "delete", "admin_password": "12345"}, follow_redirects=True)
     assert b"reset all app data" in blocked.data
     with app.app_context():
         assert Employee.query.count() == 1
         assert AuditLog.query.count() >= 1
 
-    reset = client.post("/settings/reset-data", data={"reset_confirmation": "permanently delete"}, follow_redirects=True)
+    reset = client.post("/settings/reset-data", data={"reset_confirmation": "permanently delete", "admin_password": "12345"}, follow_redirects=True)
     assert b"All app data has been reset" in reset.data
     with app.app_context():
         assert User.query.filter_by(username="admin").count() == 1
@@ -251,7 +262,11 @@ def test_settings_reset_all_data_requires_phrase_and_clears_app_data(client, app
         assert Loan.query.count() == 0
         assert LoanInstallmentSkip.query.count() == 0
         assert AdvanceSalary.query.count() == 0
-        assert AuditLog.query.count() == 0
+        # Seeded logs are gone; the only surviving row records the reset itself so
+        # the wipe is not invisible in the audit trail.
+        reset_logs = AuditLog.query.all()
+        assert [log.action for log in reset_logs] == ["All Data Reset"]
+        assert reset_logs[0].actor == "admin"
 
 
 def test_reports_page_has_dedicated_route_and_pdf_cards(client, app):
@@ -283,8 +298,8 @@ def test_employee_master_locks_wage_type_and_requires_disable_confirmation(clien
         "salary": "30000",
     }, follow_redirects=True)
     assert b"Employee master saved" in created.data
-    assert b"Department" not in created.data
-    assert b"Designation" not in created.data
+    assert b"Department" in created.data
+    assert b"Designation" in created.data
     blocked = client.post("/master", data={
         "employee_id": "5",
         "name": "Worker",
@@ -311,8 +326,8 @@ def test_employee_master_locks_wage_type_and_requires_disable_confirmation(clien
     with app.app_context():
         employee = db.session.get(Employee, "5")
         assert employee.normalized_salary_type == "MONTHLY"
-        assert employee.ot_enabled is True
-        assert employee.less_hours_exempt is False
+        assert employee.ot_ignored is False
+        assert employee.less_hours_ignored is False
         assert employee.employment_status == "LEFT"
         assert AuditLog.query.filter_by(action="Employee Master Disabled").count() == 1
     bad_enable = client.post("/master", data={
@@ -345,8 +360,9 @@ def test_employee_master_detail_updates_salary_and_payroll_controls(client, app)
 
     page = client.get("/master/5")
     assert page.status_code == 200
-    assert b"OT Eligible" in page.data
-    assert b"Ignore Less Hours Deduction" in page.data
+    assert b"Payroll exceptions" in page.data
+    assert b"Ignore OT" in page.data
+    assert b"Ignore Less Hours" in page.data
 
     response = client.post("/master/5", data={
         "master_controls_present": "1",
@@ -354,7 +370,7 @@ def test_employee_master_detail_updates_salary_and_payroll_controls(client, app)
         "name": "Worker Updated",
         "salary_type": "Monthly",
         "salary": "32000",
-        "less_hours_exempt": "on",
+        "less_hours_ignored": "on",
     }, follow_redirects=True)
     assert b"Employee master updated" in response.data
 
@@ -362,11 +378,12 @@ def test_employee_master_detail_updates_salary_and_payroll_controls(client, app)
         employee = db.session.get(Employee, "5")
         assert employee.name == "Worker Updated"
         assert employee.salary == Decimal("32000.00")
-        assert employee.ot_enabled is False
-        assert employee.less_hours_exempt is True
+        # ot_ignored was not posted, so OT stays payable; less hours is now ignored.
+        assert employee.ot_ignored is False
+        assert employee.less_hours_ignored is True
         audit = AuditLog.query.filter_by(action="Employee Master Updated").one()
-        assert "OT Eligible Yes -> No" in audit.detail
-        assert "Less Hours Deduction Applied -> Ignored" in audit.detail
+        assert "Ignore OT No -> " not in audit.detail  # unchanged, so no change entry
+        assert "Ignore Less Hours No -> Yes" in audit.detail
 
 
 def test_employee_master_form_keeps_payroll_controls_on_detail_page(client, app):
@@ -380,18 +397,18 @@ def test_employee_master_form_keeps_payroll_controls_on_detail_page(client, app)
     assert b"Save Master" not in master_page.data
     assert b'id="employeeMasterForm"' not in master_page.data
     assert b'data-dialog-id="addEmployeeDrawer"' in master_page.data
-    add_dialog_html = master_page.data.split(b'id="addEmployeeDrawer"')[1].split(b'id="employeeDrawer')[0]
-    assert b'name="ot_enabled"' not in add_dialog_html
-    assert b'name="less_hours_exempt"' not in add_dialog_html
-    assert b'name="ot_enabled"' in master_page.data
-    assert b'name="less_hours_exempt"' in master_page.data
+    add_dialog_html = master_page.data.split(b'<dialog class="drawer-dialog" id="addEmployeeDrawer">')[1].split(b'id="employeeDrawer')[0]
+    assert b'name="ot_ignored"' in add_dialog_html
+    assert b'name="less_hours_ignored"' in add_dialog_html
+    assert b'name="ot_ignored"' in master_page.data
+    assert b'name="less_hours_ignored"' in master_page.data
     assert b"Edit Details Worker" in master_page.data
     assert b"under a new Employee ID with the updated wage group" in master_page.data
     assert b"sticky-id-name-table" in master_page.data
 
     detail_page = client.get("/master/5")
-    assert b'name="ot_enabled"' in detail_page.data
-    assert b'name="less_hours_exempt"' in detail_page.data
+    assert b'name="ot_ignored"' in detail_page.data
+    assert b'name="less_hours_ignored"' in detail_page.data
 
 
 def test_employee_master_import_export_updates_only_wage_fields(client, app):
@@ -402,8 +419,8 @@ def test_employee_master_import_export_updates_only_wage_fields(client, app):
             salary_type="Monthly",
             normalized_salary_type="MONTHLY",
             salary=Decimal("30000"),
-            ot_enabled=True,
-            less_hours_exempt=False,
+            ot_ignored=False,
+            less_hours_ignored=False,
             employment_status="ACTIVE",
         ))
         db.session.add(Employee(id="6", name="New Wage Worker", salary=Decimal("0"), employment_status="ACTIVE"))
@@ -412,11 +429,11 @@ def test_employee_master_import_export_updates_only_wage_fields(client, app):
 
     export_response = client.get("/master/export.csv")
     assert export_response.status_code == 200
-    assert b"Employee ID,Name,Wage Type,Salary" in export_response.data
+    assert b"Employee ID,Name,Department,Designation,Wage Type,Salary,Basic Salary,HRA,Allowance,Conveyance Allowance,PF,ESIC" in export_response.data
 
     blocked = client.post("/master/import", data={
         "employee_master_csv": (
-            BytesIO(b"Employee ID,Name,Wage Type,Salary\n5,Changed Name,Daily,40000\n"),
+            BytesIO(b"Employee ID,Name,Wage Type,Salary\n5,Worker,Daily,40000\n"),
             "employee_master.csv",
         )
     }, content_type="multipart/form-data", follow_redirects=True)
@@ -429,18 +446,19 @@ def test_employee_master_import_export_updates_only_wage_fields(client, app):
 
     updated = client.post("/master/import", data={
         "employee_master_csv": (
-            BytesIO(b"Employee ID,Name,Wage Type,Salary\n5,Changed Name,Monthly,32000\n6,Ignored Name,Daily,800\n"),
+            BytesIO(b"Employee ID,Name,Wage Type,Salary\n5,Worker,Monthly,32000\n6,New Wage Worker,Daily,800\n"),
             "employee_master.csv",
         )
     }, content_type="multipart/form-data", follow_redirects=True)
     assert b"Employee master imported. 2 employee" in updated.data
+
     with app.app_context():
         employee = db.session.get(Employee, "5")
         new_wage = db.session.get(Employee, "6")
         assert employee.name == "Worker"
         assert employee.salary == Decimal("32000.00")
-        assert employee.ot_enabled is True
-        assert employee.less_hours_exempt is False
+        assert employee.ot_ignored is False
+        assert employee.less_hours_ignored is False
         assert new_wage.name == "New Wage Worker"
         assert new_wage.normalized_salary_type == "DAILY"
         assert new_wage.salary == Decimal("800.00")
@@ -456,7 +474,7 @@ def test_payroll_month_loads_salary_from_active_master(client, app):
         db.session.commit()
     client.post("/login", data={"username": "admin", "password": "12345"})
     page = client.get("/payroll/2026-07")
-    assert b"Load Wage From Master" in page.data
+    assert b"Load wages from master" in page.data or b"Reload wages" in page.data
     response = client.post("/payroll/2026-07", data={"action": "salary"}, follow_redirects=True)
     assert b"Wage data loaded from master: 1 created, 0 updated, 1 skipped" in response.data
     with app.app_context():
@@ -717,7 +735,58 @@ def test_salary_import_auto_creates_weekoff_and_leave_defaults(tmp_path, app):
         assert opening.amount == Decimal("0.0")
 
 
-def test_attendance_import_auto_creates_employee_master_defaults_and_audit(tmp_path, app):
+def test_attendance_import_rejects_employees_missing_from_master(tmp_path, app):
+    """Attendance must never create master records; unknown IDs abort the whole import."""
+    csv_path = tmp_path / "attendance.csv"
+    csv_path.write_text(
+        "Employee ID,Employee Name,Department,Designation,Date,Day,Shift,From,To,First Punch,Last Punch,Total Working Hours\n"
+        "77,New Attendance Worker,Production,Operator,2026-07-01,Wednesday,Normal,09:00,18:00,09:00 AM,06:00 PM,9h 00m\n"
+        "78,Another Worker,Production,Operator,2026-07-01,Wednesday,Normal,09:00,18:00,09:00 AM,06:00 PM,9h 00m\n",
+        encoding="utf-8",
+    )
+    with app.app_context():
+        with pytest.raises(ValueError) as excinfo:
+            import_attendance_csv(csv_path, "2026-07", actor="admin")
+        message = str(excinfo.value)
+        assert "not in Employee Master" in message
+        assert "77 - New Attendance Worker" in message
+        assert "78 - Another Worker" in message
+        assert db.session.get(Employee, "77") is None
+        assert db.session.get(Employee, "78") is None
+        assert AttendanceRecord.query.count() == 0
+
+
+def test_failed_attendance_import_leaves_existing_month_untouched(tmp_path, app):
+    """A rejected upload must not wipe the attendance already imported for the month."""
+    good = tmp_path / "good.csv"
+    good.write_text(
+        "Employee ID,Employee Name,Department,Designation,Date,Day,Shift,From,To,First Punch,Last Punch,Total Working Hours\n"
+        "77,Known Worker,Production,Operator,2026-07-01,Wednesday,Normal,09:00,18:00,09:00 AM,06:00 PM,9h 00m\n",
+        encoding="utf-8",
+    )
+    bad = tmp_path / "bad.csv"
+    bad.write_text(
+        "Employee ID,Employee Name,Department,Designation,Date,Day,Shift,From,To,First Punch,Last Punch,Total Working Hours\n"
+        "77,Known Worker,Production,Operator,2026-07-02,Thursday,Normal,09:00,18:00,09:00 AM,06:00 PM,9h 00m\n"
+        "99,Stranger,Production,Operator,2026-07-02,Thursday,Normal,09:00,18:00,09:00 AM,06:00 PM,9h 00m\n",
+        encoding="utf-8",
+    )
+    with app.app_context():
+        db.session.add(Employee(id="77", name="Known Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+        assert import_attendance_csv(good, "2026-07", actor="admin")[0] == 1
+        assert AttendanceRecord.query.filter_by(payroll_month="2026-07").count() == 1
+
+        with pytest.raises(ValueError):
+            import_attendance_csv(bad, "2026-07", actor="admin")
+        db.session.rollback()
+        # The original day survives and no partial rows from the rejected file landed.
+        records = AttendanceRecord.query.filter_by(payroll_month="2026-07").all()
+        assert [record.date for record in records] == [date(2026, 7, 1)]
+        assert db.session.get(Employee, "99") is None
+
+
+def test_attendance_import_refreshes_master_details_for_known_employees(tmp_path, app):
     csv_path = tmp_path / "attendance.csv"
     csv_path.write_text(
         "Employee ID,Employee Name,Department,Designation,Date,Day,Shift,From,To,First Punch,Last Punch,Total Working Hours\n"
@@ -726,31 +795,25 @@ def test_attendance_import_auto_creates_employee_master_defaults_and_audit(tmp_p
         encoding="utf-8",
     )
     with app.app_context():
+        db.session.add(Employee(id="77", name="New Attendance Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("20000")))
+        db.session.commit()
+
         count, warnings = import_attendance_csv(csv_path, "2026-07", actor="admin")
         assert count == 2
         assert warnings == []
 
         employee = db.session.get(Employee, "77")
-        assert employee is not None
-        assert employee.name == "New Attendance Worker"
         assert employee.department == "Production"
         assert employee.designation == "Operator"
-        assert employee.salary_type == ""
-        assert employee.normalized_salary_type == ""
-        assert employee.salary == Decimal("0.00")
-        assert employee.employment_status == "ACTIVE"
-        assert employee.ot_enabled is True
-        assert employee.less_hours_exempt is False
+        # The wage data set in master is preserved, not reset by the sheet.
+        assert employee.normalized_salary_type == "MONTHLY"
+        assert employee.salary == Decimal("20000.00")
 
         rule = WeekOffRule.query.filter_by(employee_id="77").one()
         assert rule.sunday == "WEEK_OFF_ALL"
         opening = LeaveLedger.query.filter_by(employee_id="77", transaction_type="OPENING").one()
         assert opening.amount == Decimal("0.0")
-
-        master_audit = AuditLog.query.filter_by(action="Employee Master Auto Created").one()
-        assert "77 - New Attendance Worker" in master_audit.detail
-        defaults_audit = AuditLog.query.filter_by(action="Employee Defaults Created").one()
-        assert "77 - New Attendance Worker" in defaults_audit.detail
+        assert AuditLog.query.filter_by(action="Employee Master Auto Created").count() == 0
 
         db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="77", date=date(2026, 7, 1), manual_status="Half Day Present"))
         db.session.add(PayrollResult(payroll_month="2026-07", employee_id="77", calculation_status="Calculated"))
@@ -788,6 +851,9 @@ def test_daily_punch_xlsx_import_sums_multiple_punch_pairs(tmp_path, app):
     )
 
     with app.app_context():
+        # Employees must exist in master before attendance can be imported.
+        db.session.add(Employee(id="5", name="Komal V Patel", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
         count, warnings = import_attendance_csv(xlsx_path, "2026-07", actor="admin")
         assert count == 2
         assert warnings == []
@@ -837,8 +903,8 @@ def test_bulk_attendance_manager_submit_required_before_payroll_calculation(tmp_
         )
     assert upload.status_code == 200
     assert b"Attendance Manager" in upload.data
-    assert b"Re-import Attendance" in upload.data
-    assert b"Submit & Calculate Payroll" in upload.data
+    assert b"Re-import attendance" in upload.data
+    assert b"Submit &amp; calculate payroll" in upload.data
     with app.app_context():
         month = db.session.get(PayrollMonth, "2026-07")
         assert month.attendance_submitted is False
@@ -1021,7 +1087,7 @@ def test_loan_module_shows_in_progress_detail_schedule_and_delete(client, app):
     detail_response = client.get(f"/loans/{loan_id}?month=2026-04")
     assert detail_response.status_code == 200
     assert f"/reports/loans/{loan_id}.pdf?month=2026-04".encode() in detail_response.data
-    assert b"Pending Loan Amount" in detail_response.data
+    assert b"Pending loan amount" in detail_response.data
     assert b"Expected End Date" in detail_response.data
     assert b"2026-05-01" in detail_response.data
     assert b"Paid" in detail_response.data
@@ -1185,7 +1251,7 @@ def test_month_recalculate_clears_manual_modifications(client, app):
         db.session.commit()
     client.post("/login", data={"username": "admin", "password": "12345"})
     response = client.post("/payroll/2026-07", data={"action": "calculate"}, follow_redirects=True)
-    assert b"Payroll recalculated from CSV data" in response.data
+    assert b"Reset and recalculated" in response.data
     with app.app_context():
         salary = SalaryRecord.query.filter_by(employee_id="5").one()
         result = PayrollResult.query.filter_by(employee_id="5").one()
@@ -1218,7 +1284,7 @@ def test_holiday_recheck_updates_payroll_without_clearing_manual_salary_changes(
 
     client.post("/login", data={"username": "admin", "password": "12345"})
     response = client.post("/payroll/2026-07", data={"action": "recheck_holidays"}, follow_redirects=True)
-    assert b"Holidays rechecked and payroll updated" in response.data
+    assert b"Manual employee changes were kept" in response.data
     with app.app_context():
         salary = SalaryRecord.query.filter_by(employee_id="5").one()
         result = PayrollResult.query.filter_by(employee_id="5", payroll_month="2026-07").one()
@@ -1408,13 +1474,13 @@ def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
         calculate_payroll_month("2026-07")
     client.post("/login", data={"username": "admin", "password": "12345"})
     page = client.get("/payroll/2026-07")
-    assert b"Payroll Summary PDF" in page.data
-    assert b"Detailed Attendance PDF" in page.data
-    assert b"OT Report PDF" in page.data
-    assert b"Less Hours Report PDF" in page.data
-    assert b"Error Report PDF" in page.data
-    assert b"OT Report CSV" not in page.data
-    assert b"Less Hours Report CSV" not in page.data
+    # Reports are no longer duplicated on the payroll page; it links to the Reports
+    # section, which is the single place they live.
+    assert b"/reports/2026-07/overtime.pdf" not in page.data
+    assert b"Open Reports" in page.data
+    reports_page = client.get("/reports/?month=2026-07")
+    for label in (b"Payroll Summary", b"Detailed Attendance", b"Overtime Report", b"Less Hours Report", b"Error Report"):
+        assert label in reports_page.data
 
     ot = client.get("/reports/2026-07/overtime.pdf")
     assert ot.status_code == 200
@@ -1443,7 +1509,7 @@ def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
 
     for url, title in [
         ("/reports/2026-07/payroll-summary.pdf", "Payroll Summary"),
-        ("/reports/2026-07/attendance-detail.pdf", "Detailed Attendance Report"),
+        ("/reports/2026-07/attendance-detail.pdf", "Detailed Attendance"),
         ("/reports/2026-07/errors.pdf", "Error Report"),
     ]:
         report = client.get(url)
@@ -1465,8 +1531,8 @@ def test_employee_payroll_controls_disable_ot_and_less_hours_deduction(app):
             normalized_salary_type="MONTHLY",
             salary=Decimal("30000"),
             employment_status="ACTIVE",
-            ot_enabled=False,
-            less_hours_exempt=True,
+            ot_ignored=True,
+            less_hours_ignored=True,
         ))
         db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow(), monday="WORKING", tuesday="WORKING", wednesday="WORKING", thursday="WORKING", friday="WORKING", saturday="WORKING", sunday="WORKING"))
         db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Worker", date=date(2026, 7, 2), day="Thursday", first_punch="09:30 AM", last_punch="07:30 PM", raw_working_hours="10h 00m", actual_minutes=parse_duration("10h 00m"), parse_status="OK"))
@@ -1495,12 +1561,12 @@ def test_payroll_finalize_unlock_and_logs(client, app):
         db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000"), adjustment=Decimal("0"), loan=Decimal("0")))
         db.session.commit()
     client.post("/login", data={"username": "admin", "password": "12345"})
-    blocked = client.post("/payroll/2026-07", data={"action": "finalize", "admin_password": "wrong"}, follow_redirects=True)
+    blocked = client.post("/payroll/2026-07", data={"action": "finalize", "wage_group": "MONTHLY", "admin_password": "wrong"}, follow_redirects=True)
     assert b"Admin password is required to finalize payroll" in blocked.data
     with app.app_context():
         assert db.session.get(PayrollMonth, "2026-07").status == "DRAFT"
-    finalized = client.post("/payroll/2026-07", data={"action": "finalize", "admin_password": "12345"}, follow_redirects=True)
-    assert b"Payroll finalized and locked" in finalized.data
+    finalized = client.post("/payroll/2026-07", data={"action": "finalize", "wage_group": "MONTHLY", "admin_password": "12345"}, follow_redirects=True)
+    assert b"Monthly wage payroll finalized and locked" in finalized.data
     assert b"Finalized / Locked" in finalized.data
     with app.app_context():
         month = db.session.get(PayrollMonth, "2026-07")
@@ -1512,12 +1578,12 @@ def test_payroll_finalize_unlock_and_logs(client, app):
     logs = client.get("/logs")
     assert logs.status_code == 200
     assert b"Payroll Finalized" in logs.data
-    blocked_unlock = client.post("/payroll/2026-07", data={"action": "unlock", "admin_password": "wrong"}, follow_redirects=True)
+    blocked_unlock = client.post("/payroll/2026-07", data={"action": "unlock", "wage_group": "MONTHLY", "admin_password": "wrong"}, follow_redirects=True)
     assert b"Admin password is required to unlock payroll" in blocked_unlock.data
     with app.app_context():
         assert db.session.get(PayrollMonth, "2026-07").status == "FINALIZED"
-    unlocked = client.post("/payroll/2026-07", data={"action": "unlock", "admin_password": "12345"}, follow_redirects=True)
-    assert b"Payroll unlocked" in unlocked.data
+    unlocked = client.post("/payroll/2026-07", data={"action": "unlock", "wage_group": "MONTHLY", "admin_password": "12345"}, follow_redirects=True)
+    assert b"Monthly wage payroll unlocked" in unlocked.data
     with app.app_context():
         month = db.session.get(PayrollMonth, "2026-07")
         assert month.status == "DRAFT"
@@ -1570,7 +1636,7 @@ def test_finalized_payroll_blocks_employee_changes(client, app):
         f"notes_{record_id}": "locked edit",
     }, follow_redirects=True)
     assert b"Payroll is finalized and locked" in response.data
-    assert b"Save Changes" not in response.data
+    assert b"Save changes" not in response.data
     with app.app_context():
         salary = SalaryRecord.query.filter_by(employee_id="5").one()
         assert salary.adjustment == Decimal("0.00")

@@ -23,6 +23,14 @@
       <label class="form-label">Name</label>
       <input class="form-control" name="name" value="{{ employee.name }}" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
     </div>
+    <div class="col-md-4">
+      <label class="form-label">Department</label>
+      <input class="form-control" name="department" value="{{ employee.department or '' }}" autocomplete="off" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">Designation</label>
+      <input class="form-control" name="designation" value="{{ employee.designation or '' }}" autocomplete="off" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+    </div>
     <div class="col-md-3">
       <label class="form-label">Wage Type</label>
       <select class="form-select" name="wage_type" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
@@ -31,26 +39,57 @@
       </select>
     </div>
     <div class="col-md-3">
-      <label class="form-label">Wage / Salary</label>
-      <input class="form-control" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+      <label class="form-label">Salary</label>
+      <input class="form-control" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required data-salary-total {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
     </div>
     <div class="col-md-2">
       <label class="form-label">Status</label>
       <div><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></div>
     </div>
+    <div class="col-md-12">
+      <div class="monthly-only" data-monthly-only hidden>
+        <h4 class="form-subhead">Salary breakup</h4>
+        <div class="breakup-grid">
+          <div><label class="form-label" for="detail_basic_salary">Basic Salary</label>
+            <input class="form-control" id="detail_basic_salary" name="basic_salary" value="{{ employee.basic_salary or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+          <div><label class="form-label" for="detail_hra">HRA</label>
+            <input class="form-control" id="detail_hra" name="hra" value="{{ employee.hra or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+          <div><label class="form-label" for="detail_allowance">Allowance</label>
+            <input class="form-control" id="detail_allowance" name="allowance" value="{{ employee.allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+          <div><label class="form-label" for="detail_conveyance_allowance">Conveyance Allowance</label>
+            <input class="form-control" id="detail_conveyance_allowance" name="conveyance_allowance" value="{{ employee.conveyance_allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+        </div>
+        <div class="breakup-total" data-breakup-total>Leave all four at 0 if the breakup is not captured yet.</div>
+
+        <h4 class="form-subhead">Compliance</h4>
+        <div class="d-flex gap-3 flex-wrap">
+          <label class="form-check">
+            <input class="form-check-input" type="checkbox" name="pf_enabled" {% if employee.pf_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+            <span>PF applicable</span>
+          </label>
+          <label class="form-check">
+            <input class="form-check-input" type="checkbox" name="esic_enabled" {% if employee.esic_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+            <span>ESIC applicable</span>
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-12">
+      <h4 class="form-subhead">Payroll exceptions</h4>
+    </div>
     <div class="col-md-4">
       <label class="form-check">
-        <input class="form-check-input" type="checkbox" name="ot_enabled" {% if employee.ot_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
-        <span>OT Eligible</span>
+        <input class="form-check-input" type="checkbox" name="ot_ignored" {% if employee.ot_ignored %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <span>Ignore OT</span>
       </label>
-      <div class="status-detail">If disabled, overtime minutes may be shown as raw OT but payable OT and OT amount are zero.</div>
+      <div class="status-detail">When ticked, overtime minutes are still reported as raw OT but payable OT and OT amount are zero.</div>
     </div>
     <div class="col-md-5">
       <label class="form-check">
-        <input class="form-check-input" type="checkbox" name="less_hours_exempt" {% if employee.less_hours_exempt %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
-        <span>Ignore Less Hours Deduction</span>
+        <input class="form-check-input" type="checkbox" name="less_hours_ignored" {% if employee.less_hours_ignored %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <span>Ignore Less Hours</span>
       </label>
-      <div class="status-detail">If enabled, less-hours shortage is not deducted. Full day and half day counting still applies.</div>
+      <div class="status-detail">When ticked, less-hours shortage is not deducted. Full day and half day counting still applies.</div>
     </div>
     <div class="col-md-12 adjustment-actions">
       {% if employee.employment_status == 'ACTIVE' %}
@@ -60,4 +99,5 @@
   </div>
   <p class="text-muted mb-0 mt-3">Wage type cannot be changed for an active employee once set. Mark the employee as left or terminated before creating a replacement record with a different wage type.</p>
 </form>
+{% include "_salary_breakup.html" %}
 {% endblock %}

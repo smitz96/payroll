@@ -18,7 +18,7 @@
   <div class="metric"><span>Loan Amount</span><strong>{{ loan.amount }}</strong></div>
   <div class="metric"><span>Paid Before {{ month }}</span><strong>{{ paid }}</strong></div>
   <div class="metric"><span>Remaining Before {{ month }}</span><strong>{{ remaining }}</strong></div>
-  <div class="metric"><span>Pending Loan Amount</span><strong>{{ pending }}</strong></div>
+  <div class="metric"><span>Pending loan amount</span><strong>{{ pending }}</strong></div>
   <div class="metric"><span>This Month Installment</span><strong>{{ installment }}</strong></div>
   <div class="metric"><span>Status</span><strong>{{ "Active" if loan.is_active else "Inactive" }}</strong></div>
 </div>
@@ -68,14 +68,14 @@
         <h2 class="section-title mb-1">Delete Loan</h2>
         <p class="text-muted mb-0">Loan #{{ loan.id }} - {{ employee.name if employee else loan.employee_id }}</p>
       </div>
-      <button class="dialog-close" type="button" id="closeDeleteLoan">x</button>
+      <button class="dialog-close" type="button" id="closeDeleteLoan">&times;</button>
     </div>
     <p class="text-muted">This will permanently delete this loan. Payroll calculations using this loan should be recalculated after deletion.</p>
     <label class="form-label" for="deleteLoanConfirmationInput">Type permanently delete to confirm</label>
     <input class="form-control mb-3" id="deleteLoanConfirmationInput" name="delete_confirmation" autocomplete="off" spellcheck="false">
     <div class="d-flex justify-content-end gap-2">
       <button class="btn btn-outline-secondary" type="button" id="cancelDeleteLoan">Cancel</button>
-      <button class="btn btn-outline-danger" id="confirmDeleteLoan" disabled>Permanently Delete</button>
+      <button class="btn btn-outline-danger" id="confirmDeleteLoan" disabled>Permanently delete</button>
     </div>
   </form>
 </dialog>
