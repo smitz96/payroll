@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
 from attendance import db
 from attendance.models import AuditLog, Employee, LeaveLedger, PayrollMonth, PayrollResult, SalaryRecord
+from attendance.utils import display_month
 
 
 def format_leave(value):
@@ -22,12 +23,22 @@ def parse_leave_balance(value):
     return balance.quantize(Decimal("0.1"), rounding=ROUND_DOWN)
 
 
-def latest_payroll_result(employee_id):
-    return (
+def latest_payroll_result(employee_id, finalized_only=True):
+    """The most recent monthly payroll result for this employee.
+
+    A month's leave only counts once that month's payroll is finalized, so the
+    balance never moves on the strength of a draft calculation that may still be
+    recalculated. Pass finalized_only=False to see the in-progress position.
+    """
+    query = (
         PayrollResult.query.filter_by(employee_id=employee_id, payroll_rule_type="MONTHLY")
         .order_by(PayrollResult.payroll_month.desc(), PayrollResult.created_at.desc())
-        .first()
     )
+    if finalized_only:
+        query = query.join(PayrollMonth, PayrollMonth.month == PayrollResult.payroll_month).filter(
+            PayrollMonth.status == "FINALIZED"
+        )
+    return query.first()
 
 
 def latest_salary_record(employee_id):
@@ -67,9 +78,20 @@ def leave_balance_rows():
             .first()
         )
         notes = []
+        pending_change = None
         if open_result:
-            notes.append("Open payroll calculation exists; recalculation may be required.")
+            # Show what the draft month would do to the balance without letting it
+            # move the balance itself.
+            pending_change = format_leave(
+                Decimal(open_result.closing_leave or 0) - Decimal(current)
+            )
+            notes.append(
+                f"{display_month(open_result.payroll_month)} payroll is not finalized. "
+                f"Its leave is not counted yet ({pending_change:+} day(s) pending)."
+            )
         rows.append({
+            "pending_change": pending_change,
+            "pending_month": open_result.payroll_month if open_result else None,
             "employee": employee,
             "salary": salary,
             "last_result": result,

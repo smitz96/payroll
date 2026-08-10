@@ -38,8 +38,9 @@
 {% if missing_count %}
 <div class="alert alert-warning">
   <strong>{{ missing_count }} working day(s) have no punches.</strong>
-  A working day with no punches is neither paid nor deducted &mdash; it stays as "Needs Review" until you enter punches here, or set an override (Paid Leave / LOP) on the employee's payroll page.
-  Use the <strong>Needs review</strong> filter below to find them.
+  Each is treated as an absence: available leave is applied oldest day first, and anything the balance cannot cover becomes loss of pay.
+  Enter punches here if the employee actually worked, or set an override on the employee's payroll page to record it differently.
+  Use the <strong>No punch days</strong> filter below to find them.
 </div>
 {% endif %}
 

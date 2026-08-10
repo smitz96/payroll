@@ -61,7 +61,10 @@
           <td>{{ row.leave_earned }}</td>
           <td>{{ row.leave_used }}</td>
           <td>{{ row.leave_encashed }}</td>
-          <td><strong>{{ row.current_balance }}</strong></td>
+          <td>
+            <strong>{{ row.current_balance }}</strong>
+            {% if row.notes %}<div class="status-note">{{ row.notes }}</div>{% endif %}
+          </td>
         </tr>
         {% else %}
         <tr><td colspan="10" class="text-muted">No leave balance rows found.</td></tr>

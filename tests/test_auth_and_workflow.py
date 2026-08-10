@@ -14,6 +14,7 @@ from attendance.models import AdvanceSalary, AuditLog, AttendanceOverride, Atten
 from attendance.parser import import_attendance_csv, import_salary_csv
 from attendance.reports import build_employee_pdf
 from attendance.utils import parse_duration
+from routes.settings import APP_VERSION
 from attendance.loans import loan_installment_for_employee
 from routes.payroll import attendance_display_status, employee_attendance_rows, previous_calendar_month
 
@@ -193,7 +194,8 @@ def test_settings_app_update_requires_admin_password_and_logs(client, app, monke
     client.post("/login", data={"username": "admin", "password": "12345"})
     page = client.get("/settings")
     assert b"About" in page.data
-    assert b"V0.01" in page.data
+    # Read the version rather than pinning it, so a release does not fail the suite.
+    assert APP_VERSION.encode() in page.data
     assert b"08-08-2026 15:12:30" in page.data
     assert b"Update app" in page.data
     assert b'name="admin_password"' in page.data
@@ -450,7 +452,7 @@ def test_employee_master_import_export_updates_only_wage_fields(client, app):
             "employee_master.csv",
         )
     }, content_type="multipart/form-data", follow_redirects=True)
-    assert b"Employee master imported. 2 employee" in updated.data
+    assert b"Employee master imported. 0 employee(s) added, 2 updated" in updated.data
 
     with app.app_context():
         employee = db.session.get(Employee, "5")
@@ -486,29 +488,33 @@ def test_payroll_month_loads_salary_from_active_master(client, app):
         assert AuditLog.query.filter_by(action="Wage Master Loaded").count() == 1
 
 
-def test_disabled_employee_is_included_only_until_inactive_month(client, app):
+def test_only_active_employees_are_included_in_payroll(client, app):
+    """Any non-active status drops the employee from payroll immediately."""
     with app.app_context():
         db.session.add(PayrollMonth(month="2026-07"))
-        db.session.add(PayrollMonth(month="2026-08"))
-        db.session.add(Employee(
-            id="6",
-            name="Left Worker",
-            salary_type="Monthly",
-            normalized_salary_type="MONTHLY",
-            salary=Decimal("25000"),
-            employment_status="LEFT",
-            inactive_at=datetime(2026, 7, 15, 12, 0, 0),
-        ))
-        db.session.add(WeekOffRule(employee_id="6", confirmed_at=datetime(2026, 7, 1, 9, 0, 0)))
-        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="6", name="Left Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("25000"), adjustment=Decimal("0"), loan=Decimal("0")))
-        db.session.add(SalaryRecord(payroll_month="2026-08", employee_id="6", name="Left Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("25000"), adjustment=Decimal("0"), loan=Decimal("0")))
+        for index, status in enumerate(["ACTIVE", "INACTIVE", "LEFT", "TERMINATED"], start=6):
+            employee_id = str(index)
+            db.session.add(Employee(
+                id=employee_id,
+                name=f"{status.title()} Worker",
+                salary_type="Monthly",
+                normalized_salary_type="MONTHLY",
+                salary=Decimal("25000"),
+                employment_status=status,
+                inactive_at=None if status == "ACTIVE" else datetime(2026, 7, 15, 12, 0, 0),
+            ))
+            db.session.add(WeekOffRule(employee_id=employee_id, confirmed_at=datetime(2026, 7, 1, 9, 0, 0)))
+            db.session.add(SalaryRecord(
+                payroll_month="2026-07", employee_id=employee_id, name=f"{status.title()} Worker",
+                salary_type="Monthly", normalized_salary_type="MONTHLY",
+                salary=Decimal("25000"), adjustment=Decimal("0"), loan=Decimal("0"),
+            ))
         db.session.commit()
 
         calculate_payroll_month("2026-07", "admin")
         assert PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").count() == 1
-
-        calculate_payroll_month("2026-08", "admin")
-        assert PayrollResult.query.filter_by(payroll_month="2026-08", employee_id="6").count() == 0
+        for employee_id in ("7", "8", "9"):
+            assert PayrollResult.query.filter_by(payroll_month="2026-07", employee_id=employee_id).count() == 0
 
 
 def test_payroll_month_employee_table_has_sortable_id_column(client, app):
@@ -683,7 +689,8 @@ def test_sandwich_leave_marks_weekoff_between_leave_days_and_pdf(app):
         pdf_bytes = build_employee_pdf("2026-07", "5")
         text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf_bytes)).pages)
         assert "Sandwich Leave" in text
-        assert "2026-07-05" in text
+        # The calendar shows day numbers under weekday headings, not full dates.
+        assert "SUN" in text and "SAT" in text
 
 
 def test_monthly_leave_allotment_counts_eligible_month_days_and_current_leave_use(app):
@@ -987,7 +994,12 @@ def test_daily_wage_calculates_working_days_and_holidays_without_leave(app):
         assert result.paid_leaves == Decimal("0.0")
         assert result.leave_earned == Decimal("0.0")
         assert result.closing_leave == Decimal("0.0")
-        assert result.final_salary == Decimal("1000.00")
+        # The one working day was worked in full and the rest are a holiday and a week
+        # off, so the month earns the full attendance bonus: 1000 + 10%.
+        assert result.absence_minutes == 0
+        assert result.attendance_bonus_percent == Decimal("10.00")
+        assert result.attendance_bonus_amount == Decimal("100.00")
+        assert result.final_salary == Decimal("1100.00")
         assert LeaveLedger.query.filter_by(employee_id="5", payroll_month="2026-07").count() == 0
         SalaryRecord.query.filter_by(employee_id="5").update({"salary_type": "Monthly", "normalized_salary_type": "MONTHLY", "salary": Decimal("30000")})
         db.session.commit()
@@ -1433,7 +1445,7 @@ def test_pdf_reports_download(client, app):
     assert "Paid Working Days" in employee_text
     assert "Week Offs" in employee_text
     assert "Total Paid Days" in employee_text
-    assert "Sr No" in employee_text
+    assert "SUN" in employee_text  # calendar weekday headings
     assert "Leave Balance" in employee_text
     assert "Leave Earned This Month" in employee_text
     assert "Leave Used This Month" in employee_text

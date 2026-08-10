@@ -10,11 +10,11 @@ from werkzeug.security import check_password_hash
 from attendance import db
 from attendance.authentication import change_password, login_required
 from attendance.models import AuditLog, User
-from attendance.settings import monthly_rule_rows
+from attendance.settings import daily_bonus_rule_rows, monthly_rule_rows
 from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
-APP_VERSION = "V0.01"
+APP_VERSION = "V0.02"
 RESET_CONFIRMATION_TEXT = "permanently delete"
 
 
@@ -90,7 +90,12 @@ def index():
         "version": APP_VERSION,
         "release_at": latest_git_release_datetime(Path(current_app.root_path)) or "Not available",
     }
-    return render_template("settings.html", monthly_rules=monthly_rule_rows(), about=about)
+    return render_template(
+        "settings.html",
+        monthly_rules=monthly_rule_rows(),
+        daily_bonus_rules=daily_bonus_rule_rows(),
+        about=about,
+    )
 
 
 @bp.route("/security", methods=["GET", "POST"])

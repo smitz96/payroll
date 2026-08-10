@@ -29,6 +29,23 @@ MONTHLY_RULE_LABELS = {
     "MAX_SESSION_MINUTES": ("Maximum overnight session", "An In/Out pair that crosses midnight and runs longer than this is flagged as a punch error instead of being paid. Long same-day shifts are unaffected."),
 }
 
+# Attendance bonus for daily wage ("cash salary") workers, per the notice of
+# 08/12/2023. Absence is measured in minutes short of a full working day, and the
+# notice states it covers late reporting and leaving early. The notice writes the
+# allowance as "one and a half days (twelve hours)", which assumes an eight-hour day;
+# a day here is FULL_DAY_MINUTES, so the allowance is one and a half of those.
+DAILY_BONUS_RULES = {
+    "FULL_ATTENDANCE_BONUS_PERCENT": 10,
+    "PARTIAL_ATTENDANCE_BONUS_PERCENT": 5,
+    "PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES": (MONTHLY_RULES["FULL_DAY_MINUTES"] * 3) // 2,
+}
+
+DAILY_BONUS_RULE_LABELS = {
+    "FULL_ATTENDANCE_BONUS_PERCENT": ("Full attendance bonus", "Paid when the month has zero absence minutes."),
+    "PARTIAL_ATTENDANCE_BONUS_PERCENT": ("Partial attendance bonus", "Paid when absence stays within the allowance below."),
+    "PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES": ("Absence allowance", "One and a half working days. Absence up to this still earns the partial bonus; beyond it, no bonus."),
+}
+
 MINUTE_RULE_KEYS = {
     "FULL_DAY_MINUTES",
     "FULL_DAY_REQUIRED_MINUTES",
@@ -36,6 +53,7 @@ MINUTE_RULE_KEYS = {
     "LESS_HOURS_RULE_MINIMUM_MINUTES",
     "OVERTIME_START_MINUTES",
     "MAX_SESSION_MINUTES",
+    "PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES",
 }
 
 
@@ -56,5 +74,15 @@ def monthly_rule_rows():
             display = f"{value} days"
         else:
             display = str(value)
+        rows.append({"key": key, "label": label, "value": display, "detail": detail})
+    return rows
+
+
+def daily_bonus_rule_rows():
+    """Settings-page rows for the daily wage attendance bonus."""
+    rows = []
+    for key, value in DAILY_BONUS_RULES.items():
+        label, detail = DAILY_BONUS_RULE_LABELS.get(key, (key, ""))
+        display = f"{value // 60}h {value % 60:02d}m" if key in MINUTE_RULE_KEYS else f"{value}% of earned wage"
         rows.append({"key": key, "label": label, "value": display, "detail": detail})
     return rows

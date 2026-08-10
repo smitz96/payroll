@@ -139,8 +139,9 @@ Both groups are hidden for Daily wage employees and are never stored for them. T
 
 `Employee ID` is the match key and can never be changed by an import.
 
-- Unknown Employee IDs are rejected.
-- A `Name` column must match the stored name. Import cannot rename an employee - correct the name on the employee page instead. This keeps a bulk file from silently reassigning payroll to a different person when a spelling changes.
+- A new Employee ID adds that employee, so a single file can onboard new starters and update existing staff at once. `Name` and `Wage Type` are required to add one.
+- `Employee ID` is permanent and can never be changed by any route.
+- For an employee that already exists, a `Name` column must match the stored name. Import cannot rename anyone - use the employee edit window instead. This keeps a bulk file from silently reassigning payroll to a different person when a spelling changes.
 - Wage type cannot be changed once set.
 - Breakup columns must reconcile with `Salary`, and are rejected on a daily wage row. `Basic Salary` is still accepted as a column name for `Basic`, and a file that still carries the retired `Conveyance Allowance` column is rejected rather than silently dropping the amount.
 - Any column missing from the file leaves the stored value untouched, so an older export still imports cleanly.

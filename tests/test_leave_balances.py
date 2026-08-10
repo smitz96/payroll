@@ -5,11 +5,12 @@ from io import BytesIO
 from attendance import db
 from attendance.calculator import opening_leave_for
 from attendance.leave_balances import stored_leave_balance
-from attendance.models import AuditLog, Employee, LeaveLedger, PayrollResult
+from attendance.models import AuditLog, Employee, LeaveLedger, PayrollMonth, PayrollResult
 
 
-def seed_employee_with_leave():
+def seed_employee_with_leave(finalized=True):
     db.session.add(Employee(id="5", name="Komal V Patel", department="Accounts"))
+    db.session.add(PayrollMonth(month="2026-07", status="FINALIZED" if finalized else "DRAFT"))
     db.session.add(PayrollResult(
         payroll_month="2026-07",
         employee_id="5",

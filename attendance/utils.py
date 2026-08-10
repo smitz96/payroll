@@ -32,6 +32,17 @@ def parse_duration(value):
     return hours * 60 + minutes
 
 
+def format_percent(value):
+    """Percentage without trailing zeros: 10.00 reads as "10", 7.50 as "7.5".
+
+    normalize() alone would turn Decimal("10.00") into 1E+1, so whole numbers are
+    taken through to_integral_value() instead.
+    """
+    amount = Decimal(value or 0)
+    whole = amount.to_integral_value()
+    return str(whole if amount == whole else amount.normalize())
+
+
 def minutes_to_duration(minutes):
     if minutes is None:
         return "-"

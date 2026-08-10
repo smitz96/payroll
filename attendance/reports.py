@@ -1,12 +1,13 @@
 import calendar
 import csv
 import re
+from datetime import date
 from io import BytesIO, StringIO
 from decimal import Decimal
 from pathlib import Path
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -15,7 +16,7 @@ from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, Simple
 from attendance import db
 from attendance.loans import loan_installment_for_loan, loan_paid_before_month, loan_pending_after_month, loan_remaining_before_month, loan_repayment_schedule
 from attendance.models import AttendanceRecord, Employee, Loan, PayrollResult, SalaryRecord
-from attendance.utils import minutes_to_duration
+from attendance.utils import format_percent, minutes_to_duration
 
 ONES = [
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -42,6 +43,8 @@ ORANGE_TEXT = colors.HexColor("#9A4A00")
 GREEN_WASH = colors.HexColor("#E8F7EC")
 ORANGE_WASH = colors.HexColor("#FDF0E3")
 RED_WASH = colors.HexColor("#FCEBEC")
+TEAL_TEXT = colors.HexColor("#0B6B7A")
+TEAL_WASH = colors.HexColor("#E4F5F8")
 
 # Kept for the brand lockup only; the report chrome itself is system-coloured.
 BRAND_BLUE = colors.HexColor("#0C306A")
@@ -91,6 +94,10 @@ def result_has_advance(result):
     return Decimal(getattr(result, "advance_deduction", 0) or 0) != 0
 
 
+def daily_result_calculated(result):
+    return bool(result and result.final_salary is not None and result.payroll_rule_type == "DAILY")
+
+
 def payroll_summary_csv(month):
     out = StringIO()
     writer = csv.writer(out)
@@ -99,7 +106,8 @@ def payroll_summary_csv(month):
         "Employee ID", "Name", "Department", "Designation", "Wage Type", "Payroll Rule Status", "Salary",
         "Month Days", "Paid Working Days", "Week Offs", "Total Paid Days", "Full Days", "Half Days", "Paid Leave", "LOP", "Opening Leave",
         "Leave Earned", "Leave Used", "Closing Leave", "Working Hour Deduction",
-        "LOP Deduction", "Overtime", "Adjustment", "Leave Encashment Days", "Leave Encashment Amount", "Loan Deduction", "Advance Salary Deduction", "Final Salary", "Calculation Status",
+        "LOP Deduction", "Overtime", "Absence Minutes", "Attendance Bonus %", "Attendance Bonus",
+        "Adjustment", "Leave Encashment Days", "Leave Encashment Amount", "Loan Deduction", "Advance Salary Deduction", "Final Salary", "Calculation Status",
     ])
     salaries = {s.employee_id: s for s in SalaryRecord.query.filter_by(payroll_month=month).all()}
     results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
@@ -131,6 +139,10 @@ def payroll_summary_csv(month):
             result.less_hours_deduction if result and result.final_salary is not None else "",
             result.lop_deduction if result and result.final_salary is not None else "",
             result.ot_amount if result and result.final_salary is not None else "",
+            # The attendance bonus only exists for daily wage, so it stays blank elsewhere.
+            getattr(result, "absence_minutes", 0) if daily_result_calculated(result) else "",
+            getattr(result, "attendance_bonus_percent", 0) if daily_result_calculated(result) else "",
+            getattr(result, "attendance_bonus_amount", 0) if daily_result_calculated(result) else "",
             salary.adjustment,
             result.leave_encashment_days if result and result.final_salary is not None else (salary.leave_encashment_days if getattr(salary, "leave_encashment_enabled", False) else ""),
             result.leave_encashment_amount if result and result.final_salary is not None else (salary.leave_encashment_amount if getattr(salary, "leave_encashment_enabled", False) else ""),
@@ -479,7 +491,11 @@ def display_attendance_status(status):
         "Sandwich Leave": "Sandwich Leave",
         "Needs Review": "Needs Review",
         "Punch Error": "Punch Error",
-        "Absent / Attendance Missing": "Attendance Missing",
+        "Absent / Attendance Missing": "Absent",
+        # Long enough to wrap a calendar cell, so shorten it the same way the web
+        # view does.
+        "Half-Day Paid Leave / Half-Day LOP": "Half Leave + Half LOP",
+        "Worked On-Site": "Worked On-Site",
         "Work From Home": "Work From Home",
         "Ignore": "Ignore",
     }
@@ -573,6 +589,12 @@ def employee_salary_summary_rows(salary, result):
         ["Leave Encashment Days", getattr(result, "leave_encashment_days", 0)],
         ["Leave Encashment Amount", pdf_money(getattr(result, "leave_encashment_amount", 0))],
     ]
+    if result.payroll_rule_type == "DAILY":
+        rows.extend([
+            ["Absence This Month", bonus_absence_text(result)],
+            ["Attendance Bonus", bonus_percent_text(result)],
+            ["Attendance Bonus Amount", pdf_money(getattr(result, "attendance_bonus_amount", 0))],
+        ])
     if result_has_loan(result):
         rows.extend([
             ["Loan Deduction", pdf_money(getattr(result, "loan_deduction", 0))],
@@ -588,6 +610,22 @@ def employee_salary_summary_rows(salary, result):
     return rows
 
 
+def bonus_absence_text(result):
+    return minutes_to_duration(int(getattr(result, "absence_minutes", 0) or 0))
+
+
+def bonus_percent_text(result):
+    """Bonus band as it should read on a slip, e.g. "10% of earned wage"."""
+    percent = Decimal(getattr(result, "attendance_bonus_percent", 0) or 0)
+    if percent == 0:
+        # A zero bonus reads very differently depending on why, so say which it is.
+        employee = db.session.get(Employee, result.employee_id)
+        if employee and employee.bonus_ignored:
+            return "Excluded in Employee Master"
+        return "Not earned this month"
+    return f"{format_percent(percent)}% of earned wage"
+
+
 def employee_compact_summary_rows(salary, result):
     if not result:
         return [["Status", "Not Calculated", "Wage Type", salary.salary_type if salary else "N/A"]]
@@ -600,7 +638,8 @@ def employee_compact_summary_rows(salary, result):
             ["Paid Working Days", result.paid_working_days, "Paid Holidays", result.holidays],
             ["Payable Days", total_paid_days(result), "Week Offs", result.week_offs],
             ["Less Hours Deduction", pdf_money(result.less_hours_deduction), "Over Time", pdf_money(result.ot_amount)],
-            ["Adjustment", pdf_money(result.manual_adjustment), "Leave Management", "Not applicable"],
+            ["Adjustment", pdf_money(result.manual_adjustment), "Absence This Month", bonus_absence_text(result)],
+            ["Attendance Bonus", bonus_percent_text(result), "Attendance Bonus Amount", pdf_money(getattr(result, "attendance_bonus_amount", 0))],
         ]
         if result_has_loan(result):
             rows.append(["Loan Deduction", pdf_money(getattr(result, "loan_deduction", 0)), "Pending Loan Amount", pdf_money(getattr(result, "loan_pending_amount", 0))])
@@ -623,6 +662,85 @@ def employee_compact_summary_rows(salary, result):
     if result_has_advance(result):
         rows.append(["Advance Salary Deduction", pdf_money(getattr(result, "advance_deduction", 0)), "", ""])
     return rows
+
+
+# Cell fill and text colour per attendance status, so a month reads at a glance.
+CALENDAR_TONES = {
+    "Full Day": (GREEN_WASH, GREEN_TEXT),
+    "Half Day": (ORANGE_WASH, ORANGE_TEXT),
+    "Week Off Worked": (GREEN_WASH, GREEN_TEXT),
+    # Marked present by override rather than by punches, so it reads distinctly.
+    "Worked On-Site": (TEAL_WASH, TEAL_TEXT),
+    "Work From Home": (TEAL_WASH, TEAL_TEXT),
+    "Week Off": (TINT_WASH, TINT_TEXT),
+    "Holiday": (TINT_WASH, TINT_TEXT),
+    "Paid Leave": (ORANGE_WASH, ORANGE_TEXT),
+    "Half-Day Paid Leave": (ORANGE_WASH, ORANGE_TEXT),
+    "Sandwich Leave": (ORANGE_WASH, ORANGE_TEXT),
+    "Half Leave + Half LOP": (ORANGE_WASH, ORANGE_TEXT),
+    "Full Day LOP": (RED_WASH, RED_TEXT),
+    "Half Day LOP": (RED_WASH, RED_TEXT),
+    "LOP": (RED_WASH, RED_TEXT),
+    "Absent": (RED_WASH, RED_TEXT),
+    "Needs Review": (RED_WASH, RED_TEXT),
+    "Punch Error": (RED_WASH, RED_TEXT),
+}
+CALENDAR_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+
+def punch_sessions(punches, first_punch="", last_punch=""):
+    """Format punches as in-out pairs, e.g. ["09:34 AM - 10:55 AM", "05:43 PM - 06:30 PM"].
+
+    Showing only the first and last punch made a split day look continuous, so a
+    2h 08m day could read as 09:34 to 18:30.
+    """
+    punches = [p for p in (punches or []) if p]
+    if not punches:
+        pair = [value for value in (first_punch, last_punch) if value]
+        return [" - ".join(pair)] if pair else []
+    sessions = []
+    for index in range(0, len(punches) - 1, 2):
+        sessions.append(f"{punches[index]} - {punches[index + 1]}")
+    if len(punches) % 2:
+        sessions.append(f"{punches[-1]} - ?")
+    return sessions
+
+
+def calendar_tone(status):
+    return CALENDAR_TONES.get(status, (SURFACE_SOFT, MUTED))
+
+
+def attendance_calendar_grid(month, result):
+    """Attendance laid out as calendar weeks for the PDF, Sunday first.
+
+    Returns (weeks, statuses) where each cell is either None for padding or a dict
+    with the day number, status and hours.
+    """
+    year, month_number = (int(part) for part in month.split("-"))
+    days_in_month = calendar.monthrange(year, month_number)[1]
+    by_day = {}
+    for item in (result.detail_json or []) if result else []:
+        try:
+            day = int(str(item.get("date", ""))[-2:])
+        except ValueError:
+            continue
+        by_day[day] = {
+            "day": day,
+            "status": display_attendance_status(item.get("attendance_status")),
+            "hours": item.get("rounded_duration") or item.get("actual_duration") or "",
+            "sessions": punch_sessions(item.get("punches"), item.get("first_punch") or "", item.get("last_punch") or ""),
+            "shortage": int(item.get("shortage_minutes") or 0),
+            "overtime": int(item.get("payable_ot") or 0),
+        }
+    first_weekday = (date(year, month_number, 1).weekday() + 1) % 7
+    cells = [None] * first_weekday
+    for day in range(1, days_in_month + 1):
+        cells.append(by_day.get(day, {
+            "day": day, "status": "", "hours": "", "sessions": [], "shortage": 0, "overtime": 0,
+        }))
+    while len(cells) % 7:
+        cells.append(None)
+    return [cells[index:index + 7] for index in range(0, len(cells), 7)]
 
 
 def employee_detail_rows(result, compact=False):
@@ -668,8 +786,13 @@ def _brand_logo(width=30 * mm, height=10.5 * mm):
 def _salary_slip_header(month, salary, result, styles, compact=False):
     employee_id = salary.employee_id if salary else (result.employee_id if result else "")
     employee_name = salary.name if salary else employee_id
-    title_size = 8.5 if compact else 12
-    text_size = 5.4 if compact else 8
+    title_size = 14 if compact else 30
+    text_size = 7 if compact else 11
+    # The month and the employee identity are what a reader actually looks for, so
+    # they get their own larger sizes. Status and the brand line stay as meta text.
+    month_size = 9 if compact else 17
+    name_size = 9.5 if compact else 18
+    role_size = 7.5 if compact else 12.5
     title_style = ParagraphStyle(
         "SlipTitle",
         parent=styles["Heading2"],
@@ -687,11 +810,26 @@ def _salary_slip_header(month, salary, result, styles, compact=False):
         leading=text_size + 1,
         textColor=BRAND_MUTED,
     )
+    month_style = ParagraphStyle(
+        "SlipMonth",
+        parent=meta_style,
+        fontSize=month_size,
+        leading=month_size + 2,
+        textColor=INK,
+    )
     employee_style = ParagraphStyle(
         "SlipEmployee",
         parent=meta_style,
         fontName="Helvetica-Bold",
+        fontSize=name_size,
+        leading=name_size + 2,
         textColor=colors.HexColor("#172033"),
+    )
+    role_style = ParagraphStyle(
+        "SlipRole",
+        parent=meta_style,
+        fontSize=role_size,
+        leading=role_size + 2,
     )
     employee = db.session.get(Employee, employee_id) if employee_id else None
     role_bits = [bit for bit in [(employee.designation if employee else ""), (employee.department if employee else "")] if bit]
@@ -701,11 +839,11 @@ def _salary_slip_header(month, salary, result, styles, compact=False):
 
     left = [
         Paragraph("Salary Slip", title_style),
-        Paragraph(display_month(month), meta_style),
+        Paragraph(display_month(month), month_style),
     ]
     middle = [
         Paragraph(f"{employee_id} &middot; {employee_name}", employee_style),
-        Paragraph(" &middot; ".join(role_bits) if role_bits else "Designation not set", meta_style),
+        Paragraph(" &middot; ".join(role_bits) if role_bits else "Designation not set", role_style),
     ]
     right = [
         Paragraph(status, status_style),
@@ -843,7 +981,7 @@ def _status_column_style(data, column, header=True):
     return style
 
 
-def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None, blank_columns=None, status_column=None):
+def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None, blank_columns=None, status_column=None, accent_rows=None, center=False):
     """An iOS-style list: rounded card, hairline row separators, no vertical rules.
 
     The previous look was a full grid with a tinted header band. Apple's tables
@@ -873,6 +1011,8 @@ def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None,
         ("LINEBELOW", (0, 0), (-1, -2), 0.4, SEPARATOR),
         ("BOX", (0, 0), (-1, -1), 0.5, SEPARATOR),
     ]
+    if center:
+        style.append(("ALIGN", (0, 0), (-1, -1), "CENTER"))
     if header:
         style.extend([
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -893,6 +1033,14 @@ def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None,
             ("TEXTCOLOR", (0, row), (-1, row), TINT_TEXT),
             ("FONTNAME", (0, row), (-1, row), "Helvetica-Bold"),
         ])
+    # Rows that need their own colour rather than the blue highlight, so a figure
+    # like the attendance bonus reads as earned or not earned at a glance.
+    for row, wash, text_colour in accent_rows or []:
+        style.extend([
+            ("BACKGROUND", (0, row), (-1, row), wash),
+            ("TEXTCOLOR", (0, row), (-1, row), text_colour),
+            ("FONTNAME", (0, row), (-1, row), "Helvetica-Bold"),
+        ])
     if status_column is not None:
         style.extend(_status_column_style(data, status_column, header=header))
     # Spacer columns used by the two-up compact slip; keep them invisible.
@@ -906,27 +1054,100 @@ def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None,
     return table
 
 
+def attendance_calendar_table(month, result, styles, available_width, compact=False):
+    """The month's attendance as a colour-coded calendar, matching the web view."""
+    weeks = attendance_calendar_grid(month, result)
+    day_size = 5.6 if compact else 7.2
+    meta_size = 4.4 if compact else 5.6
+    punch_size = 4.2 if compact else 5.3
+    day_style = ParagraphStyle("CalDay", fontName="Helvetica-Bold", fontSize=day_size, leading=day_size + 1.5, textColor=INK)
+    punch_style = ParagraphStyle("CalPunch", fontName="Helvetica", fontSize=punch_size, leading=punch_size + 1.2, textColor=INK)
+    head_style = ParagraphStyle("CalHead", fontName="Helvetica-Bold", fontSize=meta_size, leading=meta_size + 1.5, textColor=MUTED, alignment=1)
+
+    data = [[Paragraph(name.upper(), head_style) for name in CALENDAR_WEEKDAYS]]
+    style = [
+        ("GRID", (0, 0), (-1, -1), 0.4, SEPARATOR),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+        ("BACKGROUND", (0, 0), (-1, 0), SURFACE_SOFT),
+    ]
+    for week_index, week in enumerate(weeks, start=1):
+        row = []
+        for column, cell in enumerate(week):
+            if cell is None:
+                row.append("")
+                style.append(("BACKGROUND", (column, week_index), (column, week_index), SURFACE))
+                continue
+            wash, text_colour = calendar_tone(cell["status"])
+            status_style = ParagraphStyle(
+                f"CalStatus{week_index}{column}", fontName="Helvetica-Bold",
+                fontSize=meta_size, leading=meta_size + 1.4, textColor=text_colour,
+            )
+            meta_style_local = ParagraphStyle(
+                f"CalMeta{week_index}{column}", fontName="Helvetica",
+                fontSize=meta_size, leading=meta_size + 1.4, textColor=MUTED,
+            )
+            parts = [Paragraph(str(cell["day"]), day_style)]
+            if cell["status"]:
+                parts.append(Paragraph(cell["status"], status_style))
+            for session in cell["sessions"]:
+                parts.append(Paragraph(session, punch_style))
+            if cell["hours"]:
+                parts.append(Paragraph(cell["hours"], meta_style_local))
+            extras = []
+            if cell["shortage"]:
+                extras.append(f"-{cell['shortage']}m")
+            if cell["overtime"]:
+                extras.append(f"+{cell['overtime']}m OT")
+            if extras:
+                parts.append(Paragraph(" ".join(extras), meta_style_local))
+            row.append(parts)
+            style.append(("BACKGROUND", (column, week_index), (column, week_index), wash))
+        data.append(row)
+
+    column_width = available_width / 7
+    table = Table(data, colWidths=[column_width] * 7, repeatRows=1)
+    table.setStyle(TableStyle(style))
+    return table
+
+
+def attendance_bonus_accent_rows(summary_rows, result):
+    """Colour the attendance bonus row green when earned, red when it was not."""
+    if not result or result.payroll_rule_type != "DAILY":
+        return []
+    earned = Decimal(getattr(result, "attendance_bonus_percent", 0) or 0) > 0
+    wash, text_colour = (GREEN_WASH, GREEN_TEXT) if earned else (RED_WASH, RED_TEXT)
+    return [
+        (index, wash, text_colour)
+        for index, row in enumerate(summary_rows)
+        if row and row[0] == "Attendance Bonus"
+    ]
+
+
 def employee_report_block(month, salary, result, styles, compact=False):
     header = _salary_slip_header(month, salary, result, styles, compact=compact)
     if compact:
-        words_style = ParagraphStyle("PayWords", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=5.4, leading=6.2, textColor=colors.HexColor("#0C306A"))
+        words_style = ParagraphStyle("PayWords", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=5.4, leading=6.2, textColor=colors.HexColor("#0C306A"), alignment=TA_CENTER)
         summary_rows = employee_compact_summary_rows(salary, result)
         if result:
             summary_rows[0][3] = Paragraph(summary_rows[0][3], words_style)
-        summary = _table(summary_rows, col_widths=[34 * mm, 28 * mm, 38 * mm, 94 * mm], font_size=5.0, header=False, highlight_rows=[0] if result else [])
-        detail = _table(
-            employee_detail_compact_rows(result),
-            col_widths=[8 * mm, 18 * mm, 21 * mm, 21 * mm, 13 * mm, 14 * mm, 4 * mm, 8 * mm, 18 * mm, 21 * mm, 21 * mm, 13 * mm, 14 * mm],
-            font_size=4.25,
-            blank_columns=[6],
+        summary = _table(
+            summary_rows, col_widths=[34 * mm, 28 * mm, 38 * mm, 94 * mm], font_size=5.0,
+            header=False, highlight_rows=[0] if result else [],
+            accent_rows=attendance_bonus_accent_rows(summary_rows, result),
+            center=True,
         )
-        return KeepTogether([header, Spacer(1, 2), summary, Spacer(1, 1), detail])
+        detail = attendance_calendar_table(month, result, styles, 194 * mm, compact=True)
+        return KeepTogether([header, Spacer(1, 2), summary, Spacer(1, 2), detail])
     return KeepTogether([
         header,
         Spacer(1, 6),
-        _table(employee_salary_summary_rows(salary, result), col_widths=[55 * mm, 65 * mm], header=False),
-        Spacer(1, 6),
-        _table(employee_detail_rows(result), col_widths=[32 * mm, 34 * mm, 42 * mm, 28 * mm, 30 * mm, 30 * mm], font_size=8),
+        _table(employee_salary_summary_rows(salary, result), col_widths=[55 * mm, 65 * mm], header=False, center=True),
+        Spacer(1, 8),
+        attendance_calendar_table(month, result, styles, 190 * mm),
     ])
 
 

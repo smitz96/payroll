@@ -7,6 +7,7 @@ from attendance import db
 from attendance.models import AttendanceOverride, AttendanceRecord, Employee, Holiday, PayrollMonth, PayrollResult, SalaryRecord
 from attendance.advances import advance_deduction_for_employee
 from attendance.loans import loan_installment_for_employee, loan_pending_after_month_for_employee
+from attendance.settings import DAILY_BONUS_RULES as BONUS_CFG
 from attendance.settings import MONTHLY_RULES as CFG
 from attendance.utils import floor_to_interval, minutes_to_duration, money, truncate_one_decimal
 from attendance.weekoffs import is_week_off_for_date
@@ -80,6 +81,38 @@ class MonthlyPayrollRule(PayrollRule):
             classified_rows.append((rec, override, row))
         apply_sandwich_leave_policy(classified_rows)
 
+        # Leave is settled in two passes, because the leave earned this month depends
+        # on how many days end up paid, which in turn depends on the opening balance.
+        #   1. Explicit leave (overrides, sandwich days) draws on the opening balance.
+        #   2. Whatever opening balance is left covers unexplained absences.
+        #   3. Earned leave is computed from the resulting paid-day count.
+        #   4. That earned leave covers the remaining absences.
+        # Anything still absent afterwards is loss of pay.
+        explicit_leave = sum(
+            (Decimal(str(row["leave_used"])) for _rec, _ov, row in classified_rows
+             if row["status"] in EXPLICIT_LEAVE_STATUSES),
+            Decimal("0"),
+        )
+        opening_balance = Decimal(opening_leave or 0)
+        opening_for_absences = max(Decimal("0"), opening_balance - explicit_leave)
+        opening_applied = apply_leave_balance(classified_rows, opening_for_absences)
+
+        interim_full = sum((Decimal("1") for _r, _o, row in classified_rows if row["status"] in FULL_DAY_PRESENT_STATUSES), Decimal("0"))
+        interim_half = sum((Decimal("1") for _r, _o, row in classified_rows if row["status"] == "Half Day Present"), Decimal("0"))
+        interim_weekoffs = sum((1 for _r, _o, row in classified_rows if row["status"] in {"Week Off", "Week Off Worked"}), 0)
+        interim_holidays = sum((1 for _r, _o, row in classified_rows if row["status"] == "Holiday"), 0)
+        interim_leave_used = explicit_leave + opening_applied
+        interim_comp_off = sum((Decimal("1") for _r, _o, row in classified_rows if row["status"] == "Week Off Worked"), Decimal("0"))
+
+        eligible_leave_days = (
+            interim_full + (interim_half * Decimal("0.5"))
+            + Decimal(interim_weekoffs) + Decimal(interim_holidays) + interim_leave_used
+        )
+        leave_earned = calculate_monthly_leave_earned(
+            eligible_leave_days, days_in_payroll_month(salary_record.payroll_month)
+        ) + interim_comp_off
+        earned_applied = apply_leave_balance(classified_rows, leave_earned)
+
         for rec, override, row in classified_rows:
             actual = rec.actual_minutes or 0
             actual_total += actual
@@ -92,7 +125,11 @@ class MonthlyPayrollRule(PayrollRule):
                 holiday_count += 1
             elif row["status"] in {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave"}:
                 leave_used += Decimal(str(row["leave_used"]))
-            elif row["status"] == "Full Day Present":
+            elif row["status"] == HALF_LEAVE_HALF_LOP_STATUS:
+                # Half the day is paid from leave, the other half is unpaid.
+                leave_used += Decimal(str(row["leave_used"]))
+                lop_days += Decimal("0.5")
+            elif row["status"] in FULL_DAY_PRESENT_STATUSES:
                 full_days += Decimal("1")
             elif row["status"] == "Half Day Present":
                 half_days += Decimal("1")
@@ -100,6 +137,9 @@ class MonthlyPayrollRule(PayrollRule):
                 lop_days += Decimal("1")
             elif row["status"] == "Half Day LOP":
                 lop_days += Decimal("0.5")
+            elif row["status"] == ABSENT_STATUS:
+                # No leave left to cover it, so the whole day is loss of pay.
+                lop_days += Decimal("1")
             elif row["status"] in {"Punch Error", "Needs Review"}:
                 needs_review.append(f"{rec.date}: {row['status']}")
 
@@ -122,6 +162,7 @@ class MonthlyPayrollRule(PayrollRule):
                 "day": rec.day,
                 "first_punch": rec.first_punch,
                 "last_punch": rec.last_punch,
+                "punches": list(rec.punches_json or []),
                 "raw_working_hours": rec.raw_working_hours,
                 "actual_minutes": actual,
                 "actual_duration": minutes_to_duration(actual),
@@ -144,9 +185,9 @@ class MonthlyPayrollRule(PayrollRule):
             })
 
         paid_working_days = full_days + (half_days * Decimal("0.5"))
-        eligible_leave_days = paid_working_days + Decimal(week_offs) + Decimal(holiday_count) + leave_used
-        leave_earned = calculate_monthly_leave_earned(eligible_leave_days, days_in_payroll_month(salary_record.payroll_month)) + comp_off_earned
-        available_leave = Decimal(opening_leave) + leave_earned
+        # leave_earned was fixed before the earned balance was applied, so that
+        # allocating it cannot feed back into how much is earned.
+        available_leave = opening_balance + leave_earned
         paid_leave = min(leave_used, available_leave)
         excess_leave = max(Decimal("0"), leave_used - available_leave)
         lop_days += excess_leave
@@ -231,17 +272,21 @@ class DailyPayrollRule(PayrollRule):
         ot_minutes = 0
         payable_ot = 0
         ot_amount = Decimal("0")
+        absence_minutes = 0
         details = []
         needs_review = []
         employee = db.session.get(Employee, salary_record.employee_id)
         ot_ignored = bool(employee and employee.ot_ignored)
         less_hours_ignored = bool(employee and employee.less_hours_ignored)
+        bonus_ignored = bool(employee and employee.bonus_ignored)
 
         for rec in sorted(attendance_records, key=lambda item: item.date):
             override = overrides.get(rec.date)
             row = classify_daily_attendance(rec, holidays, override, rec.employee_id)
             actual = rec.actual_minutes or 0
             actual_total += actual
+            day_absence = daily_absence_minutes(row, rec)
+            absence_minutes += day_absence
             if row["status"] == "Week Off":
                 week_offs += 1
             elif row["status"] == "Week Off Worked":
@@ -249,7 +294,7 @@ class DailyPayrollRule(PayrollRule):
                 full_days += Decimal("1")
             elif row["status"] == "Holiday":
                 holiday_count += 1
-            elif row["status"] == "Full Day Present":
+            elif row["status"] in FULL_DAY_PRESENT_STATUSES:
                 full_days += Decimal("1")
             elif row["status"] == "Half Day Present":
                 half_days += Decimal("1")
@@ -275,6 +320,7 @@ class DailyPayrollRule(PayrollRule):
                 "day": rec.day,
                 "first_punch": rec.first_punch,
                 "last_punch": rec.last_punch,
+                "punches": list(rec.punches_json or []),
                 "raw_working_hours": rec.raw_working_hours,
                 "actual_minutes": actual,
                 "actual_duration": minutes_to_duration(actual),
@@ -289,6 +335,7 @@ class DailyPayrollRule(PayrollRule):
                 "ot_amount": str(money(ot_value)),
                 "leave_used": "0",
                 "comp_off_earned": "0",
+                "bonus_absence_minutes": day_absence,
                 "holiday": rec.date in holidays,
                 "week_off": is_week_off_for_date(rec.employee_id, rec.date),
                 "sandwich_leave": False,
@@ -299,13 +346,19 @@ class DailyPayrollRule(PayrollRule):
         paid_working_days = full_days + (half_days * Decimal("0.5"))
         payable_days = paid_working_days + Decimal(holiday_count)
         gross_salary = daily_rate * payable_days
+        # Attendance bonus is a percentage of the wage actually earned for the month,
+        # before any deduction, so a short month scales the bonus with it. Absence is
+        # still tallied for an excluded employee, so the page and slip can show what
+        # the month would have earned.
+        bonus_percent = Decimal("0") if bonus_ignored else daily_attendance_bonus_percent(absence_minutes)
+        attendance_bonus = (gross_salary * bonus_percent) / Decimal("100")
         manual = Decimal(salary_record.adjustment)
         loan = Decimal(getattr(salary_record, "loan", Decimal("0")) or 0) + loan_installment_for_employee(salary_record.employee_id, salary_record.payroll_month)
         loan_pending = loan_pending_after_month_for_employee(salary_record.employee_id, salary_record.payroll_month)
         advance = advance_deduction_for_employee(salary_record.employee_id, salary_record.payroll_month)
         manual_deduction = abs(manual) if manual < 0 else Decimal("0")
         total_deduction = less_deduction + loan + advance + manual_deduction
-        total_addition = ot_amount + (manual if manual > 0 else Decimal("0"))
+        total_addition = ot_amount + attendance_bonus + (manual if manual > 0 else Decimal("0"))
         final_salary = gross_salary - total_deduction + total_addition
         status = "Needs Review" if needs_review else "Calculated"
         return PayrollResult(
@@ -331,6 +384,9 @@ class DailyPayrollRule(PayrollRule):
             ot_minutes=ot_minutes,
             payable_ot_minutes=payable_ot,
             ot_amount=money(ot_amount),
+            absence_minutes=absence_minutes,
+            attendance_bonus_percent=bonus_percent,
+            attendance_bonus_amount=money(attendance_bonus),
             lop_deduction=Decimal("0"),
             manual_adjustment=manual,
             leave_encashment_days=Decimal("0"),
@@ -359,6 +415,8 @@ def classify_monthly_attendance(record, holidays=None, override=None, employee_i
             "Holiday": (Decimal("0"), 0),
             "Week Off": (Decimal("0"), 0),
             "Week Off Worked": (Decimal("0"), 0),
+            "Worked On-Site": (Decimal("1"), 0),
+            "Work From Home": (Decimal("1"), 0),
         }
         paid_day, leave_used = mapping.get(status, (Decimal("0"), 0))
         return {"status": status, "paid_day": paid_day, "leave_used": Decimal(str(leave_used)), "rounded_minutes": record.actual_minutes or 0, "explanation": "Manual override applied."}
@@ -370,6 +428,10 @@ def classify_monthly_attendance(record, holidays=None, override=None, employee_i
             return {"status": "Week Off Worked", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Worked on configured week off. One compensatory leave earned."}
         return {"status": "Week Off", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "Configured week off."}
     if record.parse_status != "OK":
+        # A working day with no punches at all is an absence to be settled against the
+        # leave balance, not a data problem. Only real punch anomalies need a human.
+        if not has_any_punch(record):
+            return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "No punches recorded on a working day."}
         return {"status": "Needs Review", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": record.warning or "Attendance needs review."}
     actual = record.actual_minutes
     if actual is None:
@@ -381,6 +443,8 @@ def classify_monthly_attendance(record, holidays=None, override=None, employee_i
         return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": rounded, "explanation": "Short-hours rule applies with 15-minute floor."}
     if actual >= CFG["HALF_DAY_MINIMUM_MINUTES"]:
         return {"status": "Half Day Present", "paid_day": Decimal("0.5"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Under 6 hours, valid half-day duration."}
+    if has_split_punches(record):
+        return {"status": "Needs Review", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": SPLIT_PUNCH_REVIEW_EXPLANATION}
     return {"status": "Full Day LOP", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Less than 3 hours is full-day LOP."}
 
 
@@ -394,6 +458,8 @@ def classify_daily_attendance(record, holidays=None, override=None, employee_id=
             "Holiday": (Decimal("1"), "Manual holiday override applied."),
             "Week Off Worked": (Decimal("1"), "Manual week off worked override applied."),
             "Week Off": (Decimal("0"), "Manual week off override applied."),
+            "Worked On-Site": (Decimal("1"), "Worked on-site; counted as a full working day."),
+            "Work From Home": (Decimal("1"), "Worked from home; counted as a full working day."),
             "Paid Leave": (Decimal("0"), "Daily wage employees do not use leave balance."),
             "Half-Day Paid Leave": (Decimal("0"), "Daily wage employees do not use leave balance."),
             "Unpaid Leave / LOP": (Decimal("0"), "Manual unpaid day override applied."),
@@ -409,6 +475,8 @@ def classify_daily_attendance(record, holidays=None, override=None, employee_id=
             return {"status": "Week Off Worked", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Worked on configured week off; counted as a working day for daily wage."}
         return {"status": "Week Off", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "Configured week off is not payable for daily wage."}
     if record.parse_status != "OK":
+        if not has_any_punch(record):
+            return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "No punches recorded on a working day."}
         return {"status": "Needs Review", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": record.warning or "Attendance needs review."}
     actual = record.actual_minutes
     if actual is None:
@@ -420,7 +488,148 @@ def classify_daily_attendance(record, holidays=None, override=None, employee_id=
         return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": rounded, "explanation": "Daily wage short-hours rule applies with 15-minute floor."}
     if actual >= CFG["HALF_DAY_MINIMUM_MINUTES"]:
         return {"status": "Half Day Present", "paid_day": Decimal("0.5"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Daily half-day working duration."}
+    if has_split_punches(record):
+        return {"status": "Needs Review", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": SPLIT_PUNCH_REVIEW_EXPLANATION}
     return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Less than 3 hours is not payable for daily wage."}
+
+
+ABSENT_STATUS = "Absent / Attendance Missing"
+# Overrides that mean "this person worked a full day" even though the punch data
+# cannot show it. Work From Home was already offered as an override but was never
+# handled here, so such a day was silently neither paid nor deducted.
+WORKED_ELSEWHERE_STATUSES = ("Worked On-Site", "Work From Home")
+FULL_DAY_PRESENT_STATUSES = {"Full Day Present", *WORKED_ELSEWHERE_STATUSES}
+HALF_LEAVE_HALF_LOP_STATUS = "Half-Day Paid Leave / Half-Day LOP"
+EXPLICIT_LEAVE_STATUSES = {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave"}
+
+
+# Days that are not scheduled working days, so they can never create absence for the
+# daily wage attendance bonus. A week off that was worked is an extra day, not a
+# short one, so it is exempt too.
+BONUS_EXEMPT_STATUSES = {"Week Off", "Week Off Worked", "Holiday"}
+# How much of a day a status is worth when there is no punch data to measure, which
+# happens when the day was set by a manual override.
+BONUS_CREDIT_DAYS = {
+    "Full Day Present": Decimal("1"),
+    "Half Day Present": Decimal("0.5"),
+    "Half-Day Paid Leave": Decimal("0.5"),
+    "Half-Day LOP": Decimal("0.5"),
+    "Half Day LOP": Decimal("0.5"),
+    HALF_LEAVE_HALF_LOP_STATUS: Decimal("0.5"),
+}
+
+
+def has_any_punch(record):
+    return bool(record.punches_json or record.first_punch or record.last_punch or record.raw_working_hours)
+
+
+def has_split_punches(record):
+    """More than one in/out pair on the day.
+
+    A single pair under the half-day floor is a genuinely short day. Several pairs
+    that add up to the same total usually mean a punch was missed in the middle, so
+    the duration alone cannot decide the day and a human has to look at it.
+    """
+    return len(record.punches_json or []) > 2
+
+
+SPLIT_PUNCH_REVIEW_EXPLANATION = (
+    "Multiple punch pairs totalling less than 3 hours. Check the punches and set the day manually."
+)
+
+
+def daily_absence_minutes(row, record):
+    """Minutes short of a full working day, for the daily wage attendance bonus.
+
+    The bonus notice states that late reporting and leaving early are covered by it,
+    so a short day counts here even though the day itself is still paid. The full-day
+    grace applies exactly as it does for pay: at or above it the day is a complete day
+    with no short hours, so it carries no absence either. Week offs and holidays are
+    not working days, so they never count.
+    """
+    status = row["status"]
+    if status in BONUS_EXEMPT_STATUSES:
+        return 0
+    full_day = CFG["FULL_DAY_MINUTES"]
+    if status in WORKED_ELSEWHERE_STATUSES:
+        # Marked present without punch data by design; there is nothing to measure.
+        return 0
+    if has_any_punch(record):
+        actual = record.actual_minutes or 0
+    else:
+        actual = int(Decimal(full_day) * BONUS_CREDIT_DAYS.get(status, Decimal("0")))
+    if actual >= CFG["FULL_DAY_REQUIRED_MINUTES"]:
+        return 0
+    return max(0, full_day - actual)
+
+
+def daily_attendance_bonus_percent(absence_minutes):
+    """Bonus band for a month's total absence: 10% at zero, 5% within the allowance."""
+    if absence_minutes <= 0:
+        return Decimal(str(BONUS_CFG["FULL_ATTENDANCE_BONUS_PERCENT"]))
+    if absence_minutes <= BONUS_CFG["PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES"]:
+        return Decimal(str(BONUS_CFG["PARTIAL_ATTENDANCE_BONUS_PERCENT"]))
+    return Decimal("0")
+
+
+def daily_bonus_explanation(absence_minutes, bonus_ignored=False):
+    """Plain-English reason for the band a daily wage month landed in."""
+    if bonus_ignored:
+        return "This employee is excluded from the attendance bonus in Employee Master."
+    allowance = BONUS_CFG["PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES"]
+    full_percent = BONUS_CFG["FULL_ATTENDANCE_BONUS_PERCENT"]
+    partial_percent = BONUS_CFG["PARTIAL_ATTENDANCE_BONUS_PERCENT"]
+    absence = minutes_to_duration(absence_minutes)
+    if absence_minutes <= 0:
+        return f"No absence this month, so the full {full_percent}% attendance bonus applies."
+    if absence_minutes <= allowance:
+        return (
+            f"Absence of {absence} is within the {minutes_to_duration(allowance)} allowance, "
+            f"so the {partial_percent}% attendance bonus applies."
+        )
+    return (
+        f"Absence of {absence} is over the {minutes_to_duration(allowance)} allowance, "
+        "so no attendance bonus is payable."
+    )
+
+
+def apply_leave_balance(classified_rows, available):
+    """Settle unexplained absences against `available` leave, oldest day first.
+
+    A day is covered in full while at least one leave remains. With half a day left
+    the absence is split: half paid from leave, half loss of pay. Anything less
+    leaves the day untouched, so it falls through to full-day LOP.
+
+    Returns the leave consumed.
+    """
+    available = Decimal(available or 0)
+    used = Decimal("0")
+    if available <= 0:
+        return used
+    for _record, _override, row in classified_rows:
+        if row["status"] != ABSENT_STATUS:
+            continue
+        remaining = available - used
+        if remaining >= Decimal("1"):
+            row.update({
+                "status": "Paid Leave",
+                "paid_day": Decimal("0"),
+                "leave_used": Decimal("1"),
+                "explanation": "Absent day covered by available leave balance.",
+            })
+            used += Decimal("1")
+        elif remaining >= Decimal("0.5"):
+            row.update({
+                "status": HALF_LEAVE_HALF_LOP_STATUS,
+                "paid_day": Decimal("0"),
+                "leave_used": Decimal("0.5"),
+                "half_lop": True,
+                "explanation": "Half day covered by the remaining leave balance; the other half is loss of pay.",
+            })
+            used += Decimal("0.5")
+        else:
+            break
+    return used
 
 
 def apply_sandwich_leave_policy(classified_rows):

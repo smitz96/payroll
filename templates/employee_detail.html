@@ -17,8 +17,11 @@
   <div class="metric"><span>Total paid days</span><strong>{{ total_paid_days }}</strong></div>
   <div class="metric"><span>Less-hours minutes</span><strong>{{ result.less_hours_minutes }}</strong></div>
   <div class="metric"><span>OT payable minutes</span><strong>{{ result.payable_ot_minutes }}</strong></div>
+  {% if is_daily_wage %}
+  <div class="metric"><span>Absence this month</span><strong>{{ bonus_absence_duration }}</strong></div>
+  <div class="metric"><span>Attendance bonus</span><strong>{% if bonus_ignored %}Excluded{% else %}{{ (result.attendance_bonus_percent or 0)|percent }}% / {{ result.attendance_bonus_amount or 0 }}{% endif %}</strong></div>
+  {% else %}
   <div class="metric"><span>Leave earned</span><strong>{{ result.leave_earned }}</strong></div>
-  {% if not is_daily_wage %}
   <div class="metric"><span>Leave encashment</span><strong>{{ result.leave_encashment_days or 0 }} day(s) / {{ result.leave_encashment_amount or 0 }}</strong></div>
   {% endif %}
   {% if has_loan %}
@@ -43,8 +46,14 @@
     <div class="col-md-3">
       <div class="leave-encashment-box">
         {% if is_daily_wage %}
-        <strong>Leave management</strong>
-        <div class="status-detail">Not applicable for daily wage employees.</div>
+        <strong>Attendance bonus</strong>
+        {% if result %}
+        <div class="bonus-figure{{ ' is-excluded' if bonus_ignored }}">{% if bonus_ignored %}Excluded{% else %}{{ (result.attendance_bonus_percent or 0)|percent }}% &middot; {{ result.attendance_bonus_amount or 0 }}{% endif %}</div>
+        <div class="status-detail">Absence this month: <strong>{{ bonus_absence_duration }}</strong>. {{ bonus_explanation }}</div>
+        {% else %}
+        <div class="status-detail">Recalculate payroll to work out the attendance bonus.</div>
+        {% endif %}
+        <div class="status-detail">Daily wage employees do not use leave. Absence counts late arrival and early leaving.</div>
         {% else %}
         {% set employee_leave_encashment_checked = (global_leave_encashment and salary and not salary.leave_encashment_disabled) or (salary and salary.leave_encashment_enabled) %}
         <label class="form-check">
@@ -92,41 +101,51 @@
       {% endif %}
     </div>
   </div>
-  <p class="text-muted mb-0 mt-3">Adjustment may be positive or negative. {% if is_daily_wage %}Daily wage employees do not use leave management.{% elif global_leave_encashment %}Global leave encashment uses all available leaves; uncheck the employee option to disable it for this employee.{% else %}Enter leave encashment in days.{% endif %} Active loan installments are deducted unless skipped for this employee and month.</p>
+  <p class="text-muted mb-0 mt-3">Adjustment may be positive or negative. {% if is_daily_wage %}Daily wage employees earn an attendance bonus instead of leave: 10% of the month's earned wage with no absence at all, 5% with absence up to {{ bonus_allowance_duration }}, and nothing beyond that.{% elif global_leave_encashment %}Global leave encashment uses all available leaves; uncheck the employee option to disable it for this employee.{% else %}Enter leave encashment in days.{% endif %} Active loan installments are deducted unless skipped for this employee and month.</p>
 </div>
-<div class="table-responsive">
-<table class="table table-sm smart-table">
-  <thead><tr><th>Date</th><th>Day</th><th>First</th><th>Last</th><th>Raw</th><th>Status</th><th>Override</th><th>Notes</th></tr></thead>
-  <tbody>
-  {% for row in attendance_rows %}
-  {% set rec = row.record %}
-  <tr class="{% if row.is_error %}attendance-error-row{% endif %}">
-    <td>{{ rec.date }}</td>
-    <td>{{ rec.day }}</td>
-    <td>{{ rec.first_punch }}</td>
-    <td>{{ rec.last_punch }}</td>
-    <td>{{ rec.raw_working_hours }}</td>
-    <td>
+{# Month grid. Each cell keeps the same input names as the old table, so the POST
+   handler is unchanged; only the presentation moved. #}
+<div class="attendance-calendar" role="group" aria-label="{{ month_label or month }} attendance">
+  <div class="calendar-weekdays" aria-hidden="true">
+    {% for heading in weekday_headings %}<span>{{ heading }}</span>{% endfor %}
+  </div>
+  {% for week in calendar_weeks %}
+  <div class="calendar-week">
+    {% for cell in week %}
+    {% if not cell %}
+    <div class="calendar-day is-empty" aria-hidden="true"></div>
+    {% elif not cell.row %}
+    <div class="calendar-day is-missing">
+      <span class="calendar-date">{{ cell.day }}<small class="calendar-weekday">{{ cell.date.strftime("%a") }}</small></span>
+      <span class="status-badge status-other">No record</span>
+    </div>
+    {% else %}
+    {% set row = cell.row %}
+    {% set rec = row.record %}
+    <div class="calendar-day tone-{{ row.status_tone }}{{ ' is-error' if row.is_error }}">
+      <span class="calendar-date">{{ cell.day }}<small class="calendar-weekday">{{ cell.date.strftime("%a") }}</small></span>
       <span class="status-badge status-{{ row.status_tone }}">{{ row.display_status }}</span>
       {% if row.is_shortage %}
       <span class="status-badge status-shortage">Less hours{% if row.shortage_minutes %}: {{ row.shortage_minutes }}m{% endif %}</span>
       {% endif %}
-      {% if rec.warning or row.explanation %}
-      <div class="status-detail">{{ rec.warning or row.explanation }}</div>
+      {% for session in row.sessions %}
+      <span class="calendar-punch">{{ session }}</span>
+      {% endfor %}
+      {% if rec.raw_working_hours %}<span class="calendar-punch calendar-hours">{{ rec.raw_working_hours }}</span>{% endif %}
+      {% if row.note %}
+      <span class="calendar-note" title="{{ row.note }}">{{ row.note }}</span>
       {% endif %}
-    </td>
-    <td>
-        <select class="form-select form-select-sm" name="manual_status_{{ rec.id }}" {% if is_finalized %}disabled{% endif %}>
-          {% for option in override_options %}
-          <option {% if overrides.get(rec.date) and overrides.get(rec.date).manual_status == option %}selected{% endif %}>{{ option }}</option>
-          {% endfor %}
-        </select>
-    </td>
-    <td><input class="form-control form-control-sm" name="notes_{{ rec.id }}" placeholder="Notes" value="{{ overrides.get(rec.date).notes if overrides.get(rec.date) else '' }}" {% if is_finalized %}disabled{% endif %}></td>
-  </tr>
+      <select class="form-select form-select-sm calendar-override" name="manual_status_{{ rec.id }}" aria-label="Override for {{ rec.date }}" {% if is_finalized %}disabled{% endif %}>
+        {% for option in override_options %}
+        <option {% if overrides.get(rec.date) and overrides.get(rec.date).manual_status == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+      <input class="form-control form-control-sm calendar-notes" name="notes_{{ rec.id }}" placeholder="Notes" aria-label="Notes for {{ rec.date }}" value="{{ overrides.get(rec.date).notes if overrides.get(rec.date) else '' }}" {% if is_finalized %}disabled{% endif %}>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
   {% endfor %}
-  </tbody>
-</table>
 </div>
 {% if not is_finalized %}
 <div class="sticky-actions">
@@ -139,9 +158,9 @@
 <h2 class="section-title">Calculation detail</h2>
 <div class="table-responsive">
 <table class="table table-sm smart-table">
-  <thead><tr><th>Date</th><th>Actual</th><th>Rounded</th><th>Status</th><th>Paid Day</th><th>Shortage</th><th>Raw OT</th><th>Payable OT</th><th>Explanation</th></tr></thead>
+  <thead><tr><th>Date</th><th>Actual</th><th>Rounded</th><th>Status</th><th>Paid Day</th><th>Shortage</th>{% if is_daily_wage %}<th>Bonus absence</th>{% endif %}<th>Raw OT</th><th>Payable OT</th><th>Explanation</th></tr></thead>
   <tbody>{% for row in result.detail_json %}
-  <tr><td>{{ row.date }}</td><td>{{ row.actual_duration }}</td><td>{{ row.rounded_duration }}</td><td>{{ row.attendance_status }}</td><td>{{ row.paid_day_value }}</td><td>{{ row.shortage_minutes }}</td><td>{{ row.raw_ot }}</td><td>{{ row.payable_ot }}</td><td>{{ row.explanation }}</td></tr>
+  <tr><td>{{ row.date }}</td><td>{{ row.actual_duration }}</td><td>{{ row.rounded_duration }}</td><td>{{ row.attendance_status }}</td><td>{{ row.paid_day_value }}</td><td>{{ row.shortage_minutes }}</td>{% if is_daily_wage %}<td>{{ row.bonus_absence_minutes or 0 }}</td>{% endif %}<td>{{ row.raw_ot }}</td><td>{{ row.payable_ot }}</td><td>{% if row.attendance_status not in ["Full Day Present", "Half Day Present", "Week Off", "Holiday", "Week Off Worked"] or row.shortage_minutes|int > 0 %}{{ row.explanation }}{% endif %}</td></tr>
   {% endfor %}</tbody>
 </table>
 </div>

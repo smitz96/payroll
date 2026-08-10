@@ -1,3 +1,4 @@
+import calendar
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
@@ -15,10 +16,10 @@ from attendance.loans import active_loans_for_employee, employee_has_loan, loan_
 from attendance.master import employee_active_for_payroll_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv
-from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance
-from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, total_paid_days
-from attendance.settings import MONTHLY_RULES as CFG
-from attendance.utils import decimal_money, display_month, is_valid_payroll_month, money
+from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation
+from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
+from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
+from attendance.utils import decimal_money, display_month, is_valid_payroll_month, minutes_to_duration, money
 from attendance.wage_groups import (
     GROUP_LABELS,
     any_group_finalized,
@@ -35,7 +36,8 @@ bp = Blueprint("payroll", __name__, url_prefix="/payroll")
 ALLOWED = {".csv", ".xlsx"}
 OVERRIDE_OPTIONS = [
     "Auto", "Full Day Present", "Half Day Present", "Paid Leave", "Half-Day Paid Leave",
-    "Unpaid Leave / LOP", "Half-Day LOP", "Holiday", "Week Off", "Week Off Worked", "Work From Home",
+    "Unpaid Leave / LOP", "Half-Day LOP", "Holiday", "Week Off", "Week Off Worked",
+    "Worked On-Site", "Work From Home",
     "Punch Error", "Ignore",
 ]
 LOCKED_MESSAGE = "Payroll is finalized and locked. Unlock payroll before making changes."
@@ -97,21 +99,42 @@ def attendance_display_status(raw_status):
         "Full Day LOP": "Full Day LOP",
         "Half Day LOP": "Half Day LOP",
         "Unpaid Leave / LOP": "LOP",
-        "Absent / Attendance Missing": "Attendance Missing",
+        "Absent / Attendance Missing": "Absent",
+        "Half-Day Paid Leave / Half-Day LOP": "Half Leave + Half LOP",
         "Needs Review": "Needs Review",
         "Punch Error": "Punch Error",
         "Holiday": "Holiday",
         "Week Off": "Week Off",
         "Week Off Worked": "Week Off Worked",
         "Sandwich Leave": "Sandwich Leave",
+        "Worked On-Site": "Worked On-Site",
         "Work From Home": "Work From Home",
         "Ignore": "Ignore",
     }
     return mapping.get(raw_status or "", raw_status or "Pending Calculation")
 
 
+SILENT_EXPLANATION_STATUSES = {"Full Day Present", "Half Day Present", "Week Off", "Holiday", "Week Off Worked", "Worked On-Site", "Work From Home"}
+
+
+def attendance_note(record, raw_status, is_shortage, explanation=""):
+    """Explanatory text for a day, or empty when the day is unremarkable."""
+    if raw_status in SILENT_EXPLANATION_STATUSES and not is_shortage:
+        return ""
+    # Once a day has been resolved into leave or LOP, the raw import warning that
+    # produced it ("Missing punch and working hours") is no longer the story.
+    resolved = {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave",
+                "Half-Day Paid Leave / Half-Day LOP", "Absent / Attendance Missing",
+                "Full Day LOP", "Half Day LOP", "Unpaid Leave / LOP"}
+    if raw_status in resolved:
+        return ""
+    # A day flagged for review can parse cleanly and so carry no import warning; the
+    # rule's own explanation is then the only thing that says why it was flagged.
+    return record.warning or explanation
+
+
 def is_attendance_error(record, raw_status):
-    if raw_status in {"Full Day Present", "Half Day Present", "Paid Leave", "Half-Day Paid Leave", "Holiday", "Week Off", "Week Off Worked", "Sandwich Leave", "Work From Home", "Ignore"}:
+    if raw_status in {"Full Day Present", "Half Day Present", "Paid Leave", "Half-Day Paid Leave", "Holiday", "Week Off", "Week Off Worked", "Sandwich Leave", "Worked On-Site", "Work From Home", "Ignore"}:
         return False
     if record.parse_status != "OK":
         return True
@@ -123,11 +146,36 @@ def attendance_status_tone(display_status, is_error, is_shortage):
         return "error"
     if is_shortage:
         return "shortage"
+    if display_status in {"Worked On-Site", "Work From Home"}:
+        return "offsite"
     if display_status in {"Full Day", "Half Day", "Week Off Worked"}:
         return "ok"
     if display_status in {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave"}:
         return "leave"
     return "other"
+
+
+WEEKDAY_HEADINGS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+
+def attendance_calendar(month, rows):
+    """Lay the month's attendance out as calendar weeks, Sunday first.
+
+    Every day of the month gets a cell whether or not attendance was imported for
+    it, so a gap in the sheet is visible rather than silently absent.
+    """
+    year, month_number = (int(part) for part in month.split("-"))
+    days_in_month = calendar.monthrange(year, month_number)[1]
+    by_date = {row["record"].date: row for row in rows}
+    first = date(year, month_number, 1)
+    # date.weekday() is Monday=0; shift so Sunday leads the week.
+    cells = [None] * ((first.weekday() + 1) % 7)
+    for day in range(1, days_in_month + 1):
+        current = date(year, month_number, day)
+        cells.append({"date": current, "day": day, "row": by_date.get(current)})
+    while len(cells) % 7:
+        cells.append(None)
+    return [cells[index:index + 7] for index in range(0, len(cells), 7)]
 
 
 def employee_attendance_rows(records, result=None, salary=None, overrides=None):
@@ -169,6 +217,8 @@ def employee_attendance_rows(records, result=None, salary=None, overrides=None):
             "raw_status": raw_status,
             "display_status": display_status,
             "explanation": explanation,
+            "note": attendance_note(record, raw_status, is_shortage, explanation),
+            "sessions": punch_sessions(record.punches_json, record.first_punch or "", record.last_punch or ""),
             "is_error": error,
             "is_shortage": is_shortage,
             "shortage_minutes": shortage_minutes,
@@ -523,7 +573,10 @@ def month(month):
             elif action == "salary":
                 created, updated, skipped = sync_salary_records_from_master(month, current_username())
                 db.session.commit()
-                flash(f"Wage data loaded from master: {created} created, {updated} updated, {skipped} skipped.", "success")
+                flash(f"Wage data loaded from master: {created} created, {updated} updated, {len(skipped)} skipped.", "success")
+                # Name the skipped employees; a bare count hides who is missing from payroll.
+                for reason in skipped:
+                    flash(f"Skipped {reason}", "warning")
             elif action == "calculate":
                 if attendance_count := AttendanceRecord.query.filter_by(payroll_month=month).count():
                     if not payroll_month.attendance_submitted:
@@ -600,6 +653,8 @@ def month(month):
         groups=groups,
         wage_filter=wage_filter,
         any_finalized=any_group_finalized(payroll_month),
+        bonus_allowance_duration=minutes_to_duration(DAILY_BONUS_RULES["PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES"]),
+        bonus_excluded_ids={employee.id for employee in Employee.query.filter_by(bonus_ignored=True).all()},
         total_payable=f"{total_payable:,.2f}",
         review_count=len([r for r in results.values() if r.calculation_status != "Calculated"]) + len(missing_salary),
         sort=sort,
@@ -647,6 +702,8 @@ def employee(month, employee_id):
     attendance_rows = employee_attendance_rows(records, result, salary, overrides)
     return render_template(
         "employee_detail.html",
+        calendar_weeks=attendance_calendar(month, attendance_rows),
+        weekday_headings=WEEKDAY_HEADINGS,
         month=month,
         employee_id=employee_id,
         employee=employee,
@@ -661,6 +718,13 @@ def employee(month, employee_id):
         payroll_advances=payroll_advances,
         advance_deduction=advance_deduction,
         global_leave_encashment=global_leave_encashment,
+        bonus_absence_duration=minutes_to_duration(int(getattr(result, "absence_minutes", 0) or 0)) if result else "",
+        bonus_explanation=daily_bonus_explanation(
+            int(getattr(result, "absence_minutes", 0) or 0),
+            bool(employee and employee.bonus_ignored),
+        ) if result else "",
+        bonus_ignored=bool(employee and employee.bonus_ignored),
+        bonus_allowance_duration=minutes_to_duration(DAILY_BONUS_RULES["PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES"]),
         attendance_rows=attendance_rows,
         overrides=overrides,
         override_options=OVERRIDE_OPTIONS,

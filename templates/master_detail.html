@@ -9,7 +9,7 @@
 </div>
 
 {% if employee.employment_status != 'ACTIVE' %}
-<div class="alert alert-warning">This employee is {{ employee.employment_status|lower }} and cannot be edited from master.</div>
+<div class="alert alert-warning">This employee is {{ employee.employment_status|lower }} and is excluded from payroll. Set the status back to Active to edit the other details.</div>
 {% endif %}
 
 <form method="post" class="tool-panel">
@@ -43,11 +43,18 @@
       <input class="form-control" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required data-salary-total {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
     </div>
     <div class="col-md-2">
-      <label class="form-label">Status</label>
-      <div><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></div>
+      <label class="form-label">Employment status</label>
+      <select class="form-select status-select" name="employment_status" data-status-select>
+        {% for key, label in employment_statuses %}
+        <option value="{{ key }}" data-status="{{ key }}" {% if employee.employment_status == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
     </div>
     <div class="col-md-12">
-      <div class="monthly-only" data-monthly-only hidden>
+      <div class="status-detail">Only <strong>Active</strong> employees are included in payroll calculation. Inactive pauses an employee without ending employment; Left and Terminated close it out.</div>
+    </div>
+    <div class="col-md-12">
+      <div class="wage-panel" data-monthly-only hidden>
         <h4 class="form-subhead">Salary breakup</h4>
         <div class="breakup-grid">
           <div><label class="form-label" for="detail_basic_salary">Basic</label>
@@ -71,6 +78,14 @@
           </label>
         </div>
       </div>
+      <div class="wage-panel" data-daily-only hidden>
+        <h4 class="form-subhead">Attendance bonus</h4>
+        <label class="form-check">
+          <input class="form-check-input" type="checkbox" name="bonus_ignored" {% if employee.bonus_ignored %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+          <span>Ignore Monthly Bonus</span>
+        </label>
+        <div class="status-detail">Daily wage employees earn a monthly attendance bonus in place of leave. When ticked, this employee is excluded and no bonus is added, however low their absence.</div>
+      </div>
     </div>
     <div class="col-md-12">
       <h4 class="form-subhead">Payroll exceptions</h4>
@@ -90,9 +105,7 @@
       <div class="status-detail">When ticked, less-hours shortage is not deducted. Full day and half day counting still applies.</div>
     </div>
     <div class="col-md-12 adjustment-actions">
-      {% if employee.employment_status == 'ACTIVE' %}
       <button class="btn btn-primary">Save Employee Details</button>
-      {% endif %}
     </div>
   </div>
   <p class="text-muted mb-0 mt-3">Wage type cannot be changed for an active employee once set. Mark the employee as left or terminated before creating a replacement record with a different wage type.</p>

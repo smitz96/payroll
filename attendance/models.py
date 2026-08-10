@@ -40,6 +40,8 @@ class Employee(db.Model):
     # employee". `ot_ignored` replaced an inverted `ot_enabled` column.
     ot_ignored = db.Column(db.Boolean, default=False, nullable=False)
     less_hours_ignored = db.Column(db.Boolean, default=False, nullable=False)
+    # Daily wage only: excludes the employee from the monthly attendance bonus.
+    bonus_ignored = db.Column(db.Boolean, default=False, nullable=False)
     employment_status = db.Column(db.String(32), default="ACTIVE", nullable=False)
     inactive_at = db.Column(db.DateTime)
     inactive_reason = db.Column(db.Text)
@@ -200,6 +202,11 @@ class PayrollResult(db.Model):
     ot_minutes = db.Column(db.Integer, default=0)
     payable_ot_minutes = db.Column(db.Integer, default=0)
     ot_amount = db.Column(db.Numeric(12, 2), default=0)
+    # Daily wage attendance bonus. Absence is the month's total shortfall against a
+    # full working day, including late reporting and early leaving.
+    absence_minutes = db.Column(db.Integer, default=0)
+    attendance_bonus_percent = db.Column(db.Numeric(5, 2), default=0)
+    attendance_bonus_amount = db.Column(db.Numeric(12, 2), default=0)
     lop_deduction = db.Column(db.Numeric(12, 2), default=0)
     manual_adjustment = db.Column(db.Numeric(12, 2), default=0)
     leave_encashment_days = db.Column(db.Numeric(8, 1), default=0)

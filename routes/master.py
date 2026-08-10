@@ -7,6 +7,7 @@ from attendance import db
 from attendance.authentication import current_username, login_required
 from attendance.master import (
     EMPLOYEE_MASTER_EXPORT_COLUMNS,
+    EMPLOYMENT_STATUSES,
     MASTER_IMPORT_REQUIRED_COLUMNS,
     apply_employee_master_import,
     disable_master_employee,
@@ -76,7 +77,7 @@ def index():
         return redirect(url_for("master.index"))
 
     employees = sorted(Employee.query.all(), key=employee_sort_value)
-    return render_template("master.html", employees=employees)
+    return render_template("master.html", employees=employees, employment_statuses=EMPLOYMENT_STATUSES)
 
 
 @bp.route("/export.csv", methods=["GET"])
@@ -94,9 +95,10 @@ def export_csv():
 def import_csv():
     try:
         rows = parse_csv_upload(request.files.get("employee_master_csv"), MASTER_IMPORT_REQUIRED_COLUMNS)
-        changed = apply_employee_master_import(rows, current_username())
+        changed, created = apply_employee_master_import(rows, current_username())
         db.session.commit()
-        flash(f"Employee master imported. {len(changed)} employee(s) updated.", "success")
+        updated = len(changed) - len(created)
+        flash(f"Employee master imported. {len(created)} employee(s) added, {updated} updated.", "success")
     except Exception as exc:
         db.session.rollback()
         flash(str(exc), "danger")
@@ -119,4 +121,4 @@ def detail(employee_id):
             db.session.rollback()
             flash(str(exc), "danger")
         return redirect(url_for("master.detail", employee_id=employee_id))
-    return render_template("master_detail.html", employee=employee)
+    return render_template("master_detail.html", employee=employee, employment_statuses=EMPLOYMENT_STATUSES)

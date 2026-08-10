@@ -26,7 +26,7 @@
 </div>
 <div class="table-responsive">
   <table class="table table-sm smart-table sticky-id-name-table" style="--sticky-id-width: 150px; --sticky-name-width: 320px;">
-    <thead><tr><th>Employee ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Wage Type</th><th>Salary</th><th>Ignore OT</th><th>Ignore Less Hours</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Employee ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Wage Type</th><th>Salary</th><th>Ignore OT</th><th>Ignore Less Hours</th><th>Ignore Monthly Bonus</th><th>Status</th><th></th></tr></thead>
     <tbody>
       {% for employee in employees %}
       <tr>
@@ -42,6 +42,7 @@
         <td>{{ employee.salary or 0 }}</td>
         <td>{{ "Yes" if employee.ot_ignored else "No" }}</td>
         <td>{{ "Yes" if employee.less_hours_ignored else "No" }}</td>
+        <td>{{ ("Yes" if employee.bonus_ignored else "No") if employee.normalized_salary_type == "DAILY" else "—" }}</td>
         <td><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></td>
         <td>
           {% if employee.employment_status == 'ACTIVE' %}
@@ -52,7 +53,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="10" class="text-muted">No employee master records found.</td></tr>
+      <tr><td colspan="11" class="text-muted">No employee master records found.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -73,11 +74,12 @@
     <div class="drawer-body">
       <section class="drawer-section">
         <h3>Bulk Wage Update</h3>
-        <p class="text-muted">Upload the exported CSV after editing wage, salary breakup, and compliance columns. Employee ID is the match key.</p>
+        <p class="text-muted">Upload a CSV to add new employees and update existing ones in bulk. Employee ID is the match key.</p>
         <input class="form-control mb-3" type="file" name="employee_master_csv" accept=".csv,text/csv" required>
         <ul class="import-rules">
-          <li>Employee ID cannot be changed and unknown IDs are rejected.</li>
-          <li>A Name in the file must match the stored name. Rename from the employee page instead.</li>
+          <li>A new Employee ID adds that employee. Name and Wage Type are required to add one.</li>
+          <li>Employee ID is permanent and can never be changed.</li>
+          <li>For an existing employee the Name must match what is stored. Rename from the employee edit window instead.</li>
           <li>Wage type cannot be changed once set. Mark the employee left or terminated, then create a new Employee ID.</li>
           <li>Basic, HRA and Allowance must add up to Salary exactly, and apply to monthly wage only.</li>
         </ul>
@@ -118,7 +120,7 @@
         </select>
         <label class="form-label">Salary</label>
         <input class="form-control mb-3" name="salary" inputmode="decimal" required data-salary-total>
-        <div class="monthly-only" data-monthly-only hidden>
+        <div class="wage-panel" data-monthly-only hidden>
           <h4 class="form-subhead">Salary breakup</h4>
           <div class="breakup-grid">
             <div><label class="form-label" for="add_basic_salary">Basic</label>
@@ -139,6 +141,14 @@
             <input class="form-check-input" type="checkbox" name="esic_enabled" >
             <span>ESIC applicable</span>
           </label>
+        </div>
+        <div class="wage-panel" data-daily-only hidden>
+          <h4 class="form-subhead">Attendance bonus</h4>
+          <label class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="bonus_ignored">
+            <span>Ignore Monthly Bonus</span>
+          </label>
+          <div class="status-detail mb-3">Daily wage employees earn a monthly attendance bonus in place of leave. When ticked, this employee is excluded and no bonus is added.</div>
         </div>
         <h4 class="form-subhead">Payroll exceptions</h4>
         <label class="form-check mb-2">
@@ -193,7 +203,7 @@
         </select>
         <label class="form-label">Salary</label>
         <input class="form-control mb-3" name="salary" value="{{ employee.salary or 0 }}" inputmode="decimal" required data-salary-total {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
-        <div class="monthly-only" data-monthly-only hidden>
+        <div class="wage-panel" data-monthly-only hidden>
           <h4 class="form-subhead">Salary breakup</h4>
           <div class="breakup-grid">
             <div><label class="form-label" for="edit_{{ loop.index }}_basic_salary">Basic</label>
@@ -215,13 +225,29 @@
             <span>ESIC applicable</span>
           </label>
         </div>
+        <div class="wage-panel" data-daily-only hidden>
+          <h4 class="form-subhead">Attendance bonus</h4>
+          <label class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="bonus_ignored" {% if employee.bonus_ignored %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+            <span>Ignore Monthly Bonus</span>
+          </label>
+          <div class="status-detail mb-3">When ticked, this employee is excluded from the monthly attendance bonus.</div>
+        </div>
+        <label class="form-label">Employment status</label>
+        <select class="form-select mb-2 status-select" name="employment_status" data-status-select>
+          {% for key, label in employment_statuses %}
+          <option value="{{ key }}" data-status="{{ key }}" {% if employee.employment_status == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <div class="status-detail mb-3">Only <strong>Active</strong> employees are included in payroll. Inactive pauses an employee without ending employment.</div>
         <div class="drawer-detail-grid mb-3">
-          <div><span>Status</span><strong>{{ employee.employment_status }}</strong></div>
           <div><span>Department</span><strong>{{ employee.department or "Not set" }}</strong></div>
           <div><span>Designation</span><strong>{{ employee.designation or "Not set" }}</strong></div>
           {% if employee.normalized_salary_type == 'MONTHLY' %}
           <div><span>PF</span><strong>{{ "Yes" if employee.pf_enabled else "No" }}</strong></div>
           <div><span>ESIC</span><strong>{{ "Yes" if employee.esic_enabled else "No" }}</strong></div>
+          {% elif employee.normalized_salary_type == 'DAILY' %}
+          <div><span>Ignore Monthly Bonus</span><strong>{{ "Yes" if employee.bonus_ignored else "No" }}</strong></div>
           {% endif %}
           <div><span>Ignore OT</span><strong>{{ "Yes" if employee.ot_ignored else "No" }}</strong></div>
           <div><span>Ignore Less Hours</span><strong>{{ "Yes" if employee.less_hours_ignored else "No" }}</strong></div>

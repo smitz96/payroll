@@ -37,11 +37,11 @@
             <div class="weekoff-picker" data-weekoff-picker>
               <button class="weekoff-picker-toggle" type="button" aria-expanded="false">
                 <span class="weekoff-pill-wrap" data-weekoff-summary>
-                  {% for code, option_label in options %}
-                  {% if code in selected_codes %}
-                  <span class="weekoff-pill">{{ option_label }}</span>
+                  {% set chosen = options|selectattr(0, 'in', selected_codes)|list %}
+                  {% if chosen %}
+                  <span class="weekoff-pill">{{ chosen[0][1] }}</span>
+                  {% if chosen|length > 1 %}<span class="weekoff-pill weekoff-pill-count">+{{ chosen|length - 1 }}</span>{% endif %}
                   {% endif %}
-                  {% endfor %}
                 </span>
                 <span class="weekoff-caret" aria-hidden="true"></span>
               </button>
@@ -79,14 +79,22 @@
     };
 
     const renderSummary = () => {
+      // Show the first selection and a count. Stacking every pill made a row with
+      // three long labels three times taller than its neighbours.
       const checked = inputs.filter((input) => input.checked);
       summary.innerHTML = '';
-      checked.forEach((input) => {
-        const pill = document.createElement('span');
-        pill.className = 'weekoff-pill';
-        pill.textContent = input.dataset.label;
-        summary.appendChild(pill);
-      });
+      if (!checked.length) return;
+      const pill = document.createElement('span');
+      pill.className = 'weekoff-pill';
+      pill.textContent = checked[0].dataset.label;
+      summary.appendChild(pill);
+      if (checked.length > 1) {
+        const more = document.createElement('span');
+        more.className = 'weekoff-pill weekoff-pill-count';
+        more.textContent = '+' + (checked.length - 1);
+        summary.appendChild(more);
+      }
+      toggle.title = checked.map((input) => input.dataset.label).join(', ');
     };
 
     const normalizeSelection = (changedInput) => {

@@ -79,6 +79,8 @@
   --smartfill-surface-soft:var(--ios-surface-2);
   --smartfill-table-head:rgba(120,120,128,.08);
   --smartfill-hover:rgba(120,120,128,.06);
+  --sticky-head-bg:#EDEDF0;
+  --sticky-hover-bg:#F5F5F7;
   --smartfill-shadow:rgba(0,0,0,.06);
 }
 html[data-theme="dark"] {
@@ -123,6 +125,8 @@ html[data-theme="dark"] {
 
   --smartfill-table-head:rgba(120,120,128,.16);
   --smartfill-hover:rgba(120,120,128,.12);
+  --sticky-head-bg:#2A2A2C;
+  --sticky-hover-bg:#232325;
   --smartfill-shadow:rgba(0,0,0,.40);
 }
 * { box-sizing: border-box; }
@@ -274,6 +278,8 @@ html[data-theme="dark"] .theme-toggle-thumb { transform:translateX(18px); }
   --sticky-id-width: 128px;
   --sticky-name-width: 240px;
 }
+.sticky-id-name-table tbody tr:nth-child(even) td:first-child,
+.sticky-id-name-table tbody tr:nth-child(even) td:nth-child(2) { background:var(--smartfill-surface); }
 .sticky-id-name-table th:first-child,
 .sticky-id-name-table td:first-child {
   position:sticky;
@@ -300,11 +306,11 @@ html[data-theme="dark"] .theme-toggle-thumb { transform:translateX(18px); }
 .sticky-id-name-table thead th:first-child,
 .sticky-id-name-table thead th:nth-child(2) {
   z-index:5;
-  background:var(--smartfill-table-head);
+  background:var(--sticky-head-bg);
 }
 .sticky-id-name-table tbody tr:hover td:first-child,
 .sticky-id-name-table tbody tr:hover td:nth-child(2) {
-  background:var(--smartfill-hover);
+  background:var(--sticky-hover-bg);
 }
 .employee-cell strong { display:block; font-size:1rem; }
 .employee-cell span { display:block; color:var(--smartfill-muted); font-size:.84rem; margin-top:2px; }
@@ -546,7 +552,7 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
   border-top:1px solid var(--smartfill-line);
 }
 .leave-table-wrap { max-height: calc(100vh - 300px); background:var(--smartfill-surface); }
-.leave-balance-table thead th { position:sticky; top:0; z-index:2; }
+.leave-balance-table thead th.leave-head, .leave-balance-table thead th { position:sticky; top:0; z-index:2; background:var(--sticky-head-bg); }
 .leave-balance-table .form-control { min-width:110px; }
 .leave-balance-table .reason-input { min-width:220px; }
 .row-changed td { background:color-mix(in srgb, var(--ios-yellow) 14%, transparent); }
@@ -583,6 +589,14 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
   font-weight:590;
   color:var(--ios-blue-text);
 }
+.bonus-figure {
+  margin:4px 0 6px;
+  font-size:1.35rem;
+  font-weight:680;
+  letter-spacing:-0.02em;
+  color:var(--ios-green-text);
+}
+.bonus-figure.is-excluded { color:var(--smartfill-muted); }
 .sticky-actions {
   position:sticky;
   bottom:0;
@@ -607,7 +621,7 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
 .weekoff-panel { padding:0; overflow:visible; }
 .weekoff-actions { display:flex; justify-content:flex-end; padding:16px; border-bottom:1px solid var(--smartfill-line); }
 .weekoff-table-wrap { max-height:calc(100vh - 250px); overflow-x:auto; overflow-y:visible; }
-.weekoff-table thead th { position:sticky; top:0; z-index:2; }
+.weekoff-table thead th.weekoff-head, .weekoff-table thead th { position:sticky; top:0; z-index:2; background:var(--sticky-head-bg); }
 .weekoff-table th,.weekoff-table td { min-width:160px; }
 .weekoff-picker { position:relative; min-width:210px; }
 .weekoff-picker-toggle {
@@ -624,10 +638,12 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
   cursor:pointer;
 }
 .weekoff-picker-toggle:focus { outline:none; border-color:var(--ios-blue); box-shadow:0 0 0 4px color-mix(in srgb, var(--ios-blue) 18%, transparent); }
-.weekoff-pill-wrap { display:flex; flex-direction:column; align-items:flex-start; gap:4px; min-width:0; }
+.weekoff-pill-wrap { display:flex; flex-direction:row; align-items:center; gap:5px; min-width:0; overflow:hidden; }
 .weekoff-pill {
-  max-width:180px;
+  max-width:150px;
   display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
   border-radius:var(--r-md);
   /* Was a hardcoded light teal, which left white-on-pale-teal text in dark mode. */
   background:color-mix(in srgb, var(--ios-teal) 16%, transparent);
@@ -756,6 +772,9 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
   top:0;
   z-index:2;
 }
+.attendance-manager-table thead th {
+  background:var(--sticky-head-bg);
+}
 .attendance-manager-table th .attendance-day-label {
   display:block;
   color:var(--smartfill-muted);
@@ -768,11 +787,11 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
   background:var(--smartfill-surface);
 }
 .attendance-manager-table tbody tr:hover .sticky-col {
-  background:var(--smartfill-hover);
+  background:var(--sticky-hover-bg);
 }
 .attendance-manager-table thead .sticky-col {
   z-index:4;
-  background:var(--smartfill-table-head);
+  background:var(--sticky-head-bg);
 }
 .attendance-manager-table .employee-id-col {
   left:0;
@@ -1331,7 +1350,7 @@ html[data-theme="dark"] .missing-punch-cell .punch-placeholder { color:var(--ios
 }
 
 /* Monthly salary breakup and compliance block */
-.monthly-only { border-top:1px solid var(--smartfill-line); margin-top:4px; padding-top:14px; }
+.wage-panel { border-top:1px solid var(--smartfill-line); margin-top:4px; padding-top:14px; }
 .form-subhead { margin:0 0 10px; font-size:.82rem; font-weight:590; letter-spacing:.03em; text-transform:uppercase; color:var(--smartfill-muted); }
 .form-subhead:not(:first-child) { margin-top:18px; }
 .breakup-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; }
@@ -1394,3 +1413,69 @@ html[data-theme="dark"] .missing-punch-cell .punch-placeholder { color:var(--ios
 @media (max-width: 1100px) {
   .dashboard-grid-analytics { grid-template-columns:1fr; }
 }
+
+/* Employment status dropdown, colour-coded by state */
+.status-select { font-weight:590; }
+.status-select option[data-status="ACTIVE"] { color:var(--ios-green-text); }
+.status-select option[data-status="INACTIVE"] { color:var(--ios-orange-text); }
+.status-select option[data-status="LEFT"] { color:var(--ios-red-text); }
+.status-select option[data-status="TERMINATED"] { color:var(--ios-red-text); }
+.status-select[data-state="ACTIVE"] { color:var(--ios-green-text); }
+.status-select[data-state="INACTIVE"] { color:var(--ios-orange-text); }
+.status-select[data-state="LEFT"], .status-select[data-state="TERMINATED"] { color:var(--ios-red-text); }
+
+.weekoff-pill-count { flex:0 0 auto; max-width:none; background:var(--ios-fill-strong); color:var(--smartfill-muted); }
+
+/* Employee attendance as a month calendar */
+.attendance-calendar { margin-bottom:18px; }
+.calendar-weekdays,
+.calendar-week { display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:8px; }
+.calendar-weekdays { margin-bottom:8px; }
+.calendar-weekdays span {
+  text-align:center; font-size:.74rem; font-weight:590; letter-spacing:.04em;
+  text-transform:uppercase; color:var(--smartfill-muted);
+}
+.calendar-week { margin-bottom:8px; }
+.calendar-day {
+  display:flex; flex-direction:column; gap:5px; min-height:150px;
+  padding:9px; border-radius:var(--r-md);
+  border:1px solid var(--smartfill-line); background:var(--smartfill-surface);
+}
+.calendar-day.is-empty { border:0; background:transparent; min-height:0; }
+.calendar-day.is-missing { border-style:dashed; background:var(--ios-surface-2); }
+.calendar-date { display:flex; align-items:baseline; gap:6px; font-size:1.05rem; font-weight:640; letter-spacing:-.02em; color:var(--smartfill-ink); }
+/* The weekday label only earns its place once the column headings are hidden. */
+.calendar-weekday { display:none; font-size:.72rem; font-weight:510; color:var(--smartfill-muted); }
+@media (max-width: 1100px) { .calendar-weekday { display:inline; } }
+.calendar-day .status-badge {
+  align-self:flex-start; max-width:100%;
+  white-space:normal; text-align:left; line-height:1.25;
+  overflow-wrap:anywhere; word-break:break-word;
+}
+.calendar-punch { font-size:.74rem; color:var(--smartfill-muted); font-variant-numeric:tabular-nums; }
+.calendar-note {
+  font-size:.72rem; color:var(--smartfill-muted); line-height:1.3;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+}
+/* Push the controls to the bottom so they line up across the whole grid. */
+.calendar-override { margin-top:auto; font-size:.78rem; min-height:30px; padding:4px 7px; }
+.calendar-notes { font-size:.78rem; min-height:30px; padding:4px 7px; }
+.calendar-day.tone-ok { border-color:color-mix(in srgb, var(--ios-green) 34%, transparent); }
+.calendar-day.tone-leave { border-color:color-mix(in srgb, var(--ios-orange) 34%, transparent); }
+.calendar-day.tone-shortage { border-color:color-mix(in srgb, var(--ios-orange) 40%, transparent); }
+.calendar-day.is-error {
+  border-color:color-mix(in srgb, var(--ios-red) 40%, transparent);
+  background:color-mix(in srgb, var(--ios-red) 7%, transparent);
+}
+@media (max-width: 1100px) {
+  .calendar-weekdays { display:none; }
+  .calendar-week { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  .calendar-day.is-empty { display:none; }
+}
+@media (max-width: 620px) {
+  .calendar-week { grid-template-columns:1fr; }
+}
+.calendar-hours { font-weight:590; color:var(--smartfill-ink); }
+/* Days marked present by override rather than by punches */
+.status-offsite { background:color-mix(in srgb, var(--ios-teal) 18%, transparent); color:color-mix(in srgb, var(--ios-teal) 78%, var(--ios-label)); }
+.calendar-day.tone-offsite { border-color:color-mix(in srgb, var(--ios-teal) 38%, transparent); }

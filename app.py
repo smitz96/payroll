@@ -7,7 +7,7 @@ from flask_wtf.csrf import CSRFError
 from attendance import db
 from attendance.authentication import init_admin_user
 from attendance.employee_defaults import backfill_default_weekoffs
-from attendance.utils import format_ist_datetime
+from attendance.utils import format_ist_datetime, format_percent
 from config import Config
 
 csrf = CSRFProtect()
@@ -86,6 +86,9 @@ def ensure_schema_columns():
             ("allowance", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
             ("pf_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
             ("esic_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+            # Daily wage attendance bonus opt-out. Defaulting to 0 keeps every existing
+            # daily employee in the bonus, which is how it worked before the flag.
+            ("bonus_ignored", "BOOLEAN NOT NULL DEFAULT 0"),
         ):
             if column not in employee_columns:
                 db.session.execute(db.text(f"ALTER TABLE employee ADD COLUMN {column} {definition}"))
@@ -101,6 +104,15 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE payroll_result ADD COLUMN leave_encashment_days NUMERIC(8, 1) DEFAULT 0"))
         if "advance_deduction" not in payroll_columns:
             db.session.execute(db.text("ALTER TABLE payroll_result ADD COLUMN advance_deduction NUMERIC(12, 2) DEFAULT 0"))
+        # Daily wage attendance bonus. Existing rows keep 0, which is correct: months
+        # calculated before the bonus existed did not pay one.
+        for column, definition in (
+            ("absence_minutes", "INTEGER DEFAULT 0"),
+            ("attendance_bonus_percent", "NUMERIC(5, 2) DEFAULT 0"),
+            ("attendance_bonus_amount", "NUMERIC(12, 2) DEFAULT 0"),
+        ):
+            if column not in payroll_columns:
+                db.session.execute(db.text(f"ALTER TABLE payroll_result ADD COLUMN {column} {definition}"))
     if "payroll_month" in tables:
         payroll_month_columns = {column["name"] for column in inspector.get_columns("payroll_month")}
         if "encash_all_leaves" not in payroll_month_columns:
@@ -194,6 +206,7 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
     app.jinja_env.filters["ist_datetime"] = format_ist_datetime
+    app.jinja_env.filters["percent"] = format_percent
     register_static_versioning(app)
     register_error_pages(app)
     Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)

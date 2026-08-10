@@ -127,7 +127,7 @@
 <div class="alert alert-warning"><strong>Name mismatches</strong><br>{% for id, attendance_name, salary_name in mismatches %}{{ id }}: matched by Employee ID. Attendance: {{ attendance_name }}, Wage Master: {{ salary_name }}<br>{% endfor %}</div>
 {% endif %}
 
-{% macro payroll_employee_table(title, records, note="") -%}
+{% macro payroll_employee_table(title, records, note="", show_bonus=false) -%}
 <div class="module-card">
 <div class="module-card-header">
   <h2 class="module-card-title">{{ title }} <span class="text-muted">{{ records|length }}</span></h2>
@@ -145,6 +145,7 @@
       <th>Wage Type</th>
       <th>Status</th>
       <th>Base Salary</th>
+      {% if show_bonus %}<th>Attendance Bonus</th>{% endif %}
       <th>Final payable salary</th>
       <th>Warnings</th>
       <th>Action</th>
@@ -159,12 +160,13 @@
       <td>{{ s.salary_type or "Missing" }}</td>
       <td><span class="badge text-bg-{{ 'success' if r and r.calculation_status == 'Calculated' else 'warning' }}">{{ r.calculation_status if r else 'Not Calculated' }}</span></td>
       <td>{{ s.salary }}</td>
+      {% if show_bonus %}<td>{% if s.employee_id in bonus_excluded_ids %}<span class="text-muted">Excluded</span>{% elif not r or r.final_salary is none %}-{% elif not r.attendance_bonus_percent %}<span class="text-muted">Not earned</span>{% else %}{{ r.attendance_bonus_percent|percent }}% / {{ r.attendance_bonus_amount }}{% endif %}</td>{% endif %}
       <td>{% if r and r.final_salary is not none %}{{ r.final_salary }}{% else %}<strong>Not Calculated</strong>{% endif %}</td>
       <td>{{ s.warning }} {{ r.message if r else "" }}</td>
       <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.employee', month=month, employee_id=s.employee_id) }}">Details</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="8" class="text-muted">No {{ title|lower }} found.</td></tr>
+    <tr><td colspan="{{ 9 if show_bonus else 8 }}" class="text-muted">No {{ title|lower }} found.</td></tr>
     {% endfor %}
   </tbody>
 </table>
@@ -176,7 +178,7 @@
 {{ payroll_employee_table("Monthly wage employees", monthly_salaries, "Monthly wage calculation includes working days, week offs, paid leave, leave earned, leave encashment, loan, advance, overtime, and less-hours rules.") }}
 {% endif %}
 {% if wage_filter in (none, "DAILY") %}
-{{ payroll_employee_table("Daily wage employees", daily_salaries, "Daily wage calculation pays working days plus holidays only. Week offs and leave balance are not included; loan, advance, overtime, and less-hours rules still apply.") }}
+{{ payroll_employee_table("Daily wage employees", daily_salaries, "Daily wage calculation pays working days plus holidays only. Week offs and leave balance are not included; loan, advance, overtime, and less-hours rules still apply. In place of leave, a monthly attendance bonus is added: 10% of the earned wage with no absence at all, 5% with absence up to " ~ bonus_allowance_duration ~ ", and nothing beyond that. Absence counts short days as well as full days off.", show_bonus=true) }}
 {% endif %}
 {% if other_salaries and not wage_filter %}
 {{ payroll_employee_table("Other wage employees", other_salaries, "These wage types are not configured for automatic payroll calculation.") }}

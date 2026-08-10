@@ -20,6 +20,22 @@
         </tbody>
       </table>
     </div>
+    <div class="tool-panel mt-3">
+      <h2 class="section-title">Daily Wage Attendance Bonus</h2>
+      <p class="text-muted">Daily wage employees are not offered leave. In its place they earn a monthly attendance bonus. Absence is measured against a full working day and includes late arrival and early leaving, so a day paid in full can still carry absence minutes. Week offs and holidays never count as absence.</p>
+      <table class="table table-sm smart-table">
+        <thead><tr><th>Rule</th><th>Value</th><th>Effect</th></tr></thead>
+        <tbody>
+        {% for rule in daily_bonus_rules %}
+        <tr>
+          <th>{{ rule.label }}</th>
+          <td><strong>{{ rule.value }}</strong></td>
+          <td class="text-muted">{{ rule.detail }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
   <div class="col-lg-4">
     <div class="tool-panel">

@@ -7,7 +7,16 @@ from attendance.models import AuditLog, Employee, SalaryRecord
 from attendance.utils import clean, decimal_money, normalize_salary_type
 
 ACTIVE_STATUS = "ACTIVE"
-DISABLED_STATUSES = {"LEFT", "TERMINATED"}
+# Only ACTIVE employees are included in payroll. INACTIVE is a reversible pause;
+# LEFT and TERMINATED are end-of-employment states kept for history.
+EMPLOYMENT_STATUSES = (
+    ("ACTIVE", "Active"),
+    ("INACTIVE", "Inactive"),
+    ("LEFT", "Left"),
+    ("TERMINATED", "Terminated"),
+)
+EMPLOYMENT_STATUS_KEYS = {key for key, _label in EMPLOYMENT_STATUSES}
+DISABLED_STATUSES = {"INACTIVE", "LEFT", "TERMINATED"}
 DISABLE_CONFIRMATION_TEXT = "confirm"
 MASTER_IMPORT_REQUIRED_COLUMNS = {"Employee ID", "Wage Type", "Salary"}
 
@@ -23,6 +32,8 @@ SALARY_COMPONENTS = (
 COMPONENT_COLUMN_ALIASES = {"basic_salary": ("Basic", "Basic Salary"), "hra": ("HRA",), "allowance": ("Allowance",)}
 RETIRED_IMPORT_COLUMNS = ("Conveyance Allowance",)
 COMPLIANCE_FLAGS = (("pf_enabled", "PF"), ("esic_enabled", "ESIC"))
+# Daily wage only, the mirror image of the monthly-only breakup and compliance fields.
+DAILY_ONLY_FLAGS = (("bonus_ignored", "Ignore Monthly Bonus"),)
 YES_VALUES = {"yes", "y", "true", "1", "enabled", "applicable"}
 NO_VALUES = {"no", "n", "false", "0", "disabled", "not applicable", ""}
 
@@ -69,22 +80,23 @@ def active_master_employees():
 
 
 def employee_active_for_payroll_month(employee, payroll_month):
+    """Only ACTIVE employees take part in payroll.
+
+    Marking someone Inactive, Left or Terminated removes them from every open
+    payroll month immediately, including one they have already been calculated in;
+    recalculate that month to drop their result.
+    """
     if not employee:
         return True
-    if employee.employment_status == ACTIVE_STATUS:
-        return True
-    if employee.employment_status not in DISABLED_STATUSES:
-        return True
-    if not employee.inactive_at:
-        return False
-    inactive_month = employee.inactive_at.strftime("%Y-%m")
-    return str(payroll_month or "") <= inactive_month
+    return employee.employment_status == ACTIVE_STATUS
 
 
 def employee_master_export_rows():
     rows = []
     for employee in sorted(Employee.query.all(), key=employee_sort_value):
-        monthly = normalize_salary_type(employee.salary_type) == "MONTHLY"
+        wage_group = normalize_salary_type(employee.salary_type)
+        monthly = wage_group == "MONTHLY"
+        daily = wage_group == "DAILY"
         rows.append({
             "Employee ID": employee.id,
             "Name": employee.name,
@@ -101,6 +113,9 @@ def employee_master_export_rows():
             "ESIC": ("Yes" if employee.esic_enabled else "No") if monthly else "",
             "Ignore OT": "Yes" if employee.ot_ignored else "No",
             "Ignore Less Hours": "Yes" if employee.less_hours_ignored else "No",
+            # The attendance bonus is a daily wage rule, so the column is blank for
+            # monthly just as the breakup columns are blank for daily.
+            "Ignore Monthly Bonus": ("Yes" if employee.bonus_ignored else "No") if daily else "",
         })
     return list(EMPLOYEE_MASTER_SAMPLE_ROWS) + rows
 
@@ -108,6 +123,7 @@ def employee_master_export_rows():
 EMPLOYEE_MASTER_EXPORT_COLUMNS = [
     "Employee ID", "Name", "Department", "Designation", "Wage Type", "Salary",
     "Basic", "HRA", "Allowance", "PF", "ESIC", "Ignore OT", "Ignore Less Hours",
+    "Ignore Monthly Bonus",
 ]
 
 # Illustrative rows shipped at the top of the export so the expected shape of every
@@ -119,12 +135,14 @@ EMPLOYEE_MASTER_SAMPLE_ROWS = [
         "Designation": "Accounts Executive", "Wage Type": "Monthly", "Salary": "50000",
         "Basic": "35000", "HRA": "10000", "Allowance": "5000",
         "PF": "Yes", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
+        "Ignore Monthly Bonus": "",
     },
     {
         "Employee ID": "2", "Name": "Elvis D Grey", "Department": "Mechanical Production",
         "Designation": "Helper", "Wage Type": "Daily", "Salary": "5000",
         "Basic": "0", "HRA": "0", "Allowance": "0",
         "PF": "No", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
+        "Ignore Monthly Bonus": "No",
     },
 ]
 SAMPLE_ROW_KEYS = {(row["Employee ID"], row["Name"]) for row in EMPLOYEE_MASTER_SAMPLE_ROWS}
@@ -137,6 +155,7 @@ def is_sample_row(row):
 
 def apply_employee_master_import(rows, actor):
     changed = []
+    created_ids = []
     for row_number, row in enumerate(rows, start=2):
         # The export leads with illustrative rows; ignore them on the way back in so
         # an untouched export can be re-imported without error.
@@ -145,26 +164,38 @@ def apply_employee_master_import(rows, actor):
         employee_id = clean(row.get("Employee ID"))
         if not employee_id:
             raise ValueError(f"Row {row_number}: Employee ID is required.")
-        employee = db.session.get(Employee, employee_id)
-        if not employee:
-            raise ValueError(f"Row {row_number}: Employee ID {employee_id} was not found.")
-        if employee.employment_status in DISABLED_STATUSES:
-            raise ValueError(f"Row {row_number}: Disabled employee {employee_id} cannot be edited.")
-
+        imported_name = clean(row.get("Name"))
         wage_type = clean(row.get("Wage Type"))
         normalized_type = normalize_salary_type(wage_type)
-        existing_type = normalize_salary_type(employee.salary_type)
         if wage_type and not normalized_type:
             raise ValueError(f"Row {row_number}: Wage type is required.")
+
+        employee = db.session.get(Employee, employee_id)
+        is_new = employee is None
+        if is_new:
+            # An unknown Employee ID creates the record, so a bulk file can onboard
+            # new starters. Name and wage type are mandatory because nothing exists
+            # to fall back on.
+            if not imported_name:
+                raise ValueError(f"Row {row_number}: Name is required to add new Employee ID {employee_id}.")
+            if not normalized_type:
+                raise ValueError(f"Row {row_number}: Wage type is required to add new Employee ID {employee_id}.")
+            employee = Employee(id=employee_id, name=imported_name, employment_status=ACTIVE_STATUS)
+            db.session.add(employee)
+            db.session.flush()
+            created_ids.append(f"{employee_id} - {imported_name}")
+        elif employee.employment_status in DISABLED_STATUSES:
+            raise ValueError(f"Row {row_number}: Disabled employee {employee_id} cannot be edited.")
+
+        existing_type = normalize_salary_type(employee.salary_type)
         if existing_type and normalized_type and existing_type != normalized_type:
             raise ValueError(
                 f"Row {row_number}: Wage type cannot be changed for active employee {employee_id}. "
                 "Mark the employee as left or terminated first, then add a new Employee ID."
             )
-        # Identity is fixed once a record exists: the ID is the match key and the name
-        # can only be corrected on the employee page, never silently by a bulk file.
-        imported_name = clean(row.get("Name"))
-        if imported_name and imported_name != (employee.name or ""):
+        # Identity is fixed once a record exists: the ID is the match key and can never
+        # change, and the name can only be corrected on the employee page.
+        if not is_new and imported_name and imported_name != (employee.name or ""):
             raise ValueError(
                 f"Row {row_number}: Employee ID {employee_id} is already named \"{employee.name}\". "
                 f"Import cannot rename it to \"{imported_name}\". Edit the name on the employee page instead, "
@@ -233,6 +264,12 @@ def apply_employee_master_import(rows, actor):
                 if flag != bool(getattr(employee, key)):
                     changes.append(f"{label} {'Yes' if getattr(employee, key) else 'No'} -> {'Yes' if flag else 'No'}")
                     setattr(employee, key, flag)
+            for _key, label in DAILY_ONLY_FLAGS:
+                if clean(row.get(label)):
+                    raise ValueError(
+                        f"Row {row_number}: {label} only applies to daily wage employees. "
+                        f"Employee {employee_id} is {employee.salary_type or 'not set'}."
+                    )
         else:
             # Reject breakup values on a daily wage row instead of silently dropping them.
             for key, label in SALARY_COMPONENTS:
@@ -248,6 +285,13 @@ def apply_employee_master_import(rows, actor):
                         f"Row {row_number}: {label} only applies to monthly wage employees. "
                         f"Employee {employee_id} is {employee.salary_type or 'not set'}."
                     )
+            for key, label in DAILY_ONLY_FLAGS:
+                if label not in row:
+                    continue
+                flag = parse_yes_no(row.get(label), f"Row {row_number}: {label}")
+                if flag != bool(getattr(employee, key)):
+                    changes.append(f"{label} {'Yes' if getattr(employee, key) else 'No'} -> {'Yes' if flag else 'No'}")
+                    setattr(employee, key, flag)
 
         for field, label in (("ot_ignored", "Ignore OT"), ("less_hours_ignored", "Ignore Less Hours")):
             if label not in row:
@@ -257,45 +301,58 @@ def apply_employee_master_import(rows, actor):
                 changes.append(f"{label} {'Yes' if getattr(employee, field) else 'No'} -> {'Yes' if flag else 'No'}")
                 setattr(employee, field, flag)
 
-        if not changes:
+        if is_new:
+            created_defaults = ensure_employee_defaults(employee_id)
+            if created_defaults:
+                changes.append(f"Defaults created: {', '.join(created_defaults)}")
+        if not changes and not is_new:
             continue
         db.session.add(employee)
         db.session.add(AuditLog(
             actor=actor,
-            action="Employee Master Bulk Updated",
-            detail=f"{employee.id} - {employee.name}; " + " | ".join(changes),
+            action="Employee Master Bulk Created" if is_new else "Employee Master Bulk Updated",
+            detail=f"{employee.id} - {employee.name}; " + " | ".join(changes or ["Created by import"]),
         ))
         changed.append(employee)
     if changed:
         db.session.add(AuditLog(
             actor=actor,
             action="Employee Master Imported",
-            detail=f"{len(changed)} employee master row(s) updated by bulk import.",
+            detail=(
+                f"{len(created_ids)} added, {len(changed) - len(created_ids)} updated by bulk import."
+                + (f" Added: {', '.join(created_ids)}" if created_ids else "")
+            ),
         ))
     db.session.flush()
-    return changed
+    return changed, created_ids
 
 
 def save_master_employee(form, actor):
     employee_id = clean(form.get("employee_id"))
     if not employee_id:
         raise ValueError("Employee ID is required.")
-    name = clean(form.get("name"))
+    existing = db.session.get(Employee, employee_id)
+    # A non-active employee has every field but the status dropdown disabled, so the
+    # browser posts only the status. Fall back to what is stored for the rest.
+    name = clean(form.get("name")) or (existing.name if existing else "")
     if not name:
         raise ValueError("Employee name is required.")
-    salary_type = clean(form.get("wage_type") or form.get("salary_type"))
+    salary_type = clean(form.get("wage_type") or form.get("salary_type")) or (existing.salary_type if existing else "")
     normalized_type = normalize_salary_type(salary_type)
     if not normalized_type:
         raise ValueError("Wage type is required.")
-    salary = decimal_money(form.get("salary"))
+    salary = decimal_money(form.get("salary")) if clean(form.get("salary")) else Decimal(existing.salary or 0) if existing else Decimal("0")
     if salary < 0:
         raise ValueError("Salary cannot be negative.")
-    employee = db.session.get(Employee, employee_id)
+    employee = existing
     created = employee is None
     if not employee:
         employee = Employee(id=employee_id, name=name)
-    if employee.employment_status in DISABLED_STATUSES:
-        raise ValueError("Disabled employees cannot be edited. Create a new employee record if needed.")
+    requested_status = clean(form.get("employment_status")).upper() or None
+    if requested_status and requested_status not in EMPLOYMENT_STATUS_KEYS:
+        raise ValueError(f"Unknown employment status: {form.get('employment_status')}")
+    if employee.employment_status in DISABLED_STATUSES and requested_status is None:
+        raise ValueError("Disabled employees cannot be edited. Set the status back to Active first.")
     existing_type = normalize_salary_type(employee.salary_type)
     if existing_type and existing_type != normalized_type:
         raise ValueError("Wage type cannot be changed for an active employee. Mark the employee as left or terminated first, then add the same employee under a new ID with the updated wage group.")
@@ -305,10 +362,12 @@ def save_master_employee(form, actor):
         "salary": Decimal(employee.salary or 0),
         "department": employee.department or "",
         "designation": employee.designation or "",
+        "employment_status": employee.employment_status or ACTIVE_STATUS,
         "ot_ignored": bool(employee.ot_ignored),
         "less_hours_ignored": bool(employee.less_hours_ignored),
         **{key: Decimal(getattr(employee, key) or 0) for key, _ in SALARY_COMPONENTS},
         **{key: bool(getattr(employee, key)) for key, _ in COMPLIANCE_FLAGS},
+        **{key: bool(getattr(employee, key)) for key, _ in DAILY_ONLY_FLAGS},
     }
 
     controls_present = "master_controls_present" in form
@@ -330,12 +389,19 @@ def save_master_employee(form, actor):
         for key, label in COMPLIANCE_FLAGS:
             if controls_present or key in form:
                 setattr(employee, key, form.get(key) == "on")
+        # The attendance bonus is a daily wage rule, so a monthly record never carries
+        # the opt-out, even if a stale form field posts one.
+        for key, _ in DAILY_ONLY_FLAGS:
+            setattr(employee, key, False)
     else:
         # Daily wage has no breakup or statutory deductions; keep the columns clean.
         for key, _ in SALARY_COMPONENTS:
             setattr(employee, key, Decimal("0"))
         for key, _ in COMPLIANCE_FLAGS:
             setattr(employee, key, False)
+        for key, _ in DAILY_ONLY_FLAGS:
+            if controls_present or key in form:
+                setattr(employee, key, form.get(key) == "on")
     employee.name = name
     employee.salary_type = salary_type
     employee.normalized_salary_type = normalized_type
@@ -355,7 +421,15 @@ def save_master_employee(form, actor):
         employee.less_hours_ignored = form.get("less_hours_ignored") == "on"
     elif created:
         employee.less_hours_ignored = False
-    employee.employment_status = ACTIVE_STATUS
+    old_status = employee.employment_status or ACTIVE_STATUS
+    new_status = requested_status or (ACTIVE_STATUS if created else old_status)
+    employee.employment_status = new_status
+    if new_status == ACTIVE_STATUS:
+        employee.inactive_at = None
+        employee.inactive_reason = None
+    elif new_status != old_status:
+        employee.inactive_at = datetime.utcnow()
+        employee.inactive_reason = clean(form.get("inactive_reason")) or None
     db.session.add(employee)
     created_defaults = ensure_employee_defaults(employee_id)
     action = "Employee Master Created" if created else "Employee Master Updated"
@@ -379,14 +453,17 @@ def save_master_employee(form, actor):
             new_value = Decimal(getattr(employee, key) or 0)
             if old_values[key] != new_value:
                 changes.append(f"{label} {old_values[key]} -> {new_value}")
-        for key, label in COMPLIANCE_FLAGS:
+        if old_values["employment_status"] != employee.employment_status:
+            changes.append(f"Status {old_values['employment_status']} -> {employee.employment_status}")
+        for key, label in COMPLIANCE_FLAGS + DAILY_ONLY_FLAGS:
             if old_values[key] != bool(getattr(employee, key)):
                 changes.append(f"{label} {'Yes' if old_values[key] else 'No'} -> {'Yes' if getattr(employee, key) else 'No'}")
     detail = (
         f"{employee_id} - {name}; Wage Type {salary_type}; Salary {salary}; "
         f"Department {employee.department or 'Not Set'}; Designation {employee.designation or 'Not Set'}; "
         f"Ignore OT {'Yes' if employee.ot_ignored else 'No'}; Ignore Less Hours {'Yes' if employee.less_hours_ignored else 'No'}; "
-        f"PF {'Yes' if employee.pf_enabled else 'No'}; ESIC {'Yes' if employee.esic_enabled else 'No'}"
+        f"PF {'Yes' if employee.pf_enabled else 'No'}; ESIC {'Yes' if employee.esic_enabled else 'No'}; "
+        f"Ignore Monthly Bonus {'Yes' if employee.bonus_ignored else 'No'}"
     )
     if changes:
         detail += "; Changes: " + " | ".join(changes)
@@ -436,15 +513,24 @@ def enable_master_employee(employee_id, confirmation, actor):
 
 
 def sync_salary_records_from_master(month, actor):
+    """Copy wage data from Employee Master into the month's salary records.
+
+    Returns (created, updated, skipped) where `skipped` lists each employee left
+    out and why, so a silent "3 skipped" never hides a payroll gap.
+    """
     created = 0
     updated = 0
-    skipped = 0
+    skipped = []
     for employee in sorted(Employee.query.all(), key=employee_sort_value):
+        label = f"{employee.id} - {employee.name}"
         if not employee_active_for_payroll_month(employee, month):
-            skipped += 1
+            skipped.append(f"{label}: status is {(employee.employment_status or 'unknown').title()}")
             continue
-        if not employee.normalized_salary_type or Decimal(employee.salary or 0) <= 0:
-            skipped += 1
+        if not employee.normalized_salary_type:
+            skipped.append(f"{label}: no wage type set")
+            continue
+        if Decimal(employee.salary or 0) <= 0:
+            skipped.append(f"{label}: salary is zero")
             continue
         salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=employee.id).first()
         if salary:
@@ -458,6 +544,9 @@ def sync_salary_records_from_master(month, actor):
         salary.salary = employee.salary
         salary.warning = ""
         db.session.add(salary)
-    db.session.add(AuditLog(actor=actor, action="Wage Master Loaded", detail=f"{month}: {created} created; {updated} updated; {skipped} skipped"))
+    detail = f"{month}: {created} created; {updated} updated; {len(skipped)} skipped"
+    if skipped:
+        detail += " | Skipped: " + " | ".join(skipped)
+    db.session.add(AuditLog(actor=actor, action="Wage Master Loaded", detail=detail))
     db.session.flush()
     return created, updated, skipped

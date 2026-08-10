@@ -1,4 +1,5 @@
 """Regression tests for defects found during the UI and workflow review."""
+import pathlib
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
@@ -7,7 +8,7 @@ from pypdf import PdfReader
 
 from attendance import db
 from attendance.calculator import calculate_payroll_month
-from attendance.models import AttendanceRecord, AuditLog, Employee, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
+from attendance.models import AttendanceOverride, AttendanceRecord, AuditLog, Employee, Holiday, LeaveLedger, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
 from attendance.parser import implausible_session_minutes, parse_punch_times, working_minutes_from_punches
 from attendance.settings import MONTHLY_RULES, monthly_rule_rows
 from attendance.utils import display_month, is_valid_payroll_month
@@ -1128,7 +1129,7 @@ def test_master_export_leads_with_sample_rows(client, app):
     login(client)
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
-    assert lines[0].endswith("Ignore OT,Ignore Less Hours")
+    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus")
     assert lines[1].startswith("1,John C Smith,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,Yes,No,Yes,No")
     assert lines[2].startswith("2,Elvis D Grey,Mechanical Production,Helper,Daily,5000,0,0,0,No,No,Yes,No")
     # The sample breakup demonstrates the rule it documents.
@@ -1289,3 +1290,845 @@ def test_report_totals_match_the_payroll_figures_not_rounded_row_sums(app):
         assert f"{stored_total:,.2f}" in text, f"report should show the payroll total {stored_total}"
         if per_day_sum != stored_total:
             assert f"{per_day_sum:,.2f}" not in text, "report must not show the drifted row sum"
+
+
+# --- Employment status dropdown ---
+
+def test_status_dropdown_offers_all_four_states(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    for path in ("/master", "/master/5"):
+        page = client.get(path).data
+        assert b'name="employment_status"' in page, path
+        for value in (b'value="ACTIVE"', b'value="INACTIVE"', b'value="LEFT"', b'value="TERMINATED"'):
+            assert value in page, f"{value} missing from {path}"
+
+
+def test_status_change_saves_and_is_audited(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    client.post("/master", data={
+        "employee_id": "5", "name": "Worker", "wage_type": "Monthly", "salary": "30000",
+        "master_controls_present": "1", "employment_status": "INACTIVE",
+    }, follow_redirects=True)
+    with app.app_context():
+        employee = db.session.get(Employee, "5")
+        assert employee.employment_status == "INACTIVE"
+        assert employee.inactive_at is not None
+        audit = AuditLog.query.filter_by(action="Employee Master Updated").first()
+        assert "Status ACTIVE -> INACTIVE" in audit.detail
+
+
+def test_status_only_save_works_when_other_fields_are_disabled(client, app):
+    """A non-active employee posts only the status; the rest must not be wiped."""
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", department="Design", designation="Engineer",
+                                salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                salary=Decimal("30000"), employment_status="LEFT"))
+        db.session.commit()
+
+    login(client)
+    response = client.post("/master/5", data={
+        "employee_id": "5", "master_controls_present": "1", "employment_status": "ACTIVE",
+    }, follow_redirects=True)
+    assert b"Employee master updated" in response.data
+    with app.app_context():
+        employee = db.session.get(Employee, "5")
+        assert employee.employment_status == "ACTIVE"
+        assert employee.inactive_at is None
+        # Stored values survived a status-only submit.
+        assert employee.name == "Worker"
+        assert Decimal(employee.salary) == Decimal("30000")
+        assert employee.normalized_salary_type == "MONTHLY"
+
+
+def test_inactive_employee_is_excluded_from_payroll(client, app):
+    with app.app_context():
+        seed_mixed_month()
+        calculate_payroll_month("2026-07")
+        assert PayrollResult.query.filter_by(payroll_month="2026-07").count() == 2
+
+        db.session.get(Employee, "5").employment_status = "INACTIVE"
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        remaining = [r.employee_id for r in PayrollResult.query.filter_by(payroll_month="2026-07").all()]
+        assert "5" not in remaining
+
+
+def test_unknown_status_is_rejected(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    response = client.post("/master", data={
+        "employee_id": "5", "name": "Worker", "wage_type": "Monthly", "salary": "30000",
+        "master_controls_present": "1", "employment_status": "RETIRED",
+    }, follow_redirects=True)
+    assert b"Unknown employment status" in response.data
+    with app.app_context():
+        assert db.session.get(Employee, "5").employment_status == "ACTIVE"
+
+
+# --- Sticky table columns must be opaque or content scrolls through them ---
+
+def test_sticky_columns_use_opaque_backgrounds():
+    css = pathlib.Path("static/css/app.css").read_text()
+    for token in ("--sticky-head-bg", "--sticky-hover-bg"):
+        assert token in css
+    # The translucent tinted fills must not be used on a sticky cell.
+    sticky_rules = [
+        ".sticky-id-name-table thead th:first-child",
+        ".attendance-manager-table thead .sticky-col",
+    ]
+    for rule in sticky_rules:
+        index = css.index(rule)
+        block = css[index:index + 260]
+        assert "--smartfill-table-head" not in block, rule
+
+
+# --- Absences are settled against the leave balance automatically ---
+
+def seed_leave_month(month="2026-07", opening=Decimal("2")):
+    """One monthly employee with a stated opening leave balance."""
+    from attendance.models import LeaveLedger
+    db.session.add(PayrollMonth(month=month))
+    db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                            normalized_salary_type="MONTHLY", salary=Decimal("31000")))
+    db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+    db.session.add(SalaryRecord(payroll_month=month, employee_id="5", name="Worker",
+                                salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                salary=Decimal("31000")))
+    # Opening balance comes from a prior finalized month's carry-forward.
+    db.session.add(PayrollResult(payroll_month="2026-06", employee_id="5",
+                                 payroll_rule_type="MONTHLY", calculation_status="Calculated",
+                                 closing_leave=opening, final_salary=Decimal("31000")))
+    db.session.commit()
+
+
+def add_july_attendance(absent_days):
+    """Every July day punched 09:30-18:30 except Sundays and `absent_days`."""
+    for day in range(1, 32):
+        when = date(2026, 7, day)
+        punched = when.weekday() != 6 and day not in absent_days
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="5", employee_name="Worker",
+            date=when, day=when.strftime("%A"),
+            first_punch="09:30 AM" if punched else "",
+            last_punch="06:30 PM" if punched else "",
+            raw_working_hours="9h 00m" if punched else "",
+            actual_minutes=540 if punched else None,
+            parse_status="OK" if punched else "NEEDS_REVIEW",
+            warning="" if punched else "Missing punch and working hours",
+        ))
+    db.session.commit()
+
+
+def test_absences_consume_leave_then_fall_to_lop(app):
+    """The worked example: opening 2, absent on 3, 10, 14 and 22."""
+    with app.app_context():
+        seed_leave_month(opening=Decimal("2"))
+        add_july_attendance({3, 10, 14, 22})
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+
+        by_date = {row["date"]: row for row in result.detail_json}
+        # Opening balance of 2 covers the first two absences.
+        assert by_date["2026-07-03"]["attendance_status"] == "Paid Leave"
+        assert by_date["2026-07-10"]["attendance_status"] == "Paid Leave"
+        # Earned leave then covers the third in full ...
+        assert by_date["2026-07-14"]["attendance_status"] == "Paid Leave"
+        # ... and the fourth by half, with the other half unpaid.
+        assert by_date["2026-07-22"]["attendance_status"] == "Half-Day Paid Leave / Half-Day LOP"
+
+        assert Decimal(result.leave_earned) == Decimal("1.8")
+        assert Decimal(result.leave_used) == Decimal("3.5")
+        assert Decimal(result.closing_leave) == Decimal("0.3")
+        assert Decimal(result.lop_days) == Decimal("0.5")
+
+
+def test_absence_with_no_leave_balance_is_full_lop(app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance({3, 10})
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row for row in result.detail_json}
+        # Earned leave still accrues and covers what it can, oldest day first.
+        assert by_date["2026-07-03"]["attendance_status"] == "Paid Leave"
+        assert by_date["2026-07-10"]["attendance_status"] in {
+            "Half-Day Paid Leave / Half-Day LOP", "Absent / Attendance Missing",
+        }
+        assert Decimal(result.lop_days) > 0
+
+
+def test_no_punch_day_is_an_absence_not_a_review_item(app):
+    """167 no-punch days used to sit in Needs Review, neither paid nor deducted."""
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance({3})
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        statuses = {row["attendance_status"] for row in result.detail_json}
+        assert "Needs Review" not in statuses
+        assert result.calculation_status == "Calculated"
+
+
+def test_punch_error_still_needs_review(app):
+    """A genuine punch anomaly must not be silently absorbed as an absence."""
+    with app.app_context():
+        seed_leave_month(opening=Decimal("5"))
+        add_july_attendance(set())
+        record = AttendanceRecord.query.filter_by(payroll_month="2026-07", employee_id="5", date=date(2026, 7, 2)).one()
+        record.first_punch = "09:30 AM"
+        record.last_punch = ""
+        record.raw_working_hours = ""
+        record.actual_minutes = None
+        record.parse_status = "NEEDS_REVIEW"
+        record.warning = "Odd punch count"
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row for row in result.detail_json}
+        assert by_date["2026-07-02"]["attendance_status"] == "Needs Review"
+        assert result.calculation_status == "Needs Review"
+
+
+# --- Leave balance only moves once the month is finalized ---
+
+def test_draft_month_does_not_move_the_leave_balance(client, app):
+    from attendance.leave_balances import stored_leave_balance
+
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.add(PayrollMonth(month="2026-06", status="FINALIZED"))
+        db.session.add(PayrollResult(payroll_month="2026-06", employee_id="5",
+                                     payroll_rule_type="MONTHLY", calculation_status="Calculated",
+                                     closing_leave=Decimal("3.0"), final_salary=Decimal("30000")))
+        db.session.add(PayrollMonth(month="2026-07", status="DRAFT"))
+        db.session.add(PayrollResult(payroll_month="2026-07", employee_id="5",
+                                     payroll_rule_type="MONTHLY", calculation_status="Calculated",
+                                     closing_leave=Decimal("4.8"), final_salary=Decimal("30000")))
+        db.session.commit()
+
+        # July is still a draft, so the balance stays at June's carry-forward.
+        assert stored_leave_balance("5") == Decimal("3.0")
+
+        db.session.get(PayrollMonth, "2026-07").status = "FINALIZED"
+        db.session.commit()
+        assert stored_leave_balance("5") == Decimal("4.8")
+
+
+def test_leave_balance_page_flags_the_pending_month(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.add(PayrollMonth(month="2026-07", status="DRAFT"))
+        db.session.add(PayrollResult(payroll_month="2026-07", employee_id="5",
+                                     payroll_rule_type="MONTHLY", calculation_status="Calculated",
+                                     closing_leave=Decimal("1.8"), final_salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    page = client.get("/leave-balances").data
+    assert b"is not finalized" in page
+    assert b"pending" in page
+
+
+# --- Daily wage no-punch days ---
+
+def test_daily_wage_missing_punch_is_absent(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="6", name="Day Worker", salary_type="Daily",
+                                normalized_salary_type="DAILY", salary=Decimal("600")))
+        db.session.add(WeekOffRule(employee_id="6", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="6", name="Day Worker",
+                                    salary_type="Daily", normalized_salary_type="DAILY", salary=Decimal("600")))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="6", employee_name="Day Worker",
+                                        date=date(2026, 7, 1), day="Wednesday", parse_status="NEEDS_REVIEW",
+                                        warning="Missing punch and working hours"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="6", employee_name="Day Worker",
+                                        date=date(2026, 7, 2), day="Thursday", first_punch="09:30 AM",
+                                        last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                        actual_minutes=540, parse_status="OK"))
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        by_date = {row["date"]: row["attendance_status"] for row in result.detail_json}
+        assert by_date["2026-07-01"] == "Absent / Attendance Missing"
+        assert by_date["2026-07-02"] == "Full Day Present"
+        # Daily wage has no leave, so the absent day is simply not paid.
+        assert result.calculation_status == "Calculated"
+        assert Decimal(result.paid_working_days) == Decimal("1")
+
+
+# --- Day notes only appear when they explain an exception ---
+
+def test_present_days_carry_no_explanatory_note(client, app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance({3})
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data
+    assert b"Actual duration meets" not in page
+    # A day already resolved into leave or LOP no longer shows the raw import warning.
+    assert b"Missing punch and working hours" not in page
+
+
+# --- Bulk import can add new employees ---
+
+def import_master(client, body):
+    from io import BytesIO
+    return client.post("/master/import", data={
+        "employee_master_csv": (BytesIO(body), "master.csv")
+    }, content_type="multipart/form-data", follow_redirects=True)
+
+
+def test_import_adds_new_employees_alongside_existing_ones(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="1", name="Manish C Hirani", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("68200")))
+        db.session.add(Employee(id="2", name="Bijal T Patel", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("22500")))
+        db.session.commit()
+
+    login(client)
+    response = import_master(client, (
+        b"Employee ID,Name,Department,Designation,Wage Type,Salary\n"
+        b"1,Manish C Hirani,Design,Design Manager,Monthly,70000\n"
+        b"2,Bijal T Patel,Purchase,Purchase Engineer,Monthly,22500\n"
+        b"3,New Starter,Service,Technician,Monthly,31000\n"
+        b"4,Day Starter,Production,Helper,Daily,650\n"
+    ))
+    assert b"2 employee(s) added, 2 updated" in response.data
+
+    with app.app_context():
+        new_monthly = db.session.get(Employee, "3")
+        assert new_monthly.name == "New Starter"
+        assert new_monthly.normalized_salary_type == "MONTHLY"
+        assert Decimal(new_monthly.salary) == Decimal("31000")
+        assert new_monthly.department == "Service"
+        assert new_monthly.employment_status == "ACTIVE"
+        # A new employee needs the same defaults the Add Employee form creates.
+        assert WeekOffRule.query.filter_by(employee_id="3").count() == 1
+        assert LeaveLedger.query.filter_by(employee_id="3", transaction_type="OPENING").count() == 1
+
+        assert db.session.get(Employee, "4").normalized_salary_type == "DAILY"
+        # The existing employee was updated, not duplicated.
+        assert Decimal(db.session.get(Employee, "1").salary) == Decimal("70000")
+        assert Employee.query.count() == 4
+        assert AuditLog.query.filter_by(action="Employee Master Bulk Created").count() == 2
+
+
+def test_new_employee_needs_a_name_and_wage_type(client, app):
+    login(client)
+    missing_name = import_master(client, b"Employee ID,Name,Wage Type,Salary\n9,,Monthly,30000\n")
+    assert b"Name is required to add new Employee ID 9" in missing_name.data
+
+    missing_type = import_master(client, b"Employee ID,Name,Wage Type,Salary\n9,New Person,,30000\n")
+    assert b"Wage type is required to add new Employee ID 9" in missing_type.data
+
+    with app.app_context():
+        assert db.session.get(Employee, "9") is None
+
+
+def test_existing_employee_still_cannot_be_renamed_by_import(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="1", name="Manish C Hirani", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("68200")))
+        db.session.commit()
+
+    login(client)
+    blocked = import_master(client, (
+        b"Employee ID,Name,Wage Type,Salary\n"
+        b"1,Manish Hirani,Monthly,68200\n"
+        b"3,Brand New,Monthly,25000\n"
+    ))
+    assert b"already named" in blocked.data
+    with app.app_context():
+        assert db.session.get(Employee, "1").name == "Manish C Hirani"
+        # The whole import is rejected, so the new employee is not created either.
+        assert db.session.get(Employee, "3") is None
+
+
+def test_new_employee_breakup_must_reconcile(client, app):
+    login(client)
+    bad = import_master(client, (
+        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance\n"
+        b"7,Breakup Starter,Monthly,30000,15000,6000,5000\n"
+    ))
+    assert b"must add up to the salary" in bad.data
+    with app.app_context():
+        assert db.session.get(Employee, "7") is None
+
+    good = import_master(client, (
+        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance,PF,ESIC,Ignore OT,Ignore Less Hours\n"
+        b"7,Breakup Starter,Monthly,30000,15000,6000,9000,Yes,No,Yes,No\n"
+    ))
+    assert b"1 employee(s) added" in good.data
+    with app.app_context():
+        employee = db.session.get(Employee, "7")
+        assert Decimal(employee.basic_salary) == Decimal("15000")
+        assert employee.pf_enabled is True
+        assert employee.ot_ignored is True
+        assert employee.less_hours_ignored is False
+
+
+# --- A split day must not read as one continuous session ---
+
+def test_split_day_shows_each_punch_pair():
+    from attendance.reports import punch_sessions
+
+    # Real case: in 09:34, out 10:55, back 17:43, out 18:30 is 2h 08m, not 8h 56m.
+    assert punch_sessions(["09:34 AM", "10:55 AM", "05:43 PM", "06:30 PM"]) == [
+        "09:34 AM - 10:55 AM", "05:43 PM - 06:30 PM",
+    ]
+    assert punch_sessions(["09:30 AM", "06:30 PM"]) == ["09:30 AM - 06:30 PM"]
+    # An odd punch count is shown as incomplete rather than silently paired.
+    assert punch_sessions(["09:30 AM"]) == ["09:30 AM - ?"]
+    assert punch_sessions([]) == []
+    # Falls back to first/last when no punch list was stored.
+    assert punch_sessions([], "09:30 AM", "06:30 PM") == ["09:30 AM - 06:30 PM"]
+
+
+def test_wage_sync_reports_which_employees_were_skipped(client, app):
+    from attendance.master import sync_salary_records_from_master
+
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="1", name="Paid Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.add(Employee(id="2", name="Zero Salary", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("0")))
+        db.session.add(Employee(id="3", name="No Wage Type", salary=Decimal("500")))
+        db.session.add(Employee(id="4", name="Gone", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("20000"),
+                                employment_status="LEFT"))
+        db.session.commit()
+
+        created, updated, skipped = sync_salary_records_from_master("2026-07", "admin")
+        db.session.commit()
+        assert created == 1 and updated == 0
+        assert len(skipped) == 3
+        joined = " | ".join(skipped)
+        assert "2 - Zero Salary: salary is zero" in joined
+        assert "3 - No Wage Type: no wage type set" in joined
+        assert "4 - Gone: status is Left" in joined
+        audit = AuditLog.query.filter_by(action="Wage Master Loaded").one()
+        assert "Skipped:" in audit.detail
+
+    login(client)
+    response = client.post("/payroll/2026-07", data={"action": "salary"}, follow_redirects=True)
+    # The count alone hid who was missing from payroll; each one is now named.
+    assert b"3 skipped" in response.data
+    assert b"Zero Salary: salary is zero" in response.data
+    assert b"Gone: status is Left" in response.data
+
+
+# --- "Worked On-Site" override marks a full present day ---
+
+def seed_override_month(status_day, override_status):
+    """One monthly employee, one working day carrying the given override."""
+    from attendance.models import AttendanceOverride
+    db.session.add(PayrollMonth(month="2026-07"))
+    db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                            normalized_salary_type="MONTHLY", salary=Decimal("31000")))
+    db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+    db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker",
+                                salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                salary=Decimal("31000")))
+    for day in range(1, 32):
+        when = date(2026, 7, day)
+        punched = when.weekday() != 6 and day != status_day
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="5", employee_name="Worker",
+            date=when, day=when.strftime("%A"),
+            first_punch="09:30 AM" if punched else "",
+            last_punch="06:30 PM" if punched else "",
+            raw_working_hours="9h 00m" if punched else "",
+            actual_minutes=540 if punched else None,
+            parse_status="OK" if punched else "NEEDS_REVIEW",
+        ))
+    db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="5",
+                                      date=date(2026, 7, status_day), manual_status=override_status))
+    db.session.commit()
+
+
+def test_worked_on_site_counts_as_a_full_present_day(app):
+    with app.app_context():
+        seed_override_month(3, "Worked On-Site")
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row for row in result.detail_json}
+        assert by_date["2026-07-03"]["attendance_status"] == "Worked On-Site"
+        assert by_date["2026-07-03"]["paid_day_value"] == "1"
+        # Paid, not deducted, and not consuming leave.
+        assert Decimal(result.lop_days) == Decimal("0")
+        assert Decimal(result.leave_used) == Decimal("0")
+        assert Decimal(result.paid_working_days) == Decimal("27")
+
+
+def test_work_from_home_override_is_also_paid(app):
+    """It was offered as an override but never handled, so the day vanished."""
+    with app.app_context():
+        seed_override_month(3, "Work From Home")
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(result.paid_working_days) == Decimal("27")
+        assert Decimal(result.lop_days) == Decimal("0")
+
+
+def test_worked_on_site_is_offered_and_shown(client, app):
+    with app.app_context():
+        seed_override_month(3, "Worked On-Site")
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data
+    assert b"Worked On-Site" in page
+    assert b"tone-offsite" in page
+
+    pdf = client.get("/reports/2026-07/employee/5.pdf")
+    assert pdf.status_code == 200
+    from io import BytesIO
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
+    assert "Worked On-Site" in text
+
+
+# --- Daily wage attendance bonus (notice of 08/12/2023) ---
+
+def seed_daily_bonus_month(minutes_by_day, month="2026-07", rate="600"):
+    """A daily wage employee with one attendance row per entry in minutes_by_day.
+
+    July 2026 starts on a Wednesday; Sundays are the default week off. Passing None
+    for a day's minutes means no punches at all, i.e. a full absence.
+    """
+    db.session.add(PayrollMonth(month=month))
+    db.session.add(Employee(id="6", name="Day Worker", salary_type="Daily",
+                            normalized_salary_type="DAILY", salary=Decimal(rate)))
+    db.session.add(WeekOffRule(employee_id="6", confirmed_at=datetime.utcnow()))
+    db.session.add(SalaryRecord(payroll_month=month, employee_id="6", name="Day Worker",
+                                salary_type="Daily", normalized_salary_type="DAILY", salary=Decimal(rate)))
+    for day, minutes in sorted(minutes_by_day.items()):
+        when = date(2026, 7, day)
+        if minutes is None:
+            db.session.add(AttendanceRecord(payroll_month=month, employee_id="6", employee_name="Day Worker",
+                                            date=when, day=when.strftime("%A"), parse_status="NEEDS_REVIEW",
+                                            warning="Missing punch and working hours"))
+            continue
+        db.session.add(AttendanceRecord(payroll_month=month, employee_id="6", employee_name="Day Worker",
+                                        date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                        last_punch="06:30 PM", raw_working_hours=f"{minutes // 60}h {minutes % 60:02d}m",
+                                        actual_minutes=minutes, parse_status="OK"))
+    db.session.commit()
+
+
+def daily_bonus_result(minutes_by_day, month="2026-07", rate="600"):
+    seed_daily_bonus_month(minutes_by_day, month=month, rate=rate)
+    calculate_payroll_month(month)
+    return PayrollResult.query.filter_by(payroll_month=month, employee_id="6").one()
+
+
+def test_full_attendance_earns_the_ten_percent_bonus(app):
+    with app.app_context():
+        # 1-4 July 2026 are Wed-Sat, all worked to the full nine hours.
+        result = daily_bonus_result({1: 540, 2: 540, 3: 540, 4: 540})
+        assert result.absence_minutes == 0
+        assert Decimal(result.attendance_bonus_percent) == Decimal("10")
+        # Four days at 600 is 2400 earned, so the bonus is 240.
+        assert Decimal(result.attendance_bonus_amount) == Decimal("240.00")
+        assert Decimal(result.final_salary) == Decimal("2640.00")
+
+
+def test_days_inside_the_full_day_grace_carry_no_absence(app):
+    """8h55m is a full day with no short hours, so it is not absence either."""
+    with app.app_context():
+        result = daily_bonus_result({1: 535, 2: 533, 3: 540, 4: 545})
+        assert result.absence_minutes == 0
+        assert Decimal(result.paid_working_days) == Decimal("4")
+        assert Decimal(result.less_hours_minutes) == 0
+        assert Decimal(result.attendance_bonus_percent) == Decimal("10")
+
+
+def test_short_day_below_the_grace_counts_as_absence(app):
+    with app.app_context():
+        # 8h 00m is below the 8h 50m grace, so the whole hour short counts.
+        result = daily_bonus_result({1: 480, 2: 540, 3: 540, 4: 540})
+        assert result.absence_minutes == 60
+        assert Decimal(result.attendance_bonus_percent) == Decimal("5")
+
+
+def test_absence_within_the_allowance_earns_five_percent(app):
+    with app.app_context():
+        # One full absence is nine hours; 2h 30m short on another makes 11h 30m.
+        result = daily_bonus_result({1: None, 2: 390, 3: 540, 4: 540})
+        assert result.absence_minutes == 540 + 150
+        assert Decimal(result.attendance_bonus_percent) == Decimal("5")
+
+
+def test_absence_beyond_the_allowance_earns_nothing(app):
+    with app.app_context():
+        result = daily_bonus_result({1: None, 2: None, 3: 540, 4: 540})
+        assert result.absence_minutes == 1080
+        assert Decimal(result.attendance_bonus_percent) == Decimal("0")
+        assert Decimal(result.attendance_bonus_amount) == Decimal("0.00")
+        # Two absent days out of four, so only two days are payable, with no bonus.
+        assert Decimal(result.final_salary) == Decimal("1200.00")
+
+
+def test_absence_allowance_boundary_is_inclusive(app):
+    with app.app_context():
+        # Exactly one and a half working days: one absent day plus 4h 30m elsewhere.
+        result = daily_bonus_result({1: None, 2: 270, 3: 540, 4: 540})
+        assert result.absence_minutes == 810
+        assert Decimal(result.attendance_bonus_percent) == Decimal("5")
+
+
+def test_one_minute_past_the_allowance_earns_nothing(app):
+    with app.app_context():
+        result = daily_bonus_result({1: None, 2: 269, 3: 540, 4: 540})
+        assert result.absence_minutes == 811
+        assert Decimal(result.attendance_bonus_percent) == Decimal("0")
+
+
+def test_week_offs_and_holidays_are_not_absence(app):
+    with app.app_context():
+        db.session.add(Holiday(date=date(2026, 7, 3), name="Test Holiday"))
+        db.session.commit()
+        # 5 July 2026 is a Sunday, the default week off; 3 July is now a holiday.
+        result = daily_bonus_result({1: 540, 2: 540, 3: 0, 4: 540, 5: 0})
+        assert result.holidays == 1
+        assert result.week_offs == 1
+        assert result.absence_minutes == 0
+        assert Decimal(result.attendance_bonus_percent) == Decimal("10")
+
+
+def test_worked_on_site_override_creates_no_absence(app):
+    with app.app_context():
+        seed_daily_bonus_month({1: 540, 2: 540, 3: None, 4: 540})
+        absent = AttendanceRecord.query.filter_by(employee_id="6", date=date(2026, 7, 3)).one()
+        db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="6", date=absent.date,
+                                          manual_status="Worked On-Site"))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        assert result.absence_minutes == 0
+        assert Decimal(result.attendance_bonus_percent) == Decimal("10")
+
+
+def test_monthly_wage_earns_no_attendance_bonus(app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(result.attendance_bonus_percent or 0) == Decimal("0")
+        assert Decimal(result.attendance_bonus_amount or 0) == Decimal("0")
+
+
+def test_attendance_bonus_is_shown_on_the_page_and_the_pdf(client, app):
+    with app.app_context():
+        daily_bonus_result({1: 540, 2: 540, 3: 540, 4: 540})
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/6").data
+    assert b"Attendance bonus" in page
+    assert b"Absence this month" in page
+
+    pdf = client.get("/reports/2026-07/employee/6.pdf")
+    assert pdf.status_code == 200
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
+    assert "Attendance Bonus" in text
+    assert "10% of earned wage" in text
+    assert "Absence This Month" in text
+
+
+# --- Split punch days under 3 hours need a human, not automatic LOP ---
+
+def add_punch_day(day, punches, minutes, month="2026-07", employee_id="5"):
+    when = date(2026, 7, day)
+    db.session.add(AttendanceRecord(
+        payroll_month=month, employee_id=employee_id, employee_name="Worker", date=when,
+        day=when.strftime("%A"), punches_json=punches, first_punch=punches[0] if punches else "",
+        last_punch=punches[-1] if punches else "", raw_working_hours=f"{minutes // 60}h {minutes % 60:02d}m",
+        actual_minutes=minutes, parse_status="OK"))
+
+
+def test_split_punches_under_three_hours_need_review_instead_of_lop(app):
+    """Rakesh's 21 July: 09:34-10:55 plus 17:43-18:30 is 2h 08m across two pairs."""
+    with app.app_context():
+        seed_month()
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("30000")))
+        add_punch_day(1, ["09:34 AM", "10:55 AM", "05:43 PM", "06:30 PM"], 128)
+        # A single short pair is a genuinely short day and stays loss of pay.
+        add_punch_day(2, ["09:34 AM", "11:42 AM"], 128)
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row for row in result.detail_json}
+        assert by_date["2026-07-01"]["attendance_status"] == "Needs Review"
+        assert "Multiple punch pairs" in by_date["2026-07-01"]["explanation"]
+        assert by_date["2026-07-02"]["attendance_status"] == "Full Day LOP"
+        # A day awaiting review is not silently deducted as loss of pay.
+        assert Decimal(result.lop_days) == Decimal("1")
+        assert result.calculation_status == "Needs Review"
+
+
+def test_split_punches_reaching_half_day_are_still_paid(app):
+    """The review rule only catches days that would otherwise be unpayable."""
+    with app.app_context():
+        seed_month()
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("30000")))
+        add_punch_day(1, ["09:30 AM", "12:30 PM", "02:00 PM", "03:00 PM"], 240)
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row["attendance_status"] for row in result.detail_json}
+        assert by_date["2026-07-01"] == "Half Day Present"
+
+
+def test_daily_wage_split_punches_under_three_hours_need_review(app):
+    with app.app_context():
+        seed_daily_bonus_month({})
+        add_punch_day(1, ["09:34 AM", "10:55 AM", "05:43 PM", "06:30 PM"], 128, employee_id="6")
+        add_punch_day(2, ["09:34 AM", "11:42 AM"], 128, employee_id="6")
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        by_date = {row["date"]: row["attendance_status"] for row in result.detail_json}
+        assert by_date["2026-07-01"] == "Needs Review"
+        assert by_date["2026-07-02"] == "Absent / Attendance Missing"
+
+
+def test_review_reason_is_shown_on_the_employee_page(client, app):
+    with app.app_context():
+        seed_month()
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("30000")))
+        add_punch_day(1, ["09:34 AM", "10:55 AM", "05:43 PM", "06:30 PM"], 128)
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data
+    assert b"Needs Review" in page
+    # The day parses cleanly, so the rule's own explanation is the only reason text.
+    assert b"Multiple punch pairs" in page
+
+
+# --- Per-employee opt-out from the daily wage attendance bonus ---
+
+def test_ignoring_the_bonus_removes_it_from_a_perfect_month(app):
+    with app.app_context():
+        seed_daily_bonus_month({1: 540, 2: 540, 3: 540, 4: 540})
+        db.session.get(Employee, "6").bonus_ignored = True
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        # Absence is still measured, so the page can show what the month would have earned.
+        assert result.absence_minutes == 0
+        assert Decimal(result.attendance_bonus_percent) == Decimal("0")
+        assert Decimal(result.attendance_bonus_amount) == Decimal("0.00")
+        assert Decimal(result.final_salary) == Decimal("2400.00")
+
+
+def test_bonus_opt_out_is_daily_only_on_the_employee_form(client, app):
+    login(client)
+    for wage_type, expected in (("Daily", True), ("Monthly", False)):
+        client.post("/master", data={
+            "employee_id": "9", "name": "Opt Out", "wage_type": wage_type, "salary": "500",
+            "master_controls_present": "1", "bonus_ignored": "on",
+        }, follow_redirects=True)
+        with app.app_context():
+            assert bool(db.session.get(Employee, "9").bonus_ignored) is expected
+            # A monthly record must not be left carrying a daily-only flag.
+            db.session.query(Employee).filter_by(id="9").delete()
+            db.session.commit()
+
+
+def test_bonus_flag_round_trips_through_export_and_import(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="6", name="Day Worker", salary_type="Daily",
+                                normalized_salary_type="DAILY", salary=Decimal("600"),
+                                bonus_ignored=True))
+        db.session.add(Employee(id="5", name="Month Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    export = client.get("/master/export.csv").data.decode()
+    assert "Ignore Monthly Bonus" in export.splitlines()[0]
+    rows = {line.split(",")[0]: line for line in export.splitlines()}
+    assert rows["6"].endswith("Yes")
+    # Monthly employees leave the column blank, the same way daily leaves Basic blank.
+    assert rows["5"].endswith(",")
+
+    # Re-importing an untouched export is a no-op, not an error.
+    assert b"imported" in import_master(client, export.encode()).data
+    with app.app_context():
+        assert db.session.get(Employee, "6").bonus_ignored is True
+
+    import_master(client, (
+        "Employee ID,Name,Wage Type,Salary,Ignore Monthly Bonus\n"
+        "6,Day Worker,Daily,600,No\n"
+    ).encode())
+    with app.app_context():
+        assert db.session.get(Employee, "6").bonus_ignored is False
+
+
+def test_import_rejects_the_bonus_flag_on_a_monthly_employee(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Month Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    body = (
+        "Employee ID,Name,Wage Type,Salary,Ignore Monthly Bonus\n"
+        "5,Month Worker,Monthly,30000,Yes\n"
+    ).encode()
+    page = import_master(client, body)
+    assert b"only applies to daily wage employees" in page.data
+    with app.app_context():
+        assert bool(db.session.get(Employee, "5").bonus_ignored) is False
+
+
+def test_excluded_employee_reads_as_excluded_not_unearned(client, app):
+    with app.app_context():
+        seed_daily_bonus_month({1: 540, 2: 540, 3: 540, 4: 540})
+        db.session.get(Employee, "6").bonus_ignored = True
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/6").data
+    assert b"Excluded" in page
+    assert b"excluded from the attendance bonus in Employee Master" in page
+
+    pdf = client.get("/reports/2026-07/employee/6.pdf")
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
+    assert "Excluded in Employee Master" in text
+    assert "Not earned this month" not in text

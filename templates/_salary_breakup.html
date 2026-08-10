@@ -1,15 +1,17 @@
 {# Shared by the employee drawers and the employee detail page.
 
-   Salary breakup and compliance apply to monthly wage only, and the four components
-   have to add up to the salary. Both rules are enforced server-side in
-   attendance/master.py; this only reveals the fields for the right wage type and
-   shows the running total so a mismatch is obvious before saving. #}
+   Salary breakup and compliance apply to monthly wage only, and the three components
+   have to add up to the salary. The attendance bonus opt-out applies to daily wage
+   only. Every rule is enforced server-side in attendance/master.py; this only reveals
+   the fields for the right wage type and shows the running total so a mismatch is
+   obvious before saving. #}
 <script>
   (function () {
     document.querySelectorAll('form').forEach(function (form) {
       var panel = form.querySelector('[data-monthly-only]');
+      var dailyPanel = form.querySelector('[data-daily-only]');
       var wageType = form.querySelector('[name="wage_type"]');
-      if (!panel || !wageType) return;
+      if ((!panel && !dailyPanel) || !wageType) return;
       var salaryField = form.querySelector('[data-salary-total]');
       var parts = Array.prototype.slice.call(form.querySelectorAll('[data-breakup]'));
       var readout = form.querySelector('[data-breakup-total]');
@@ -25,8 +27,17 @@
 
       function refresh() {
         var monthly = wageType.value.trim().toUpperCase() === 'MONTHLY';
-        panel.hidden = !monthly;
-        // A hidden input still posts, so reset the components when they no longer apply.
+        if (panel) panel.hidden = !monthly;
+        if (dailyPanel) {
+          dailyPanel.hidden = monthly;
+          // A hidden checkbox still posts, so clear it when it no longer applies.
+          if (monthly) {
+            dailyPanel.querySelectorAll('input[type="checkbox"]').forEach(function (box) {
+              box.checked = false;
+            });
+          }
+        }
+        // Likewise for the breakup amounts.
         if (!monthly) {
           parts.forEach(function (part) { part.value = '0'; });
           return;
@@ -51,6 +62,13 @@
       parts.forEach(function (part) { part.addEventListener('input', refresh); });
       if (salaryField) salaryField.addEventListener('input', refresh);
       refresh();
+    });
+
+    // Employment status dropdown mirrors its selected value as a colour.
+    document.querySelectorAll('[data-status-select]').forEach(function (select) {
+      function paint() { select.dataset.state = select.value; }
+      select.addEventListener('change', paint);
+      paint();
     });
   }());
 </script>
