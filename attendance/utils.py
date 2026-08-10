@@ -96,8 +96,19 @@ def money(value):
     return Decimal(value).quantize(Decimal("0.01"))
 
 
-def truncate_one_decimal(value):
-    return Decimal(value).quantize(Decimal("0.1"), rounding=ROUND_DOWN)
+# Leave is tracked to two decimals. Pro-rated accrual rarely lands on a clean
+# tenth, so a single decimal quietly lost up to 0.09 of a day per month.
+LEAVE_DAY_PRECISION = Decimal("0.01")
+
+
+def leave_days(value):
+    """A leave-day figure at the tracked precision."""
+    return Decimal(value or 0).quantize(LEAVE_DAY_PRECISION)
+
+
+def truncate_leave_days(value):
+    """Leave earned, truncated rather than rounded, so accrual never overshoots."""
+    return Decimal(value).quantize(LEAVE_DAY_PRECISION, rounding=ROUND_DOWN)
 
 
 def as_ist(value):

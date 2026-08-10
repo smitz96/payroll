@@ -10,6 +10,7 @@ from attendance import db
 from attendance.authentication import current_username, login_required
 from attendance.leave_balances import apply_leave_balance_import, apply_leave_balance_updates, leave_balance_export_rows, leave_balance_rows, leave_history
 from attendance.models import Employee, LeaveLedger, User
+from attendance.utils import LEAVE_DAY_PRECISION
 
 bp = Blueprint("leave_balances", __name__, url_prefix="/leave-balances")
 LEAVE_BALANCE_IMPORT_REQUIRED_COLUMNS = {"Employee ID", "Current Leave Balance"}
@@ -75,7 +76,7 @@ def index():
     edited_today = LeaveLedger.query.filter_by(transaction_type="MANUAL_ADJUSTMENT", date=date.today()).count()
     summary = {
         "Employees": len(rows),
-        "Total Stored Leave": total_leave.quantize(Decimal("0.1")),
+        "Total Stored Leave": total_leave.quantize(LEAVE_DAY_PRECISION),
         "Employees With Zero Balance": len([row for row in rows if Decimal(row["current_balance"]) == 0]),
         "Manual Edits": edited_today or 0,
     }

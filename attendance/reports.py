@@ -1,6 +1,7 @@
 import calendar
 import csv
 import re
+from collections import defaultdict
 from datetime import date
 from io import BytesIO, StringIO
 from decimal import Decimal
@@ -16,7 +17,7 @@ from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, Simple
 from attendance import db
 from attendance.loans import loan_installment_for_loan, loan_paid_before_month, loan_pending_after_month, loan_remaining_before_month, loan_repayment_schedule
 from attendance.models import AttendanceRecord, Employee, Loan, PayrollResult, SalaryRecord
-from attendance.utils import format_percent, minutes_to_duration
+from attendance.utils import format_percent, leave_days, minutes_to_duration
 
 ONES = [
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -284,22 +285,37 @@ def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, lan
     return buffer.getvalue()
 
 
-def build_payroll_summary_pdf(month):
+PAYROLL_SUMMARY_HEADERS = [
+    "ID", "Employee", "Designation", "Wage Type", "Base", "Days", "Working", "Week Off",
+    "Total Paid", "Leave", "LOP", "Deduction", "Addition", "Payable", "Status",
+]
+PAYROLL_SUMMARY_WIDTHS = [
+    11 * mm, 30 * mm, 28 * mm, 16 * mm, 18 * mm, 11 * mm, 15 * mm, 15 * mm,
+    16 * mm, 12 * mm, 11 * mm, 20 * mm, 18 * mm, 21 * mm, 21 * mm,
+]
+
+
+def payroll_summary_rows(month, wage_group):
+    """Summary rows for one wage group, with the group's payable and deduction totals."""
     names = employee_name_map(month)
     designations = {employee.id: employee.designation or "" for employee in Employee.query.all()}
+    salaries = {s.employee_id: s for s in SalaryRecord.query.filter_by(payroll_month=month).all()}
     rows = []
     total_payable = Decimal("0")
     total_deduction = Decimal("0")
-    for result in calculated_results_for_month(month):
-        salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=result.employee_id).first()
+    # Sorted numerically: a plain string sort listed 11 and 13 before 2.
+    for result in sorted(calculated_results_for_month(month), key=lambda r: employee_id_sort_key(r.employee_id)):
+        salary = salaries.get(result.employee_id)
+        if not salary or salary.normalized_salary_type != wage_group:
+            continue
         total_payable += Decimal(result.final_salary or 0)
         total_deduction += Decimal(result.total_deduction or 0)
         rows.append([
             result.employee_id,
             names.get(result.employee_id, result.employee_id),
             designations.get(result.employee_id, ""),
-            salary.salary_type if salary else "",
-            pdf_money(salary.salary) if salary else "",
+            salary.salary_type or "",
+            pdf_money(salary.salary),
             payroll_month_days(month),
             result.paid_working_days,
             result.week_offs,
@@ -311,21 +327,53 @@ def build_payroll_summary_pdf(month):
             pdf_money(result.final_salary),
             result.calculation_status,
         ])
-    return report_pdf(
-        "Payroll Summary",
-        display_month(month),
-        ["ID", "Employee", "Designation", "Wage Type", "Base", "Days", "Working", "Week Off", "Total Paid", "Leave", "LOP", "Deduction", "Addition", "Payable", "Status"],
-        rows,
-        col_widths=[11 * mm, 30 * mm, 28 * mm, 16 * mm, 18 * mm, 11 * mm, 15 * mm, 15 * mm, 16 * mm, 12 * mm, 11 * mm, 20 * mm, 18 * mm, 21 * mm, 21 * mm],
-        font_size=6.2,
-        status_column=14,
-        kpis=[
-            ("Employees", len(rows)),
-            ("Total payable", pdf_money(total_payable)),
-            ("Total deductions", pdf_money(total_deduction)),
-            ("Payroll month", display_month(month)),
-        ],
-    )
+    return rows, total_payable, total_deduction
+
+
+def build_payroll_summary_pdf(month):
+    """Payroll summary in two parts in one file: monthly first, then daily.
+
+    Each wage group starts on its own page so a section can be printed or handed
+    over on its own without carrying rows from the other group.
+    """
+    buffer = BytesIO()
+    pagesize = landscape(A4)
+    doc = SimpleDocTemplate(buffer, pagesize=pagesize, leftMargin=11 * mm, rightMargin=11 * mm,
+                            topMargin=11 * mm, bottomMargin=14 * mm)
+    styles = getSampleStyleSheet()
+    available_width = pagesize[0] - doc.leftMargin - doc.rightMargin
+    cell_style = ParagraphStyle("SummaryCell", parent=styles["Normal"], fontSize=6.2, leading=8.4, textColor=INK)
+    header_style = ParagraphStyle("SummaryHead", parent=cell_style, fontName="Helvetica-Bold", fontSize=5.8, textColor=MUTED)
+    empty_style = ParagraphStyle("SummaryEmpty", parent=cell_style, textColor=FAINT)
+
+    story = []
+    for index, (wage_group, label) in enumerate((("MONTHLY", "Monthly Wage"), ("DAILY", "Daily Wage"))):
+        rows, total_payable, total_deduction = payroll_summary_rows(month, wage_group)
+        if index:
+            story.append(PageBreak())
+        story.extend([
+            _report_brand_header(f"Payroll Summary - {label}", display_month(month), styles, available_width),
+            Spacer(1, 9),
+            _kpi_row([
+                ("Employees", len(rows)),
+                ("Total payable", pdf_money(total_payable)),
+                ("Total deductions", pdf_money(total_deduction)),
+                ("Payroll month", display_month(month)),
+            ], available_width),
+            Spacer(1, 9),
+        ])
+        table_rows = [[Paragraph(str(value).upper(), header_style) for value in PAYROLL_SUMMARY_HEADERS]]
+        for row in rows:
+            table_rows.append([Paragraph(str(value if value not in (None, "") else "—"), cell_style) for value in row])
+        if not rows:
+            table_rows.append([Paragraph(f"No {label.lower()} employees found", empty_style)]
+                              + [Paragraph("", cell_style)] * (len(PAYROLL_SUMMARY_HEADERS) - 1))
+        story.append(_table(table_rows, col_widths=PAYROLL_SUMMARY_WIDTHS, font_size=6.2,
+                            status_column=14 if rows else None))
+    page_callback = _titled_page_callback(f"Payroll Summary - {display_month(month)}")
+    doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def build_attendance_detail_pdf(month):
@@ -623,7 +671,16 @@ def bonus_percent_text(result):
         if employee and employee.bonus_ignored:
             return "Excluded in Employee Master"
         return "Not earned this month"
-    return f"{format_percent(percent)}% of earned wage"
+    return f"{format_percent(percent)}%"
+
+
+def bonus_short_text(result):
+    """Bonus for a narrow table column, where the full sentence would not fit."""
+    percent = Decimal(getattr(result, "attendance_bonus_percent", 0) or 0)
+    if percent > 0:
+        return f"{format_percent(percent)}%"
+    employee = db.session.get(Employee, result.employee_id)
+    return "Excluded" if employee and employee.bonus_ignored else "—"
 
 
 def employee_compact_summary_rows(salary, result):
@@ -662,6 +719,50 @@ def employee_compact_summary_rows(salary, result):
     if result_has_advance(result):
         rows.append(["Advance Salary Deduction", pdf_money(getattr(result, "advance_deduction", 0)), "", ""])
     return rows
+
+
+def monthly_attendance_summary_rows(salary, result):
+    """The monthly slip with every pay figure removed.
+
+    Payable salary, the amount in words and the base salary come off; the attendance
+    and leave picture stays. This is an attendance document, not a payslip.
+    """
+    if not result:
+        return [["Status", "Not Calculated", "Wage Type", salary.salary_type if salary else "N/A"]]
+    # Grouped by what a reader is looking for: the day counts together, then the
+    # leave position, then the money. Overtime and adjustment share the last row.
+    rows = [
+        ["Status", result.calculation_status, "Days in Month", payroll_month_days(result.payroll_month)],
+        ["Paid Working Days", result.paid_working_days, "Total Paid Days", total_paid_days(result)],
+        ["Week Offs", result.week_offs, "LOP Days", result.lop_days],
+        ["Leave Balance", result.opening_leave, "Leave Earned This Month", result.leave_earned],
+        ["Leave Used This Month", result.leave_used, "Leave Carry Forwarded", result.closing_leave],
+        ["Leave Encashed", f"{getattr(result, 'leave_encashment_days', 0)}d / {pdf_money(getattr(result, 'leave_encashment_amount', 0))}",
+         "Less Hours Deduction", pdf_money(result.less_hours_deduction)],
+        ["Over Time", pdf_money(result.ot_amount), "Adjustment", pdf_money(result.manual_adjustment)],
+    ]
+    if result_has_loan(result):
+        rows.append(["Loan Deduction", pdf_money(getattr(result, "loan_deduction", 0)),
+                     "Pending Loan Amount", pdf_money(getattr(result, "loan_pending_amount", 0))])
+    if result_has_advance(result):
+        rows.append(["Advance Salary Deduction", pdf_money(getattr(result, "advance_deduction", 0)), "", ""])
+    return rows
+
+
+def daily_attendance_summary_rows(salary, result):
+    """The daily slip stripped back to attendance only.
+
+    The wage rate, payable salary, day counts that imply a rate, and the bonus amount
+    all come off. What is left says whether the worker turned up, how short they were
+    and whether that earned the attendance bonus.
+    """
+    if not result:
+        return [["Status", "Not Calculated", "", ""]]
+    return [
+        ["Status", result.calculation_status, "Payable Days", total_paid_days(result)],
+        ["Less Hours Deduction", pdf_money(result.less_hours_deduction), "Over Time", pdf_money(result.ot_amount)],
+        ["Absence This Month", bonus_absence_text(result), "Attendance Bonus", bonus_percent_text(result)],
+    ]
 
 
 # Cell fill and text colour per attendance status, so a month reads at a glance.
@@ -775,6 +876,30 @@ def employee_detail_compact_rows(result):
     return rows
 
 
+class SlipVariant:
+    """What a per-employee sheet shows.
+
+    The salary slip is the full document. The two summaries drop the pay figures and
+    keep the attendance picture. The daily summary additionally carries no SMARTfill
+    branding anywhere on the page, which is a regulatory requirement for cash-wage
+    workers, so it must not gain a logo, a footer brand line or a PDF author tag.
+    """
+
+    def __init__(self, title, branded=True, footer=True, show_employee_id=True, show_role=True):
+        self.title = title
+        self.branded = branded
+        self.footer = footer
+        self.show_employee_id = show_employee_id
+        self.show_role = show_role
+
+
+SLIP = SlipVariant("Salary Slip")
+MONTHLY_SUMMARY = SlipVariant("Attendance Summary", footer=False)
+DAILY_SUMMARY = SlipVariant(
+    "Summary", branded=False, footer=False, show_employee_id=False, show_role=False,
+)
+
+
 def _brand_logo(width=30 * mm, height=10.5 * mm):
     if LOGO_PATH.exists():
         image = Image(str(LOGO_PATH), width=width, height=height)
@@ -783,16 +908,25 @@ def _brand_logo(width=30 * mm, height=10.5 * mm):
     return Paragraph("SMARTfill", ParagraphStyle("LogoFallback", fontName="Helvetica-Bold", fontSize=13, textColor=BRAND_BLUE))
 
 
-def _salary_slip_header(month, salary, result, styles, compact=False):
+def _salary_slip_header(month, salary, result, styles, compact=False, variant=SLIP):
     employee_id = salary.employee_id if salary else (result.employee_id if result else "")
     employee_name = salary.name if salary else employee_id
     title_size = 14 if compact else 30
     text_size = 7 if compact else 11
+    if variant is not SLIP:
+        # The summaries drop the salary figures, which frees the room these sizes
+        # needed. Everything here is roughly twice the compact slip. The title is
+        # sized to stay on one line in its column rather than wrapping.
+        title_size = 16
+        text_size = 12
+
     # The month and the employee identity are what a reader actually looks for, so
     # they get their own larger sizes. Status and the brand line stay as meta text.
     month_size = 9 if compact else 17
     name_size = 9.5 if compact else 18
     role_size = 7.5 if compact else 12.5
+    if variant is not SLIP:
+        month_size, name_size, role_size = 15, 16, 12
     title_style = ParagraphStyle(
         "SlipTitle",
         parent=styles["Heading2"],
@@ -838,21 +972,36 @@ def _salary_slip_header(month, salary, result, styles, compact=False):
     status_style = ParagraphStyle("SlipStatus", parent=meta_style, fontName="Helvetica-Bold", textColor=status_colour)
 
     left = [
-        Paragraph("Salary Slip", title_style),
+        Paragraph(variant.title, title_style),
         Paragraph(display_month(month), month_style),
     ]
-    middle = [
-        Paragraph(f"{employee_id} &middot; {employee_name}", employee_style),
-        Paragraph(" &middot; ".join(role_bits) if role_bits else "Designation not set", role_style),
-    ]
-    right = [
-        Paragraph(status, status_style),
-        Paragraph("SMARTfill Payroll", meta_style),
-    ]
-    table = Table(
-        [[left, middle, right, _brand_logo(width=26 * mm if compact else 30 * mm, height=9 * mm if compact else 10.5 * mm)]],
-        colWidths=[40 * mm, 76 * mm, 44 * mm, 34 * mm] if compact else [44 * mm, 74 * mm, 40 * mm, 38 * mm],
-    )
+    # The daily summary carries no employee number and no designation: it identifies
+    # the worker by name alone.
+    identity = f"{employee_id} &middot; {employee_name}" if variant.show_employee_id else employee_name
+    middle = [Paragraph(identity, employee_style)]
+    if variant.show_role:
+        middle.append(Paragraph(" &middot; ".join(role_bits) if role_bits else "Designation not set", role_style))
+    # Status and the brand line belong to the salary slip only; the summaries carry
+    # the status inside the table instead.
+    right = [Paragraph(status, status_style), Paragraph("SMARTfill Payroll", meta_style)] if variant is SLIP else []
+    cells = [left, middle, right]
+    if variant is SLIP:
+        widths = [40 * mm, 76 * mm, 44 * mm] if compact else [44 * mm, 74 * mm, 40 * mm]
+        logo_width, logo_height, logo_column = (
+            (26 * mm, 9 * mm, 34 * mm) if compact else (30 * mm, 10.5 * mm, 38 * mm)
+        )
+    else:
+        # The summary sheets are one to a page and total 190mm of usable width.
+        # The logo is sized up from the slip's 26mm now that there is room for it.
+        widths = [66 * mm, 80 * mm, 0]
+        logo_width, logo_height, logo_column = 40 * mm, 14 * mm, 44 * mm
+    if variant.branded:
+        cells.append(_brand_logo(width=logo_width, height=logo_height))
+        widths = widths + [logo_column]
+    else:
+        # No logo column at all, so the name is not left floating in a narrow cell.
+        widths = [widths[0], sum(widths[1:]) + logo_column, 0]
+    table = Table([cells], colWidths=widths)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), SURFACE_SOFT),
         ("BOX", (0, 0), (-1, -1), 0.5, SEPARATOR),
@@ -955,11 +1104,15 @@ def _pdf_header_footer(canvas, doc):
     canvas.restoreState()
 
 
-def _titled_page_callback(title):
+def _titled_page_callback(title, variant=SLIP):
     def callback(canvas, doc):
         canvas.setTitle(title)
-        canvas.setAuthor("SMARTfill Attendance & Payroll Management")
-        _pdf_header_footer(canvas, doc)
+        # The author tag is branding too, and it survives in the file's metadata long
+        # after the page is printed, so an unbranded document must not carry it.
+        if variant.branded:
+            canvas.setAuthor("SMARTfill Attendance & Payroll Management")
+        if variant.footer:
+            _pdf_header_footer(canvas, doc)
 
     return callback
 
@@ -981,7 +1134,7 @@ def _status_column_style(data, column, header=True):
     return style
 
 
-def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None, blank_columns=None, status_column=None, accent_rows=None, center=False):
+def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None, blank_columns=None, status_column=None, accent_rows=None, center=False, center_from=None):
     """An iOS-style list: rounded card, hairline row separators, no vertical rules.
 
     The previous look was a full grid with a tinted header band. Apple's tables
@@ -1013,6 +1166,10 @@ def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None,
     ]
     if center:
         style.append(("ALIGN", (0, 0), (-1, -1), "CENTER"))
+    if center_from is not None:
+        # Narrow numeric columns read as one run of text when every header is flush
+        # left against its neighbour; centring them puts whitespace on both sides.
+        style.append(("ALIGN", (center_from, 0), (-1, -1), "CENTER"))
     if header:
         style.extend([
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -1054,14 +1211,21 @@ def _table(data, col_widths=None, font_size=8, header=True, highlight_rows=None,
     return table
 
 
-def attendance_calendar_table(month, result, styles, available_width, compact=False):
+def attendance_calendar_table(month, result, styles, available_width, compact=False, variant=SLIP, sizes=None):
     """The month's attendance as a colour-coded calendar, matching the web view."""
     weeks = attendance_calendar_grid(month, result)
     day_size = 5.6 if compact else 7.2
     meta_size = 4.4 if compact else 5.6
     punch_size = 4.2 if compact else 5.3
-    day_style = ParagraphStyle("CalDay", fontName="Helvetica-Bold", fontSize=day_size, leading=day_size + 1.5, textColor=INK)
-    punch_style = ParagraphStyle("CalPunch", fontName="Helvetica", fontSize=punch_size, leading=punch_size + 1.2, textColor=INK)
+    if variant is not SLIP:
+        # Roughly double the compact slip. One sheet per page pays for the room.
+        day_size, meta_size, punch_size = 11, 8.6, 8.6
+    if sizes:
+        day_size, meta_size, punch_size = sizes
+    # The summaries centre every cell; the slip keeps its left-aligned column.
+    cell_align = TA_CENTER if variant is not SLIP else TA_LEFT
+    day_style = ParagraphStyle("CalDay", fontName="Helvetica-Bold", fontSize=day_size, leading=day_size + 1.5, textColor=INK, alignment=cell_align)
+    punch_style = ParagraphStyle("CalPunch", fontName="Helvetica", fontSize=punch_size, leading=punch_size + 1.2, textColor=INK, alignment=cell_align)
     head_style = ParagraphStyle("CalHead", fontName="Helvetica-Bold", fontSize=meta_size, leading=meta_size + 1.5, textColor=MUTED, alignment=1)
 
     data = [[Paragraph(name.upper(), head_style) for name in CALENDAR_WEEKDAYS]]
@@ -1085,10 +1249,12 @@ def attendance_calendar_table(month, result, styles, available_width, compact=Fa
             status_style = ParagraphStyle(
                 f"CalStatus{week_index}{column}", fontName="Helvetica-Bold",
                 fontSize=meta_size, leading=meta_size + 1.4, textColor=text_colour,
+                alignment=cell_align,
             )
             meta_style_local = ParagraphStyle(
                 f"CalMeta{week_index}{column}", fontName="Helvetica",
                 fontSize=meta_size, leading=meta_size + 1.4, textColor=MUTED,
+                alignment=cell_align,
             )
             parts = [Paragraph(str(cell["day"]), day_style)]
             if cell["status"]:
@@ -1120,11 +1286,29 @@ def attendance_bonus_accent_rows(summary_rows, result):
         return []
     earned = Decimal(getattr(result, "attendance_bonus_percent", 0) or 0) > 0
     wash, text_colour = (GREEN_WASH, GREEN_TEXT) if earned else (RED_WASH, RED_TEXT)
+    # The label sits in the first column on the slip and in the third on the daily
+    # summary, so match either rather than pinning it to one position.
     return [
         (index, wash, text_colour)
         for index, row in enumerate(summary_rows)
-        if row and row[0] == "Attendance Bonus"
+        if row and "Attendance Bonus" in (row[0], row[2] if len(row) > 2 else None)
     ]
+
+
+def attendance_summary_block(month, salary, result, styles, variant, available_width):
+    """One employee's attendance sheet: header, figures, then the month calendar."""
+    header = _salary_slip_header(month, salary, result, styles, compact=True, variant=variant)
+    rows = (daily_attendance_summary_rows if variant is DAILY_SUMMARY else monthly_attendance_summary_rows)(salary, result)
+    label_width = available_width * 0.26
+    value_width = available_width * 0.24
+    summary = _table(
+        rows,
+        col_widths=[label_width, value_width, label_width, available_width - (2 * label_width) - value_width],
+        font_size=9, header=False, center=True,
+        accent_rows=attendance_bonus_accent_rows(rows, result),
+    )
+    calendar = attendance_calendar_table(month, result, styles, available_width, compact=True, variant=variant)
+    return KeepTogether([header, Spacer(1, 6), summary, Spacer(1, 6), calendar])
 
 
 def employee_report_block(month, salary, result, styles, compact=False):
@@ -1167,6 +1351,46 @@ def build_employee_pdf(month, employee_id):
     return buffer.getvalue()
 
 
+def salaries_for_wage_group(month, wage_group):
+    return (
+        SalaryRecord.query.filter_by(payroll_month=month, normalized_salary_type=wage_group)
+        .all()
+    )
+
+
+def build_attendance_summary_pdf(month, wage_group):
+    """One attendance sheet per employee for a single wage group, one to a page.
+
+    MONTHLY keeps the SMARTfill logo. DAILY carries no branding at all.
+    """
+    variant = DAILY_SUMMARY if wage_group == "DAILY" else MONTHLY_SUMMARY
+    title = "Summary for Daily Wage Group" if wage_group == "DAILY" else "Attendance Summary for Monthly"
+    salaries = sorted(salaries_for_wage_group(month, wage_group), key=lambda s: employee_id_sort_key(s.employee_id))
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=10 * mm, rightMargin=10 * mm, topMargin=10 * mm, bottomMargin=10 * mm)
+    styles = getSampleStyleSheet()
+    available_width = A4[0] - doc.leftMargin - doc.rightMargin
+    results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
+    story = []
+    for index, salary in enumerate(salaries):
+        if index:
+            story.append(PageBreak())
+        story.append(attendance_summary_block(month, salary, results.get(salary.employee_id), styles, variant, available_width))
+    if not story:
+        story.append(Paragraph(
+            f"No {wage_group.lower()} wage employees found for {display_month(month)}.",
+            ParagraphStyle("Empty", parent=styles["Normal"], fontSize=11, textColor=FAINT),
+        ))
+    page_callback = _titled_page_callback(f"{title} - {display_month(month)}", variant=variant)
+    doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def employee_id_sort_key(value):
+    return (0, int(value), "") if str(value).isdigit() else (1, 0, str(value).lower())
+
+
 def build_all_employees_pdf(month):
     salaries = SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id).all()
     title = f"Final Salary Report - {display_month(month)}"
@@ -1183,6 +1407,206 @@ def build_all_employees_pdf(month):
             story.append(Spacer(1, 8))
         story.append(employee_report_block(month, salary, result, styles, compact=True))
     page_callback = _titled_page_callback(title)
+    doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# This report goes to department managers to track attendance, so it carries no
+# salary, deduction or payable figures anywhere. Monthly employees are measured on
+# leave; daily wage employees have no leave, so they are measured on absence and the
+# attendance bonus instead.
+# Column widths are sized so every header clears its neighbour at 6.6pt; both rows
+# total the 190mm of usable width on portrait A4.
+DEPARTMENT_MONTHLY_HEADERS = [
+    "ID", "Employee", "Designation", "Days", "Working", "Week Off",
+    "Total Paid", "LOP", "Leave Used", "Leave Earned", "Leave CF", "Status",
+]
+DEPARTMENT_MONTHLY_WIDTHS = [
+    9 * mm, 27 * mm, 23 * mm, 11 * mm, 15 * mm, 14 * mm,
+    15 * mm, 11 * mm, 16 * mm, 19 * mm, 13 * mm, 17 * mm,
+]
+DEPARTMENT_DAILY_HEADERS = [
+    "ID", "Employee", "Designation", "Days", "Working", "Week Off",
+    "Total Paid", "Holidays", "Absence", "Bonus", "Status",
+]
+DEPARTMENT_DAILY_WIDTHS = [
+    9 * mm, 30 * mm, 26 * mm, 11 * mm, 15 * mm, 14 * mm,
+    15 * mm, 14 * mm, 22 * mm, 13 * mm, 21 * mm,
+]
+UNASSIGNED_DEPARTMENT = "Not Assigned"
+
+
+def department_wise_groups(month):
+    """Employees grouped by wage type then department, monthly first.
+
+    Returns [(wage label, [(department, [(result, salary, employee)], subtotal)])].
+    Departments sort alphabetically with unassigned last, so a missing department
+    never hides at the top of the report.
+    """
+    employees = {employee.id: employee for employee in Employee.query.all()}
+    salaries = {s.employee_id: s for s in SalaryRecord.query.filter_by(payroll_month=month).all()}
+    groups = []
+    for wage_group, label in (("MONTHLY", "Monthly Wage"), ("DAILY", "Daily Wage")):
+        by_department = defaultdict(list)
+        for result in calculated_results_for_month(month):
+            salary = salaries.get(result.employee_id)
+            if not salary or salary.normalized_salary_type != wage_group:
+                continue
+            employee = employees.get(result.employee_id)
+            department = (employee.department if employee else "") or UNASSIGNED_DEPARTMENT
+            by_department[department].append((result, salary, employee))
+        departments = []
+        for department in sorted(by_department, key=lambda name: (name == UNASSIGNED_DEPARTMENT, name.lower())):
+            members = sorted(by_department[department], key=lambda item: employee_id_sort_key(item[0].employee_id))
+            departments.append((department, members))
+        groups.append((wage_group, label, departments))
+    return groups
+
+
+def department_attendance_row(result, employee, month, wage_group):
+    """One employee's attendance line. No salary figure appears in either variant."""
+    common = [
+        result.employee_id,
+        employee.name if employee else result.employee_id,
+        (employee.designation if employee else "") or "",
+        payroll_month_days(month),
+        result.paid_working_days,
+        result.week_offs,
+        total_paid_days(result),
+    ]
+    if wage_group == "DAILY":
+        return common + [result.holidays, bonus_absence_text(result), bonus_short_text(result), result.calculation_status]
+    return common + [
+        result.lop_days, result.leave_used, result.leave_earned, result.closing_leave,
+        result.calculation_status,
+    ]
+
+
+def department_totals_row(members, wage_group):
+    """Department footer: headcount and the attendance totals a manager adds up."""
+    def day_total(getter):
+        return leave_days(sum((Decimal(getter(r) or 0) for r, _s, _e in members), Decimal("0")))
+
+    paid = day_total(lambda r: r.paid_working_days)
+    total_paid = day_total(total_paid_days)
+    week_offs = sum((int(r.week_offs or 0) for r, _s, _e in members), 0)
+    label = f"{len(members)} employee(s)"
+    if wage_group == "DAILY":
+        absence = sum((int(getattr(r, "absence_minutes", 0) or 0) for r, _s, _e in members), 0)
+        holidays = sum((int(r.holidays or 0) for r, _s, _e in members), 0)
+        return ["", label, "Total", "", paid, week_offs, total_paid, holidays,
+                minutes_to_duration(absence), "", ""]
+    return ["", label, "Total", "", paid, week_offs, total_paid,
+            day_total(lambda r: r.lop_days), day_total(lambda r: r.leave_used),
+            day_total(lambda r: r.leave_earned), day_total(lambda r: r.closing_leave), ""]
+
+
+def build_department_wise_pdf(month):
+    """Attendance by department for department managers.
+
+    Every monthly department first, then every daily one. Each department gets a
+    table of its employees followed by each employee's month calendar. Deliberately
+    carries no salary, deduction or payable figure: this sheet leaves the payroll
+    office and goes to a manager who has no business seeing pay.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=A4,
+        leftMargin=10 * mm, rightMargin=10 * mm, topMargin=10 * mm, bottomMargin=14 * mm,
+    )
+    styles = getSampleStyleSheet()
+    available_width = A4[0] - doc.leftMargin - doc.rightMargin
+    groups = department_wise_groups(month)
+    wage_style = ParagraphStyle("WageGroup", parent=styles["Heading2"], fontName="Helvetica-Bold",
+                                fontSize=13, leading=15, textColor=INK, spaceAfter=0)
+    dept_style = ParagraphStyle("DeptHead", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                fontSize=10, leading=12, textColor=TINT_TEXT)
+    person_style = ParagraphStyle("DeptPerson", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                  fontSize=9, leading=11, textColor=INK)
+    empty_style = ParagraphStyle("DeptEmpty", parent=styles["Normal"], fontSize=8.5, textColor=FAINT)
+    # Name and designation are the only free-text columns, and a long designation
+    # such as "Head of Business Development" overruns its column as a plain string.
+    # Only a Paragraph wraps, so those two cells are wrapped and the rest stay plain,
+    # which keeps the status column readable by _status_column_style.
+    text_cell = ParagraphStyle("DeptCell", parent=styles["Normal"], fontName="Helvetica",
+                               fontSize=7, leading=8.4, textColor=INK)
+    total_cell = ParagraphStyle("DeptCellTotal", parent=text_cell, fontName="Helvetica-Bold",
+                                textColor=TINT_TEXT)
+    head_left = ParagraphStyle("DeptHeadCell", parent=styles["Normal"], fontName="Helvetica-Bold",
+                               fontSize=6.6, leading=8, textColor=MUTED)
+    head_centre = ParagraphStyle("DeptHeadCellC", parent=head_left, alignment=TA_CENTER)
+
+    def wrap_text_columns(row, style):
+        row[1] = Paragraph(str(row[1] or ""), style)
+        row[2] = Paragraph(str(row[2] or ""), style)
+        return row
+
+    def header_row(names):
+        # Wrapped so a long heading stacks inside its column instead of running into
+        # the next one. Cells 3 onwards are centred to match the numbers below them.
+        return [Paragraph(name, head_left if index < 3 else head_centre)
+                for index, name in enumerate(names)]
+
+    headcount = sum(len(members) for _g, _l, departments in groups for _d, members in departments)
+    story = [
+        _report_brand_header("Department Wise Attendance Summary", display_month(month), styles, available_width),
+        Spacer(1, 9),
+        _kpi_row([
+            ("Employees", headcount),
+            ("Departments", len({d for _g, _l, deps in groups for d, _m in deps})),
+            ("Days in month", payroll_month_days(month)),
+            ("Payroll month", display_month(month)),
+        ], available_width),
+        Spacer(1, 10),
+    ]
+    for group_index, (wage_group, label, departments) in enumerate(groups):
+        if group_index:
+            story.append(PageBreak())
+        story.extend([Paragraph(f"{label} Employees", wage_style), Spacer(1, 6)])
+        if not departments:
+            story.extend([Paragraph(f"No {label.lower()} employees for this month.", empty_style), Spacer(1, 9)])
+            continue
+        daily = wage_group == "DAILY"
+        headers = DEPARTMENT_DAILY_HEADERS if daily else DEPARTMENT_MONTHLY_HEADERS
+        widths = DEPARTMENT_DAILY_WIDTHS if daily else DEPARTMENT_MONTHLY_WIDTHS
+        for department_index, (department, members) in enumerate(departments):
+            # Each department starts a fresh page so a single department's sheet can
+            # be torn off and handed to its manager without another one's rows on it.
+            # The first department of a group already sits on a fresh page.
+            if department_index:
+                story.append(PageBreak())
+            rows = [header_row(headers)]
+            for result, _salary, employee in members:
+                rows.append(wrap_text_columns(
+                    department_attendance_row(result, employee, month, wage_group), text_cell))
+            rows.append(wrap_text_columns(department_totals_row(members, wage_group), total_cell))
+            table = _table(rows, col_widths=widths, font_size=7,
+                           status_column=len(headers) - 1, center_from=3,
+                           accent_rows=[(len(rows) - 1, TINT_WASH, TINT_TEXT)])
+            story.extend([
+                KeepTogether([
+                    Paragraph(f"{department} &mdash; {len(members)} employee(s)", dept_style),
+                    Spacer(1, 4), table,
+                ]),
+                Spacer(1, 8),
+            ])
+            # Each employee's month, so a manager can see the pattern behind the totals.
+            for result, _salary, employee in members:
+                name = employee.name if employee else result.employee_id
+                role = (employee.designation if employee else "") or "Designation not set"
+                calendar = attendance_calendar_table(
+                    month, result, styles, available_width,
+                    variant=MONTHLY_SUMMARY, sizes=(7.6, 6, 6),
+                )
+                story.extend([
+                    KeepTogether([
+                        Paragraph(f"{result.employee_id} &middot; {name} &mdash; {role}", person_style),
+                        Spacer(1, 3), calendar,
+                    ]),
+                    Spacer(1, 7),
+                ])
+    page_callback = _titled_page_callback(f"Department Wise Attendance Summary - {display_month(month)}")
     doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
     buffer.seek(0)
     return buffer.getvalue()

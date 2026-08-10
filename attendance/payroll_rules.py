@@ -9,7 +9,7 @@ from attendance.advances import advance_deduction_for_employee
 from attendance.loans import loan_installment_for_employee, loan_pending_after_month_for_employee
 from attendance.settings import DAILY_BONUS_RULES as BONUS_CFG
 from attendance.settings import MONTHLY_RULES as CFG
-from attendance.utils import floor_to_interval, minutes_to_duration, money, truncate_one_decimal
+from attendance.utils import LEAVE_DAY_PRECISION, floor_to_interval, minutes_to_duration, money, truncate_leave_days
 from attendance.weekoffs import is_week_off_for_date
 
 
@@ -192,7 +192,7 @@ class MonthlyPayrollRule(PayrollRule):
         excess_leave = max(Decimal("0"), leave_used - available_leave)
         lop_days += excess_leave
         lop_deduction = (daily_rate * lop_days).quantize(Decimal("0.01"))
-        closing_leave_before_encashment = (available_leave - paid_leave).quantize(Decimal("0.1"))
+        closing_leave_before_encashment = (available_leave - paid_leave).quantize(LEAVE_DAY_PRECISION)
         manual = Decimal(salary_record.adjustment)
         loan = Decimal(getattr(salary_record, "loan", Decimal("0")) or 0) + loan_installment_for_employee(salary_record.employee_id, salary_record.payroll_month)
         loan_pending = loan_pending_after_month_for_employee(salary_record.employee_id, salary_record.payroll_month)
@@ -210,7 +210,7 @@ class MonthlyPayrollRule(PayrollRule):
                 raise ValueError(f"Employee ID {salary_record.employee_id}: No leaves available for encashment.")
             raise ValueError(f"Employee ID {salary_record.employee_id}: Only {closing_leave_before_encashment} leave(s) available for encashment.")
         leave_encashment = daily_rate * leave_encashment_days
-        closing_leave = (closing_leave_before_encashment - leave_encashment_days).quantize(Decimal("0.1"))
+        closing_leave = (closing_leave_before_encashment - leave_encashment_days).quantize(LEAVE_DAY_PRECISION)
         manual_deduction = abs(manual) if manual < 0 else Decimal("0")
         total_deduction = lop_deduction + less_deduction + loan + advance + manual_deduction
         total_addition = ot_amount + leave_encashment + (manual if manual > 0 else Decimal("0"))
@@ -651,6 +651,12 @@ def apply_sandwich_leave_policy(classified_rows):
         while index < len(classified_rows) and classified_rows[index][2]["status"] == "Week Off":
             index += 1
         block_end = index - 1
+        # A week off at either edge of the month is deliberately never sandwiched.
+        # The day on the other side of it belongs to the adjacent month, which may
+        # not be imported, may not be calculated, and may already be finalized, so
+        # the block stays a plain paid week off. This is the rule, not a gap to fill:
+        # do not reach into the previous or next month to find `before`/`after`.
+        # Note `block_start - 1` would silently wrap to the last day of the month.
         before = classified_rows[block_start - 1][2] if block_start > 0 else None
         after = classified_rows[index][2] if index < len(classified_rows) else None
         if before and after and before["status"] in leave_like_statuses and after["status"] in leave_like_statuses:
@@ -691,7 +697,7 @@ def calculate_monthly_leave_earned(eligible_leave_days, days_in_month):
     if not days_in_month:
         return Decimal("0.0")
     earn_rate = Decimal(CFG["LEAVE_EARNED_PER_MONTH"])
-    return truncate_one_decimal((Decimal(eligible_leave_days) / Decimal(days_in_month)) * earn_rate)
+    return truncate_leave_days((Decimal(eligible_leave_days) / Decimal(days_in_month)) * earn_rate)
 
 
 PAYROLL_RULES = {"MONTHLY": MonthlyPayrollRule(), "DAILY": DailyPayrollRule()}

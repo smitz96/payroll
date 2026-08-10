@@ -158,7 +158,7 @@
 <h2 class="section-title">Calculation detail</h2>
 <div class="table-responsive">
 <table class="table table-sm smart-table">
-  <thead><tr><th>Date</th><th>Actual</th><th>Rounded</th><th>Status</th><th>Paid Day</th><th>Shortage</th>{% if is_daily_wage %}<th>Bonus absence</th>{% endif %}<th>Raw OT</th><th>Payable OT</th><th>Explanation</th></tr></thead>
+  <thead><tr><th>Date</th><th>Actual</th><th>Rounded</th><th>Status</th><th>Paid Day</th><th>Shortage</th>{% if is_daily_wage %}<th>Attendance bonus</th>{% endif %}<th>Raw OT</th><th>Payable OT</th><th>Explanation</th></tr></thead>
   <tbody>{% for row in result.detail_json %}
   <tr><td>{{ row.date }}</td><td>{{ row.actual_duration }}</td><td>{{ row.rounded_duration }}</td><td>{{ row.attendance_status }}</td><td>{{ row.paid_day_value }}</td><td>{{ row.shortage_minutes }}</td>{% if is_daily_wage %}<td>{{ row.bonus_absence_minutes or 0 }}</td>{% endif %}<td>{{ row.raw_ot }}</td><td>{{ row.payable_ot }}</td><td>{% if row.attendance_status not in ["Full Day Present", "Half Day Present", "Week Off", "Holiday", "Week Off Worked"] or row.shortage_minutes|int > 0 %}{{ row.explanation }}{% endif %}</td></tr>
   {% endfor %}</tbody>

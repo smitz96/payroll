@@ -1450,9 +1450,10 @@ def test_absences_consume_leave_then_fall_to_lop(app):
         # ... and the fourth by half, with the other half unpaid.
         assert by_date["2026-07-22"]["attendance_status"] == "Half-Day Paid Leave / Half-Day LOP"
 
-        assert Decimal(result.leave_earned) == Decimal("1.8")
+        # Two decimals keep the accrual a single decimal used to truncate away.
+        assert Decimal(result.leave_earned) == Decimal("1.87")
         assert Decimal(result.leave_used) == Decimal("3.5")
-        assert Decimal(result.closing_leave) == Decimal("0.3")
+        assert Decimal(result.closing_leave) == Decimal("0.37")
         assert Decimal(result.lop_days) == Decimal("0.5")
 
 
@@ -1954,7 +1955,8 @@ def test_attendance_bonus_is_shown_on_the_page_and_the_pdf(client, app):
     assert pdf.status_code == 200
     text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
     assert "Attendance Bonus" in text
-    assert "10% of earned wage" in text
+    assert "10%" in text
+    assert "of earned wage" not in text
     assert "Absence This Month" in text
 
 
@@ -2132,3 +2134,368 @@ def test_excluded_employee_reads_as_excluded_not_unearned(client, app):
     text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
     assert "Excluded in Employee Master" in text
     assert "Not earned this month" not in text
+
+
+# --- Leave is tracked to two decimals, not one ---
+
+def test_leave_accrual_keeps_two_decimals(app):
+    from attendance.payroll_rules import calculate_monthly_leave_earned
+    # 23 eligible days in a 31-day month accrues (23/31)*2 = 1.4838...
+    # A single decimal truncated that to 1.4, losing nearly a tenth of a day a month.
+    assert calculate_monthly_leave_earned(Decimal("23"), 31) == Decimal("1.48")
+    assert calculate_monthly_leave_earned(Decimal("1"), 31) == Decimal("0.06")
+    # Accrual is still truncated, never rounded up, so it cannot overshoot.
+    assert calculate_monthly_leave_earned(Decimal("29"), 31) == Decimal("1.87")
+
+
+def test_leave_columns_round_trip_two_decimals(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Worker"))
+        db.session.add(PayrollResult(
+            payroll_month="2026-07", employee_id="5", payroll_rule_type="MONTHLY",
+            calculation_status="Calculated", opening_leave=Decimal("2.75"),
+            leave_earned=Decimal("1.87"), leave_used=Decimal("0.25"),
+            closing_leave=Decimal("4.37"), final_salary=Decimal("30000")))
+        db.session.commit()
+        db.session.expire_all()
+        stored = PayrollResult.query.filter_by(employee_id="5").one()
+        assert stored.opening_leave == Decimal("2.75")
+        assert stored.leave_earned == Decimal("1.87")
+        assert stored.leave_used == Decimal("0.25")
+        assert stored.closing_leave == Decimal("4.37")
+
+
+def test_manual_leave_balance_keeps_two_decimals(app):
+    from attendance.leave_balances import parse_leave_balance
+    assert parse_leave_balance("2.75") == Decimal("2.75")
+    assert parse_leave_balance("2.759") == Decimal("2.75")
+    assert parse_leave_balance("3") == Decimal("3.00")
+
+
+# --- Sandwich leave never reaches across a month boundary ---
+
+def seed_boundary_month(month, year, month_number, absent_days, opening=Decimal("0")):
+    """A monthly employee with Sundays off and the given days absent."""
+    import calendar as cal
+    db.session.add(PayrollMonth(month=month))
+    db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                            normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+    db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+    db.session.add(SalaryRecord(payroll_month=month, employee_id="5", name="Worker",
+                                salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                salary=Decimal("30000")))
+    if opening:
+        db.session.add(LeaveLedger(employee_id="5", date=date(year, month_number, 1),
+                                   payroll_month=month, transaction_type="OPENING", amount=opening))
+    for day in range(1, cal.monthrange(year, month_number)[1] + 1):
+        when = date(year, month_number, day)
+        if when.weekday() == 6 or day in absent_days:
+            db.session.add(AttendanceRecord(payroll_month=month, employee_id="5", employee_name="Worker",
+                                            date=when, day=when.strftime("%A"), parse_status="NEEDS_REVIEW",
+                                            warning="Missing punch and working hours"))
+        else:
+            db.session.add(AttendanceRecord(payroll_month=month, employee_id="5", employee_name="Worker",
+                                            date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                            last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                            actual_minutes=540, parse_status="OK"))
+    db.session.commit()
+    calculate_payroll_month(month)
+    result = PayrollResult.query.filter_by(payroll_month=month, employee_id="5").one()
+    return {row["date"]: row["attendance_status"] for row in result.detail_json}, result
+
+
+def test_week_off_on_the_first_of_the_month_stays_a_paid_week_off(app):
+    """1 Nov 2026 is a Sunday. The day before it is in October, so no sandwich."""
+    with app.app_context():
+        by_date, result = seed_boundary_month("2026-11", 2026, 11, absent_days={2})
+        # Paid as a week off, whatever October looked like.
+        assert by_date["2026-11-01"] == "Week Off"
+        assert "Sandwich Leave" not in by_date.values()
+        assert result.week_offs == 5
+
+
+def test_week_off_on_the_last_day_of_the_month_stays_a_paid_week_off(app):
+    """31 May 2026 is a Sunday. The day after it is in June, so no sandwich."""
+    with app.app_context():
+        by_date, result = seed_boundary_month("2026-05", 2026, 5, absent_days={29, 30})
+        assert by_date["2026-05-31"] == "Week Off"
+        assert "Sandwich Leave" not in by_date.values()
+
+
+def test_sandwich_still_applies_to_week_offs_inside_the_month(app):
+    """The boundary rule must not disable the policy for ordinary mid-month weeks."""
+    with app.app_context():
+        # 8 Nov 2026 is a Sunday; absent on the Saturday before and Monday after.
+        by_date, result = seed_boundary_month("2026-11", 2026, 11, absent_days={7, 9})
+        assert by_date["2026-11-08"] == "Sandwich Leave"
+        assert Decimal(result.leave_used) > 0
+
+
+# --- Final salary report split into per-wage-group attendance summaries ---
+
+def seed_two_wage_groups(month="2026-07"):
+    db.session.add(PayrollMonth(month=month))
+    for eid, name, wage, rate, dept, desig in (
+        ("5", "Month Worker", "Monthly", "30000", "Design", "Design Manager"),
+        ("6", "Day Worker", "Daily", "600", "Stores", "Helper"),
+    ):
+        normalized = wage.upper()
+        db.session.add(Employee(id=eid, name=name, salary_type=wage, normalized_salary_type=normalized,
+                                salary=Decimal(rate), department=dept, designation=desig))
+        db.session.add(WeekOffRule(employee_id=eid, confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(payroll_month=month, employee_id=eid, name=name,
+                                    salary_type=wage, normalized_salary_type=normalized, salary=Decimal(rate)))
+        for day in (1, 2):
+            when = date(2026, 7, day)
+            db.session.add(AttendanceRecord(payroll_month=month, employee_id=eid, employee_name=name,
+                                            date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                            last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                            actual_minutes=540, parse_status="OK"))
+    db.session.commit()
+    calculate_payroll_month(month)
+
+
+def pdf_text(data):
+    return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
+
+
+def test_monthly_summary_drops_pay_figures_but_keeps_the_logo(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    response = client.get("/reports/2026-07/attendance-summary-monthly.pdf")
+    assert response.status_code == 200
+    text = pdf_text(response.data)
+    assert "Attendance Summary" in text
+    assert "Month Worker" in text
+    # Daily wage employees belong to the other report.
+    assert "Day Worker" not in text
+    # Every pay figure from the salary slip is gone.
+    for removed in ("Salary Slip", "Payable Salary", "In Words", "Base Salary", "Wage Type"):
+        assert removed not in text, removed
+    # The attendance and leave picture stays.
+    for kept in ("Paid Working Days", "Week Offs", "Leave Earned This Month", "LOP Days"):
+        assert kept in text, kept
+
+
+def test_daily_summary_carries_no_company_branding_anywhere(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    response = client.get("/reports/2026-07/summary-daily-wage.pdf")
+    assert response.status_code == 200
+    # Not in the text, not in the raw bytes, not in the PDF metadata, not the filename.
+    assert b"SMARTfill" not in response.data
+    assert "smartfill" not in response.headers["Content-Disposition"].lower()
+    reader = PdfReader(BytesIO(response.data))
+    assert "SMARTfill" not in str(reader.metadata)
+    text = pdf_text(response.data)
+    assert "Day Worker" in text
+    assert "Month Worker" not in text
+    # No employee number, no designation, no department on a daily sheet.
+    for removed in ("Salary Slip", "Payable Salary", "Daily Wage", "Helper", "Stores", "Days in Month"):
+        assert removed not in text, removed
+    for kept in ("Payable Days", "Absence This Month", "Attendance Bonus"):
+        assert kept in text, kept
+
+
+def test_department_wise_report_lists_monthly_before_daily(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    response = client.get("/reports/2026-07/department-wise.pdf")
+    assert response.status_code == 200
+    text = pdf_text(response.data)
+    assert text.index("Monthly Wage Employees") < text.index("Daily Wage Employees")
+    assert text.index("Design") < text.index("Stores")
+    assert "Month Worker" in text and "Day Worker" in text
+    assert "employee(s)" in text and "Total" in text
+
+
+def test_department_wise_report_carries_attendance_not_pay(client, app):
+    """It goes to department managers, so no pay figure may appear on it."""
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/department-wise.pdf").data)
+    for banned in ("Payable", "Base Salary", "Deduction", "Salary", "30000", "30,000"):
+        assert banned not in text, banned
+    # The attendance and leave figures a manager tracks. Column headings wrap
+    # inside their column, so match the words rather than the whole heading.
+    for kept in ("Days", "Working", "Paid", "LOP", "Leave", "Used", "Earned", "CF"):
+        assert kept in text, kept
+    # Daily wage employees have no leave, so they are measured on absence instead.
+    assert "Absence" in text
+    # Each employee's month calendar is included.
+    assert "SUN" in text and "SAT" in text
+
+
+def test_every_department_starts_on_a_new_page(client, app):
+    """A department's sheet can be torn off without another department's rows on it."""
+    with app.app_context():
+        seed_two_wage_groups()
+        # A second monthly department, so the monthly group has two to separate.
+        db.session.add(Employee(id="7", name="Store Keeper", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("20000"),
+                                department="Stores", designation="Storekeeper"))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="7", name="Store Keeper",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("20000")))
+        db.session.add(PayrollResult(payroll_month="2026-07", employee_id="7", payroll_rule_type="MONTHLY",
+                                     calculation_status="Calculated", final_salary=Decimal("20000")))
+        db.session.commit()
+
+    login(client)
+    pages = [page.extract_text() or "" for page in
+             PdfReader(BytesIO(client.get("/reports/2026-07/department-wise.pdf").data)).pages]
+    headings = [
+        [name for name in ("Design —", "Stores —") if name in text]
+        for text in pages
+    ]
+    # No page carries the heading of two different departments.
+    assert all(len(found) <= 1 for found in headings), headings
+    design = next(i for i, found in enumerate(headings) if "Design —" in found)
+    stores = next(i for i, found in enumerate(headings) if "Stores —" in found)
+    assert design != stores
+
+
+def test_department_wise_wage_groups_start_on_their_own_page(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    pages = [page.extract_text() or "" for page in
+             PdfReader(BytesIO(client.get("/reports/2026-07/department-wise.pdf").data)).pages]
+    monthly = next(i for i, t in enumerate(pages) if "Monthly Wage Employees" in t)
+    daily = next(i for i, t in enumerate(pages) if "Daily Wage Employees" in t)
+    assert daily > monthly
+    assert "Monthly Wage Employees" not in pages[daily]
+
+
+def test_new_reports_are_listed_on_the_reports_page(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    page = client.get("/reports/").data
+    assert b"Attendance Summary for Monthly" in page
+    assert b"Summary for Daily Wage Group" in page
+    assert b"Department Wise Attendance" in page
+
+
+def test_summary_reports_handle_a_wage_group_with_no_employees(client, app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.commit()
+
+    login(client)
+    for path in ("attendance-summary-monthly.pdf", "summary-daily-wage.pdf", "department-wise.pdf"):
+        response = client.get(f"/reports/2026-07/{path}")
+        assert response.status_code == 200, path
+
+
+# --- Report refinements from the marked-up PDFs ---
+
+def test_daily_summary_title_is_summary_and_bonus_is_just_a_percentage(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/summary-daily-wage.pdf").data)
+    assert "Summary" in text
+    assert "Attendance Summary" not in text
+    # The bonus reads as a bare percentage; the rate it applies to is not restated.
+    assert "10%" in text
+    assert "of earned wage" not in text
+
+
+def test_monthly_summary_groups_days_then_leave_then_money(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/attendance-summary-monthly.pdf").data)
+    order = [text.index(label) for label in (
+        "Paid Working Days", "Total Paid Days", "Week Offs", "LOP Days",
+        "Leave Balance", "Leave Carry Forwarded", "Less Hours Deduction", "Adjustment",
+    )]
+    assert order == sorted(order), "day counts, then leave, then money"
+    # Overtime and adjustment share the final row.
+    assert text.index("Over Time") < text.index("Adjustment")
+
+
+def test_payroll_summary_splits_wage_groups_onto_their_own_pages(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    reader = PdfReader(BytesIO(client.get("/reports/2026-07/payroll-summary.pdf").data))
+    assert len(reader.pages) == 2
+    first, second = (page.extract_text() or "" for page in reader.pages)
+    assert "Payroll Summary - Monthly Wage" in first
+    assert "Month Worker" in first and "Day Worker" not in first
+    assert "Payroll Summary - Daily Wage" in second
+    assert "Day Worker" in second and "Month Worker" not in second
+
+
+def test_payroll_summary_lists_employees_in_numeric_id_order(app):
+    from attendance.reports import payroll_summary_rows
+    with app.app_context():
+        seed_two_wage_groups()
+        for eid in ("2", "10", "11"):
+            db.session.add(Employee(id=eid, name=f"Worker {eid}", salary_type="Monthly",
+                                    normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+            db.session.add(SalaryRecord(payroll_month="2026-07", employee_id=eid, name=f"Worker {eid}",
+                                        salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                        salary=Decimal("30000")))
+            db.session.add(PayrollResult(payroll_month="2026-07", employee_id=eid, payroll_rule_type="MONTHLY",
+                                         calculation_status="Calculated", final_salary=Decimal("30000")))
+        db.session.commit()
+        rows, _payable, _deduction = payroll_summary_rows("2026-07", "MONTHLY")
+        ids = [row[0] for row in rows]
+        # A string sort would put 10 and 11 before 2.
+        assert ids == ["2", "5", "10", "11"]
+
+
+def test_payroll_month_table_shows_paid_ot_and_less_hours_for_both_groups(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    html = client.get("/payroll/2026-07").data.decode()
+    for label in ("Monthly wage employees", "Daily wage employees"):
+        section = html[html.index(label):html.index(label) + 1400]
+        assert "<th>Paid OT</th>" in section, label
+        assert "<th>Less Hours Deduction</th>" in section, label
+
+
+def test_daily_calculation_detail_column_is_named_attendance_bonus(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/6").data
+    assert b"<th>Attendance bonus</th>" in page
+    assert b"Bonus absence" not in page
+
+
+def test_long_designation_wraps_instead_of_overrunning_its_column(client, app):
+    """A plain string cell does not wrap in ReportLab, so it ran into the next column."""
+    with app.app_context():
+        seed_two_wage_groups()
+        employee = db.session.get(Employee, "5")
+        employee.designation = "Head of Business Development and Strategic Partnerships"
+        db.session.commit()
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/department-wise.pdf").data)
+    # Wrapping splits the designation across lines, so the words survive but the
+    # single-line run does not. The day count that used to be overlapped is intact.
+    assert "Head of" in text
+    assert "Development" in text
+    assert "Month Worker" in text

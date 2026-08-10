@@ -145,6 +145,8 @@
       <th>Wage Type</th>
       <th>Status</th>
       <th>Base Salary</th>
+      <th>Paid OT</th>
+      <th>Less Hours Deduction</th>
       {% if show_bonus %}<th>Attendance Bonus</th>{% endif %}
       <th>Final payable salary</th>
       <th>Warnings</th>
@@ -160,13 +162,17 @@
       <td>{{ s.salary_type or "Missing" }}</td>
       <td><span class="badge text-bg-{{ 'success' if r and r.calculation_status == 'Calculated' else 'warning' }}">{{ r.calculation_status if r else 'Not Calculated' }}</span></td>
       <td>{{ s.salary }}</td>
+      {# Paid OT is the amount actually payable, so an employee with Ignore OT set
+         reads 0.00 here even though raw overtime minutes were recorded. #}
+      <td>{% if r and r.final_salary is not none %}{{ r.ot_amount or 0 }}{% else %}-{% endif %}</td>
+      <td>{% if r and r.final_salary is not none %}{{ r.less_hours_deduction or 0 }}{% else %}-{% endif %}</td>
       {% if show_bonus %}<td>{% if s.employee_id in bonus_excluded_ids %}<span class="text-muted">Excluded</span>{% elif not r or r.final_salary is none %}-{% elif not r.attendance_bonus_percent %}<span class="text-muted">Not earned</span>{% else %}{{ r.attendance_bonus_percent|percent }}% / {{ r.attendance_bonus_amount }}{% endif %}</td>{% endif %}
       <td>{% if r and r.final_salary is not none %}{{ r.final_salary }}{% else %}<strong>Not Calculated</strong>{% endif %}</td>
       <td>{{ s.warning }} {{ r.message if r else "" }}</td>
       <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.employee', month=month, employee_id=s.employee_id) }}">Details</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="{{ 9 if show_bonus else 8 }}" class="text-muted">No {{ title|lower }} found.</td></tr>
+    <tr><td colspan="{{ 11 if show_bonus else 10 }}" class="text-muted">No {{ title|lower }} found.</td></tr>
     {% endfor %}
   </tbody>
 </table>

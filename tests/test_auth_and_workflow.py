@@ -657,10 +657,12 @@ def test_worked_weekoff_earns_one_compensatory_leave(app):
         assert result.detail_json[0]["attendance_status"] == "Week Off Worked"
         assert result.detail_json[0]["comp_off_earned"] == "1"
         assert result.week_offs == 1
-        assert result.leave_earned == Decimal("1.0")
-        assert result.closing_leave == Decimal("1.0")
+        # One compensatory day plus the accrual the week off itself earns: (1/31)*2.
+        # A single decimal truncated that accrual away entirely.
+        assert result.leave_earned == Decimal("1.06")
+        assert result.closing_leave == Decimal("1.06")
         earned = LeaveLedger.query.filter_by(employee_id="5", payroll_month="2026-07", transaction_type="EARNED").one()
-        assert earned.amount == Decimal("1.0")
+        assert earned.amount == Decimal("1.06")
 
 
 def test_sandwich_leave_marks_weekoff_between_leave_days_and_pdf(app):
@@ -1049,7 +1051,8 @@ def test_employee_detail_common_save_recalculates_adjustment_and_loan(client, ap
         assert result.manual_adjustment == Decimal("100.00")
         assert result.leave_encashment_days == Decimal("3.0")
         assert result.leave_encashment_amount == Decimal("3000.00")
-        assert result.closing_leave == Decimal("0.0")
+        # 3.00 of the 3.06 available were encashed, so the accrual remainder carries.
+        assert result.closing_leave == Decimal("0.06")
         assert result.loan_deduction == Decimal("500.00")
         assert result.final_salary == Decimal("32600.00")
         audit = AuditLog.query.filter_by(action="Employee Payroll Data Changed").one()
@@ -1327,7 +1330,7 @@ def test_leave_encashment_rejects_more_days_than_available(client, app):
         f"manual_status_{record_id}": "Auto",
         f"notes_{record_id}": "",
     }, follow_redirects=True)
-    assert b"Only 2.0 leave(s) available for encashment" in response.data
+    assert b"Only 2.06 leave(s) available for encashment" in response.data
 
 
 def test_global_leave_encashment_encashes_all_available_leaves(client, app):
@@ -1348,10 +1351,11 @@ def test_global_leave_encashment_encashes_all_available_leaves(client, app):
         assert AuditLog.query.filter_by(action="Global Leave Encashment Changed").count() == 1
         calculate_payroll_month("2026-07")
         result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
-        assert result.leave_encashment_days == Decimal("3.0")
-        assert result.leave_encashment_amount == Decimal("3000.00")
-        assert result.closing_leave == Decimal("0.0")
-        assert result.final_salary == Decimal("33000.00")
+        # Global encashment takes the whole balance, accrual remainder included.
+        assert result.leave_encashment_days == Decimal("3.06")
+        assert result.leave_encashment_amount == Decimal("3060.00")
+        assert result.closing_leave == Decimal("0.00")
+        assert result.final_salary == Decimal("33060.00")
 
 
 def test_global_leave_encashment_can_be_disabled_per_employee(client, app):
@@ -1380,7 +1384,7 @@ def test_global_leave_encashment_can_be_disabled_per_employee(client, app):
         assert salary.leave_encashment_disabled is True
         assert result.leave_encashment_days == Decimal("0")
         assert result.leave_encashment_amount == Decimal("0.00")
-        assert result.closing_leave == Decimal("3.0")
+        assert result.closing_leave == Decimal("3.06")
         assert result.final_salary == Decimal("30000.00")
 
 

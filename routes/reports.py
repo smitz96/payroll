@@ -11,7 +11,9 @@ from attendance.models import AttendanceRecord, Employee, PayrollMonth, PayrollR
 from attendance.reports import (
     attendance_detail_csv,
     build_all_employees_pdf,
+    build_attendance_summary_pdf,
     build_attendance_detail_pdf,
+    build_department_wise_pdf,
     build_employee_pdf,
     build_error_report_pdf,
     build_less_hours_report_pdf,
@@ -71,6 +73,9 @@ def index():
     missing_salary = attendance_missing_salary(selected_month) if selected_month else {}
     cards = [
         {"title": "Final Salary Report", "detail": "One printable salary report for all employees.", "icon": "pdf", "href": "reports.final_report_pdf"},
+        {"title": "Attendance Summary for Monthly", "detail": "Attendance sheet per monthly wage employee, one to a page.", "icon": "attendance", "href": "reports.monthly_attendance_summary_pdf"},
+        {"title": "Summary for Daily Wage Group", "detail": "Attendance sheet per daily wage employee. Carries no company branding.", "icon": "attendance", "href": "reports.daily_attendance_summary_pdf"},
+        {"title": "Department Wise Attendance", "detail": "Attendance and leave by department, with each employee's calendar. No salary figures.", "icon": "users", "href": "reports.department_wise_pdf"},
         {"title": "Payroll Summary", "detail": "Employee-wise salary summary and deductions.", "icon": "salary", "href": "reports.payroll_summary_pdf"},
         {"title": "Detailed Attendance", "detail": "Daily working hours, status, shortage, and overtime.", "icon": "attendance", "href": "reports.attendance_detail_pdf"},
         {"title": "Overtime Report", "detail": "Only employees and dates with paid overtime.", "icon": "overtime", "href": "reports.overtime_pdf"},
@@ -161,6 +166,26 @@ def less_hours_pdf(month):
 @login_required
 def employee_pdf(month, employee_id):
     return pdf_response(build_employee_pdf(month, employee_id), f"smartfill-{month}-employee-{employee_id}.pdf")
+
+
+@bp.route("/<month>/attendance-summary-monthly.pdf")
+@login_required
+def monthly_attendance_summary_pdf(month):
+    return pdf_response(build_attendance_summary_pdf(month, "MONTHLY"), f"smartfill-attendance-summary-monthly-{month}.pdf")
+
+
+@bp.route("/<month>/summary-daily-wage.pdf")
+@login_required
+def daily_attendance_summary_pdf(month):
+    # Deliberately no "smartfill" in the filename: the document must not carry the
+    # company name anywhere for daily wage workers.
+    return pdf_response(build_attendance_summary_pdf(month, "DAILY"), f"attendance-summary-daily-{month}.pdf")
+
+
+@bp.route("/<month>/department-wise.pdf")
+@login_required
+def department_wise_pdf(month):
+    return pdf_response(build_department_wise_pdf(month), f"smartfill-department-wise-{month}.pdf")
 
 
 @bp.route("/<month>/final-report.pdf")

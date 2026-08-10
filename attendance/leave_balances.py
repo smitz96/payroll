@@ -3,11 +3,11 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
 from attendance import db
 from attendance.models import AuditLog, Employee, LeaveLedger, PayrollMonth, PayrollResult, SalaryRecord
-from attendance.utils import display_month
+from attendance.utils import LEAVE_DAY_PRECISION, display_month, truncate_leave_days
 
 
 def format_leave(value):
-    return Decimal(value or 0).quantize(Decimal("0.1"))
+    return Decimal(value or 0).quantize(LEAVE_DAY_PRECISION)
 
 
 def parse_leave_balance(value):
@@ -20,7 +20,7 @@ def parse_leave_balance(value):
         raise ValueError(f"Invalid leave balance: {value}") from exc
     if balance < 0:
         raise ValueError("Leave balance cannot be negative.")
-    return balance.quantize(Decimal("0.1"), rounding=ROUND_DOWN)
+    return truncate_leave_days(balance)
 
 
 def latest_payroll_result(employee_id, finalized_only=True):
@@ -176,7 +176,7 @@ def apply_leave_balance_updates(changes, username, commit=True):
                 continue
             if not reason:
                 raise ValueError(f"Reason is required for Employee ID {employee.id}.")
-            difference = (new_balance - old_balance).quantize(Decimal("0.1"))
+            difference = (new_balance - old_balance).quantize(LEAVE_DAY_PRECISION)
             description = (
                 f"Manual Leave Balance Correction | Previous Balance: {old_balance} | "
                 f"New Balance: {new_balance} | Difference: {difference:+} | "

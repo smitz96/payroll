@@ -60,13 +60,14 @@ def test_overtime_threshold_and_flooring():
         assert calculate_monthly_overtime(parse_duration(raw), Decimal("10"))[1] == payable
 
 
-def test_leave_earning_uses_month_days_and_truncates_one_decimal():
+def test_leave_earning_uses_month_days_and_truncates_two_decimals():
     expected = {
-        (0, 31): Decimal("0.0"),
-        (15, 30): Decimal("1.0"),
-        (28, 31): Decimal("1.8"),
-        (28, 28): Decimal("2.0"),
-        (23, 31): Decimal("1.4"),
+        (0, 31): Decimal("0.00"),
+        (15, 30): Decimal("1.00"),
+        (28, 31): Decimal("1.80"),
+        (28, 28): Decimal("2.00"),
+        # A single decimal truncated this to 1.4, losing most of a tenth of a day.
+        (23, 31): Decimal("1.48"),
     }
     for (eligible_days, days_in_month), earned in expected.items():
         assert calculate_monthly_leave_earned(Decimal(eligible_days), days_in_month) == earned
