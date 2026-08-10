@@ -113,6 +113,113 @@
     </section>
   </div>
 
+  {# Analytics: trend, month-over-month movement, and where the money goes. #}
+  <div class="dashboard-grid dashboard-grid-analytics">
+    <section class="tool-panel dashboard-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Payable trend</h2>
+        <span class="text-muted">Last {{ trend|length }} month(s)</span>
+      </div>
+      {% if trend %}
+      <div class="trend-chart" role="img" aria-label="Total payable salary by month">
+        {% for point in trend %}
+        <div class="trend-col{{ ' is-current' if point.month == month }}" title="{{ point.label }}: {{ point.display }}">
+          <span class="trend-value">{{ point.display }}</span>
+          <span class="trend-bar" style="height: {{ [point.height, 2]|max }}%"></span>
+          <span class="trend-label">{{ point.short }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">No calculated months yet.</div>
+      {% endif %}
+
+      {% if comparison.previous_label %}
+      <div class="delta-row">
+        {% for key, caption in [('payable', 'Payable'), ('deduction', 'Deductions'), ('headcount', 'Employees')] %}
+        {% set item = comparison[key] %}
+        <div class="delta-item">
+          <span>{{ caption }}</span>
+          <strong class="delta-{{ item.direction }}">
+            {% if item.direction == 'up' %}&#9650;{% elif item.direction == 'down' %}&#9660;{% else %}&#8212;{% endif %}
+            {{ item.percent ~ '%' if item.percent else item.amount }}
+          </strong>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="text-muted mb-0 mt-2">Compared with {{ comparison.previous_label }}.</p>
+      {% endif %}
+    </section>
+
+    <section class="tool-panel dashboard-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Cost by department</h2>
+      </div>
+      {% if department_costs %}
+      <div class="share-list">
+        {% for row in department_costs %}
+        <div class="share-row">
+          <div class="share-head">
+            <strong>{{ row.name }}</strong>
+            <span>{{ row.total }}</span>
+          </div>
+          <div class="share-track"><span class="share-fill" style="width: {{ [row.share, 1]|max }}%"></span></div>
+          <small>{{ row.employees }} employee(s) &middot; {{ row.share }}% of payable</small>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">Load wages to see department costs.</div>
+      {% endif %}
+    </section>
+
+    <section class="tool-panel dashboard-panel">
+      <div class="panel-title-row">
+        <h2 class="section-title">Deductions</h2>
+        <span class="text-muted">{{ deductions.total }}</span>
+      </div>
+      {% if deductions.rows %}
+      <div class="share-list">
+        {% for row in deductions.rows %}
+        <div class="share-row">
+          <div class="share-head">
+            <strong>{{ row.label }}</strong>
+            <span>{{ row.amount }}</span>
+          </div>
+          <div class="share-track"><span class="share-fill is-warm" style="width: {{ [row.share, 1]|max }}%"></span></div>
+          <small>{{ row.share }}% of deductions</small>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">No deductions this month.</div>
+      {% endif %}
+
+      <div class="mini-stat-grid">
+        <div class="mini-stat">
+          <span>Attendance clean</span>
+          <strong>{{ attendance_quality.clean_percent }}%</strong>
+          <small>{{ attendance_quality.review }} of {{ attendance_quality.total }} row(s) need review</small>
+        </div>
+        <div class="mini-stat">
+          <span>Leave liability</span>
+          <strong>{{ leave_liability.cost }}</strong>
+          <small>{{ leave_liability.days }} day(s) carried forward</small>
+        </div>
+        <div class="mini-stat">
+          <span>Monthly wage</span>
+          <strong>{{ wage_split.monthly.payable }}</strong>
+          <small>{{ wage_split.monthly.count }} employee(s)</small>
+        </div>
+        <div class="mini-stat">
+          <span>Daily wage</span>
+          <strong>{{ wage_split.daily.payable }}</strong>
+          <small>{{ wage_split.daily.count }} employee(s)</small>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <div class="dashboard-grid dashboard-grid-ops">
     <section class="tool-panel dashboard-panel">
       <div class="panel-title-row">

@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,3 +20,20 @@ class Config:
     APP_PORT = int(os.getenv("APP_PORT", "3000"))
     SESSION_INACTIVITY_TIMEOUT_SECONDS = int(os.getenv("SESSION_INACTIVITY_TIMEOUT_SECONDS", "300"))
     WTF_CSRF_ENABLED = os.getenv("WTF_CSRF_ENABLED", "true").lower() != "false"
+
+    # Session cookie hardening. SESSION_COOKIE_SECURE defaults to off because the
+    # Pi serves plain HTTP on the LAN; set SESSION_COOKIE_SECURE=true once the app
+    # is behind HTTPS so the cookie is never sent over an unencrypted connection.
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
+    SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "smartfill_session")
+    PERMANENT_SESSION_LIFETIME = timedelta(seconds=SESSION_INACTIVITY_TIMEOUT_SECONDS)
+
+    # Brute-force protection: lock the account after this many consecutive failures.
+    LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
+    LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
+    # A pending "already signed in elsewhere" takeover must be confirmed promptly;
+    # otherwise the password check that authorised it goes stale in the session.
+    LOGIN_TAKEOVER_WINDOW_SECONDS = int(os.getenv("LOGIN_TAKEOVER_WINDOW_SECONDS", "120"))
+    MIN_PASSWORD_LENGTH = int(os.getenv("MIN_PASSWORD_LENGTH", "10"))

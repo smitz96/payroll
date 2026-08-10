@@ -79,7 +79,7 @@
           <li>Employee ID cannot be changed and unknown IDs are rejected.</li>
           <li>A Name in the file must match the stored name. Rename from the employee page instead.</li>
           <li>Wage type cannot be changed once set. Mark the employee left or terminated, then create a new Employee ID.</li>
-          <li>Basic Salary, HRA, Allowance and Conveyance Allowance must add up to Salary, and apply to monthly wage only.</li>
+          <li>Basic, HRA and Allowance must add up to Salary exactly, and apply to monthly wage only.</li>
         </ul>
       </section>
     </div>
@@ -121,16 +121,14 @@
         <div class="monthly-only" data-monthly-only hidden>
           <h4 class="form-subhead">Salary breakup</h4>
           <div class="breakup-grid">
-            <div><label class="form-label" for="add_basic_salary">Basic Salary</label>
+            <div><label class="form-label" for="add_basic_salary">Basic</label>
               <input class="form-control" id="add_basic_salary" name="basic_salary" value="0" inputmode="decimal" data-breakup></div>
             <div><label class="form-label" for="add_hra">HRA</label>
               <input class="form-control" id="add_hra" name="hra" value="0" inputmode="decimal" data-breakup></div>
             <div><label class="form-label" for="add_allowance">Allowance</label>
               <input class="form-control" id="add_allowance" name="allowance" value="0" inputmode="decimal" data-breakup></div>
-            <div><label class="form-label" for="add_conveyance_allowance">Conveyance Allowance</label>
-              <input class="form-control" id="add_conveyance_allowance" name="conveyance_allowance" value="0" inputmode="decimal" data-breakup></div>
           </div>
-          <div class="breakup-total" data-breakup-total>Leave all four at 0 if the breakup is not captured yet.</div>
+          <div class="breakup-total" data-breakup-total>Leave all three at 0 if the breakup is not captured yet.</div>
 
           <h4 class="form-subhead">Compliance</h4>
           <label class="form-check mb-2">
@@ -198,16 +196,14 @@
         <div class="monthly-only" data-monthly-only hidden>
           <h4 class="form-subhead">Salary breakup</h4>
           <div class="breakup-grid">
-            <div><label class="form-label" for="edit_{{ loop.index }}_basic_salary">Basic Salary</label>
+            <div><label class="form-label" for="edit_{{ loop.index }}_basic_salary">Basic</label>
               <input class="form-control" id="edit_{{ loop.index }}_basic_salary" name="basic_salary" value="{{ employee.basic_salary or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
             <div><label class="form-label" for="edit_{{ loop.index }}_hra">HRA</label>
               <input class="form-control" id="edit_{{ loop.index }}_hra" name="hra" value="{{ employee.hra or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
             <div><label class="form-label" for="edit_{{ loop.index }}_allowance">Allowance</label>
               <input class="form-control" id="edit_{{ loop.index }}_allowance" name="allowance" value="{{ employee.allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
-            <div><label class="form-label" for="edit_{{ loop.index }}_conveyance_allowance">Conveyance Allowance</label>
-              <input class="form-control" id="edit_{{ loop.index }}_conveyance_allowance" name="conveyance_allowance" value="{{ employee.conveyance_allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
           </div>
-          <div class="breakup-total" data-breakup-total>Leave all four at 0 if the breakup is not captured yet.</div>
+          <div class="breakup-total" data-breakup-total>Leave all three at 0 if the breakup is not captured yet.</div>
 
           <h4 class="form-subhead">Compliance</h4>
           <label class="form-check mb-2">

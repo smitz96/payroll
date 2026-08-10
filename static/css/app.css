@@ -1253,12 +1253,12 @@ html[data-theme="dark"] .sticky-actions { background:linear-gradient(180deg, rgb
 
 /* Payroll month stepper */
 .workflow-steps { list-style:none; display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:10px; margin:0 0 24px; padding:0; }
-.workflow-step { display:grid; grid-template-columns:auto minmax(0, 1fr); align-items:start; gap:4px 10px; padding:13px 14px; border-radius:var(--r-md); border:1px solid var(--smartfill-line); background:var(--smartfill-surface); }
+.workflow-step { display:grid; grid-template-columns:auto minmax(0, 1fr); grid-template-rows:1fr auto; align-items:start; gap:4px 10px; padding:13px 14px; border-radius:var(--r-md); border:1px solid var(--smartfill-line); background:var(--smartfill-surface); }
 .workflow-step-mark { grid-column:1; grid-row:1; flex:0 0 auto; width:26px; height:26px; display:grid; place-items:center; border-radius:999px; border:1px solid var(--smartfill-line); background:var(--smartfill-surface-soft); color:var(--smartfill-muted); font-weight:900; font-size:.82rem; }
-.workflow-step-body { grid-column:2; display:flex; flex-direction:column; gap:3px; min-width:0; }
+.workflow-step-body { grid-column:2; grid-row:1; display:flex; flex-direction:column; gap:3px; min-width:0; }
 .workflow-step-body strong { font-size:.92rem; }
 .workflow-step-body small { color:var(--smartfill-muted); font-size:.78rem; }
-.workflow-step-cta { grid-column:2; display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; max-width:100%; }
+.workflow-step-cta { grid-column:2; grid-row:2; align-self:end; display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; max-width:100%; }
 .workflow-step-cta:empty { display:none; margin-top:0; }
 .workflow-step-cta form { margin:0; }
 .workflow-step-cta .btn { white-space:normal; }
@@ -1343,3 +1343,54 @@ html[data-theme="dark"] .missing-punch-cell .punch-placeholder { color:var(--ios
 }
 .import-rules { margin:0; padding-left:18px; color:var(--smartfill-muted); font-size:.86rem; line-height:1.6; }
 .import-rules li + li { margin-top:3px; }
+
+/* Error pages (404 and friends) */
+.error-body { min-height:100vh; min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--smartfill-bg); }
+.error-stage { width:min(520px, 100%); }
+.error-card { background:var(--smartfill-surface); border:1px solid var(--smartfill-line); border-radius:var(--r-xl); padding:36px 32px 24px; box-shadow:var(--ios-shadow-2); text-align:center; }
+.error-code { display:inline-grid; place-items:center; min-width:74px; height:74px; padding:0 16px; margin-bottom:18px; border-radius:23%; background:var(--ios-fill); color:var(--smartfill-muted); font-size:1.6rem; font-weight:680; letter-spacing:-.02em; }
+.error-card h1 { margin:0 0 8px; font-size:1.5rem; font-weight:680; letter-spacing:-.024em; color:var(--smartfill-ink); }
+.error-detail { margin:0 0 24px; color:var(--smartfill-muted); font-size:.95rem; line-height:1.5; }
+.error-actions { display:flex; flex-direction:column; gap:8px; }
+.error-footer { margin-top:26px; padding-top:18px; border-top:1px solid var(--smartfill-line); display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--smartfill-muted); font-size:.78rem; }
+@media (max-width: 520px) {
+  .error-card { padding:28px 20px 20px; }
+}
+
+/* Dashboard analytics */
+.dashboard-grid-analytics { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:14px; margin-bottom:14px; }
+
+.trend-chart { display:flex; align-items:flex-end; gap:8px; height:150px; padding:6px 0 0; }
+.trend-col { flex:1 1 0; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; gap:5px; min-width:0; }
+.trend-value { font-size:.62rem; color:var(--smartfill-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+.trend-bar { width:100%; max-width:38px; border-radius:6px 6px 3px 3px; background:color-mix(in srgb, var(--ios-blue) 28%, transparent); transition:height .5s var(--ease-spring); }
+.trend-col.is-current .trend-bar { background:var(--ios-blue); }
+.trend-label { font-size:.72rem; color:var(--smartfill-muted); font-weight:510; }
+
+.delta-row { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; margin-top:14px; padding-top:14px; border-top:1px solid var(--smartfill-line); }
+.delta-item { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.delta-item span { color:var(--smartfill-muted); font-size:.76rem; }
+.delta-item strong { font-size:.95rem; letter-spacing:-.01em; }
+.delta-up { color:var(--ios-red-text); }
+.delta-down { color:var(--ios-green-text); }
+.delta-flat { color:var(--smartfill-muted); }
+
+.share-list { display:flex; flex-direction:column; gap:12px; }
+.share-row { display:flex; flex-direction:column; gap:5px; min-width:0; }
+.share-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+.share-head strong { font-size:.88rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.share-head span { color:var(--smartfill-muted); font-size:.84rem; white-space:nowrap; }
+.share-track { height:6px; border-radius:var(--r-pill); background:var(--ios-fill); overflow:hidden; }
+.share-fill { display:block; height:100%; border-radius:var(--r-pill); background:var(--ios-blue); transition:width .5s var(--ease-spring); }
+.share-fill.is-warm { background:var(--ios-orange); }
+.share-row small { color:var(--smartfill-muted); font-size:.74rem; }
+
+.mini-stat-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:9px; margin-top:16px; padding-top:14px; border-top:1px solid var(--smartfill-line); }
+.mini-stat { display:flex; flex-direction:column; gap:1px; padding:9px 11px; border-radius:var(--r-md); background:var(--ios-surface-2); min-width:0; }
+.mini-stat span { color:var(--smartfill-muted); font-size:.72rem; }
+.mini-stat strong { font-size:1rem; letter-spacing:-.014em; overflow-wrap:anywhere; }
+.mini-stat small { color:var(--smartfill-muted); font-size:.7rem; line-height:1.3; }
+
+@media (max-width: 1100px) {
+  .dashboard-grid-analytics { grid-template-columns:1fr; }
+}

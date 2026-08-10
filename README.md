@@ -18,6 +18,14 @@ Username: admin
 Password: 12345
 ```
 
+Change this immediately. Sign-in is protected by:
+
+- A lockout after `LOGIN_MAX_ATTEMPTS` consecutive failures (default 5) for `LOGIN_LOCKOUT_MINUTES` (default 15). The counter and lockout are stored in the database, so restarting the service does not clear them.
+- Identical responses and timing for an unknown username and a wrong password, so accounts cannot be probed.
+- Every failed attempt and lockout recorded in Activity Logs.
+- Session cookies set `HttpOnly` and `SameSite=Lax`. Set `SESSION_COOKIE_SECURE=true` once the app is served over HTTPS.
+- Password changes require `MIN_PASSWORD_LENGTH` characters (default 10) with at least one letter and one number, and reject the shipped defaults.
+
 Change this from `Settings -> Security -> Change Password`. Passwords are stored with Werkzeug password hashing.
 
 ## Local Setup
@@ -115,7 +123,7 @@ Every employee has a wage type and a `Salary`, which is the figure payroll is ca
 
 Monthly wage employees additionally have:
 
-- **Salary breakup** - `Basic Salary`, `HRA`, `Allowance`, `Conveyance Allowance`. All four must add up to `Salary` exactly. Leaving all four at zero means the breakup has not been captured yet and is allowed; once any one is filled in, the total has to reconcile. The form shows a running total and the shortfall or excess as you type.
+- **Salary breakup** - `Basic`, `HRA`, `Allowance`. All three must add up to `Salary` exactly. Leaving all three at zero means the breakup has not been captured yet and is allowed; once any one is filled in, the total has to reconcile. The form shows a running total and the shortfall or excess as you type.
 - **Compliance** - `PF` and `ESIC` yes/no flags.
 
 Every employee, monthly or daily, also has **Payroll exceptions**:
@@ -134,10 +142,12 @@ Both groups are hidden for Daily wage employees and are never stored for them. T
 - Unknown Employee IDs are rejected.
 - A `Name` column must match the stored name. Import cannot rename an employee - correct the name on the employee page instead. This keeps a bulk file from silently reassigning payroll to a different person when a spelling changes.
 - Wage type cannot be changed once set.
-- Breakup columns must reconcile with `Salary`, and are rejected on a daily wage row.
+- Breakup columns must reconcile with `Salary`, and are rejected on a daily wage row. `Basic Salary` is still accepted as a column name for `Basic`, and a file that still carries the retired `Conveyance Allowance` column is rejected rather than silently dropping the amount.
 - Any column missing from the file leaves the stored value untouched, so an older export still imports cleanly.
 
 A rejected row aborts the whole import; nothing is partially applied.
+
+Both the Employee Master and Leave Balance exports begin with two illustrative rows (`John C Smith`, `Elvis D Grey`) showing every column filled in correctly, including a breakup that adds up. They are not database records - the import skips them, so an exported file can be edited and re-imported without touching the real employees that happen to share IDs 1 and 2.
 
 ### Import Order
 

@@ -9,14 +9,23 @@
       <span class="ms-2">Automatic rules configured for <strong>Monthly</strong> and <strong>Daily</strong> wage types.</span>
     </p>
   </div>
+  {% set attendance_pending = attendance_count and not payroll_month.attendance_submitted %}
+  {% set calc_label = (wage_filter|capitalize ~ " wage") if wage_filter else "every open wage type" %}
   <div class="d-flex gap-2 flex-wrap">
     {% if not any_finalized or wage_filter %}
+    <form method="post" onsubmit="return confirm('Recalculate payroll for {{ month }} keeping all manual changes?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="recheck_holidays">
+      {% if wage_filter %}<input type="hidden" name="wage_group" value="{{ wage_filter }}">{% endif %}
+      <button class="btn btn-outline-danger"
+              {% if attendance_pending %}disabled title="Submit attendance from Attendance Manager first"{% else %}title="Recalculates {{ calc_label }} from submitted attendance against the current holiday calendar, week offs, loans and advances. Manual overrides and adjustments are preserved, and finalized wage types are never touched."{% endif %}>Recalculate</button>
+    </form>
     <form method="post" onsubmit="return confirm('Recalculate from attendance and DISCARD all manual overrides, adjustments, loan entries and leave encashment for {{ month }}?');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="action" value="calculate">
       {% if wage_filter %}<input type="hidden" name="wage_group" value="{{ wage_filter }}">{% endif %}
       <button class="btn btn-outline-danger"
-              {% if attendance_count and not payroll_month.attendance_submitted %}disabled title="Submit attendance from Attendance Manager first"{% endif %}>Reset &amp; Recalculate</button>
+              {% if attendance_pending %}disabled title="Submit attendance from Attendance Manager first"{% else %}title="Clears manual overrides, adjustments, manual loan amounts and leave encashment for {{ calc_label }}, then recalculates from scratch."{% endif %}>Reset &amp; Recalculate</button>
     </form>
     {% endif %}
     <button type="button" class="btn btn-outline-danger" id="openDeletePayroll">Delete payroll</button>
@@ -96,25 +105,6 @@
   Attendance is imported but not submitted. Review punches in Attendance Manager, then submit.
   <a class="btn btn-sm btn-outline-primary ms-2" href="{{ url_for('attendance_manager.month', month=month) }}">Open Attendance Manager</a>
 </div>
-{% endif %}
-
-{% set calc_scope = wage_filter %}
-{% set calc_label = (calc_scope|capitalize ~ " wage") if calc_scope else "every open wage type" %}
-{% if not any_finalized or wage_filter %}
-<form method="post" class="tool-panel mb-4" id="run-calculation"
-      onsubmit="return confirm('Recalculate payroll for {{ month }} keeping all manual changes?');">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <input type="hidden" name="action" value="recheck_holidays">
-  {% if calc_scope %}<input type="hidden" name="wage_group" value="{{ calc_scope }}">{% endif %}
-  <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
-    <div>
-      <h2 class="section-title mb-0">Run calculation</h2>
-      <p class="text-muted mb-0">Recalculates <strong>{{ calc_label }}</strong> from submitted attendance against the current holiday calendar, week offs, loans and advances. Manual overrides and adjustments are preserved, and finalized wage types are never touched.</p>
-    </div>
-    <button class="btn btn-primary" {% if attendance_count and not payroll_month.attendance_submitted %}disabled title="Submit attendance from Attendance Manager first"{% endif %}>Recalculate</button>
-  </div>
-  <p class="text-muted mb-0 mt-2">To discard manual edits and start over, use <strong>Reset &amp; Recalculate</strong> at the top of the page.</p>
-</form>
 {% endif %}
 
 <form method="post" class="tool-panel mb-4">

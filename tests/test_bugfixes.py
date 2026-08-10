@@ -1,6 +1,9 @@
 """Regression tests for defects found during the UI and workflow review."""
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from io import BytesIO
+
+from pypdf import PdfReader
 
 from attendance import db
 from attendance.calculator import calculate_payroll_month
@@ -216,11 +219,12 @@ def test_payroll_month_page_shows_workflow_steps(client, app):
         assert label in page.data
     # First unfinished step is highlighted as the current one.
     assert b"workflow-step is-current" in page.data
-    # Reset & Recalculate now sits in the header beside Delete payroll; the panel
-    # keeps only the non-destructive recalculation.
-    assert b"Reset &amp; Recalculate" in page.data
-    assert b'id="run-calculation"' in page.data
-    assert b"Manual overrides and adjustments are preserved" in page.data
+    # Recalculate and Reset & Recalculate both sit in the header now, and the
+    # Run calculation panel they used to live in is gone.
+    header = page.data.split(b'<div class="page-head">')[1].split(b"</div>\n</div>")[0]
+    assert b"Reset &amp; Recalculate" in header
+    assert b">Recalculate<" in header
+    assert b'id="run-calculation"' not in page.data
     # The stale "Monthly only" claim is gone now that DAILY has a rule.
     assert b"Wage Type Monthly only" not in page.data
 
@@ -482,7 +486,7 @@ def test_workflow_step_loads_wages_without_the_removed_panel(client, app):
     assert b"Import or re-import the attendance CSV/XLSX" not in page.data
     assert b"Load wage from master" not in page.data
     # ... and step 2 offers the action that panel used to own.
-    assert b"Load wages from master" in page.data
+    assert b"Load wages" in page.data
 
     response = client.post("/payroll/2026-07", data={"action": "salary"}, follow_redirects=True)
     assert b"Wage data loaded from master" in response.data
@@ -519,8 +523,10 @@ def test_wage_step_action_is_hidden_once_a_group_is_finalized(client, app):
         "action": "finalize", "wage_group": "MONTHLY", "admin_password": "12345",
     }, follow_redirects=True)
     page = client.get("/payroll/2026-07")
+    # The wage step has no actions left once the group is locked: the reload button
+    # is gone and the Employee Master link was removed to keep the row aligned.
     assert b"Reload wages" not in page.data
-    assert b"Employee Master" in page.data
+    assert step_actions(page.data, "Load wages") == []
 
 
 # --- Monthly salary breakup and compliance flags ---
@@ -536,28 +542,27 @@ def add_employee(client, **overrides):
 
 def test_salary_breakup_must_add_up_to_salary(client, app):
     login(client)
-    bad = add_employee(client, basic_salary="15000", hra="6000", allowance="4000", conveyance_allowance="1000")
+    bad = add_employee(client, basic_salary="15000", hra="6000", allowance="5000")
     assert b"must add up to the salary" in bad.data
     assert b"Difference 4000.00" in bad.data
     with app.app_context():
         assert db.session.get(Employee, "80") is None
 
-    good = add_employee(client, basic_salary="15000", hra="6000", allowance="6000", conveyance_allowance="3000")
+    good = add_employee(client, basic_salary="15000", hra="6000", allowance="9000")
     assert b"Employee master saved" in good.data
     with app.app_context():
         employee = db.session.get(Employee, "80")
         assert Decimal(employee.basic_salary) == Decimal("15000")
         assert Decimal(employee.hra) == Decimal("6000")
-        assert Decimal(employee.allowance) == Decimal("6000")
-        assert Decimal(employee.conveyance_allowance) == Decimal("3000")
-        total = employee.basic_salary + employee.hra + employee.allowance + employee.conveyance_allowance
+        assert Decimal(employee.allowance) == Decimal("9000")
+        total = employee.basic_salary + employee.hra + employee.allowance
         assert Decimal(total) == Decimal(employee.salary)
 
 
 def test_breakup_may_be_left_empty(client, app):
     """An all-zero breakup means "not captured yet" and must stay valid."""
     login(client)
-    response = add_employee(client, basic_salary="0", hra="0", allowance="0", conveyance_allowance="0")
+    response = add_employee(client, basic_salary="0", hra="0", allowance="0")
     assert b"Employee master saved" in response.data
     with app.app_context():
         assert Decimal(db.session.get(Employee, "80").basic_salary) == Decimal("0")
@@ -580,7 +585,7 @@ def test_daily_wage_never_stores_breakup_or_compliance(client, app):
     client.post("/master", data={
         "employee_id": "81", "name": "Day Worker", "wage_type": "Daily", "salary": "600",
         "master_controls_present": "1",
-        "basic_salary": "400", "hra": "100", "allowance": "50", "conveyance_allowance": "50",
+        "basic_salary": "400", "hra": "100", "allowance": "100",
         "pf_enabled": "on", "esic_enabled": "on",
     }, follow_redirects=True)
     with app.app_context():
@@ -638,8 +643,8 @@ def test_import_round_trips_breakup_and_compliance(client, app):
 
     login(client)
     ok = client.post("/master/import", data={"employee_master_csv": (BytesIO(
-        b"Employee ID,Name,Wage Type,Salary,Basic Salary,HRA,Allowance,Conveyance Allowance,PF,ESIC\n"
-        b"1,Worker,Monthly,30000,15000,6000,6000,3000,Yes,No\n"), "master.csv")},
+        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance,PF,ESIC\n"
+        b"1,Worker,Monthly,30000,15000,6000,9000,Yes,No\n"), "master.csv")},
         content_type="multipart/form-data", follow_redirects=True)
     assert b"Employee master imported" in ok.data
     with app.app_context():
@@ -649,12 +654,12 @@ def test_import_round_trips_breakup_and_compliance(client, app):
         assert employee.esic_enabled is False
 
     export = client.get("/master/export.csv")
-    assert b"Basic Salary,HRA,Allowance,Conveyance Allowance,PF,ESIC" in export.data
-    assert b"15000.00,6000.00,6000.00,3000.00,Yes,No" in export.data
+    assert b"Basic,HRA,Allowance,PF,ESIC" in export.data
+    assert b"15000.00,6000.00,9000.00,Yes,No" in export.data
 
     bad = client.post("/master/import", data={"employee_master_csv": (BytesIO(
-        b"Employee ID,Name,Wage Type,Salary,Basic Salary,HRA,Allowance,Conveyance Allowance\n"
-        b"1,Worker,Monthly,30000,15000,6000,6000,9000\n"), "master.csv")},
+        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance\n"
+        b"1,Worker,Monthly,30000,15000,6000,12000\n"), "master.csv")},
         content_type="multipart/form-data", follow_redirects=True)
     assert b"must add up to the salary" in bad.data
 
@@ -669,7 +674,7 @@ def test_import_rejects_breakup_on_a_daily_employee(client, app):
 
     login(client)
     response = client.post("/master/import", data={"employee_master_csv": (BytesIO(
-        b"Employee ID,Name,Wage Type,Salary,Basic Salary\n2,Day Worker,Daily,600,400\n"), "master.csv")},
+        b"Employee ID,Name,Wage Type,Salary,Basic\n2,Day Worker,Daily,600,400\n"), "master.csv")},
         content_type="multipart/form-data", follow_redirects=True)
     assert b"only applies to monthly wage employees" in response.data
     with app.app_context():
@@ -683,8 +688,7 @@ def test_older_export_without_new_columns_still_imports(client, app):
         db.session.add(Employee(id="1", name="Worker", salary_type="Monthly",
                                 normalized_salary_type="MONTHLY", salary=Decimal("30000"),
                                 basic_salary=Decimal("15000"), hra=Decimal("6000"),
-                                allowance=Decimal("6000"), conveyance_allowance=Decimal("3000"),
-                                pf_enabled=True))
+                                allowance=Decimal("9000"), pf_enabled=True))
         db.session.commit()
 
     login(client)
@@ -844,10 +848,12 @@ def test_later_steps_are_disabled_until_attendance_is_imported(client, app):
     # Step 1 has no prerequisite, so it stays actionable.
     assert step_actions(page, "Import attendance") == [("Import attendance", False)]
     # Everything after it is inert until attendance lands.
-    for label in ("Load wages", "Review &amp; submit", "Calculate payroll", "Finalize"):
+    for label in ("Load wages", "Review &amp; submit", "Finalize"):
         actions = step_actions(page, label)
         assert actions, label
         assert all(disabled for _text, disabled in actions), f"{label} should be disabled: {actions}"
+    # Calculate payroll reports progress only; both recalculate buttons are in the header.
+    assert step_actions(page, "Calculate payroll") == []
     assert b"disabled-link" in page
     assert b"Complete the earlier steps first" in page
 
@@ -876,10 +882,11 @@ def test_completed_steps_stay_actionable(client, app):
 
     login(client)
     page = client.get("/payroll/2026-07").data
-    for label in ("Import attendance", "Load wages", "Review &amp; submit", "Calculate payroll", "Finalize"):
+    for label in ("Import attendance", "Load wages", "Review &amp; submit", "Finalize"):
         actions = step_actions(page, label)
         assert actions, label
         assert all(not disabled for _text, disabled in actions), f"{label} should be enabled: {actions}"
+    assert step_actions(page, "Calculate payroll") == []
 
 
 def test_header_holds_reset_and_drops_the_duplicate_attendance_link(client, app):
@@ -904,3 +911,381 @@ def test_finalize_step_cta_is_named_finalize(client, app):
     page = client.get("/payroll/2026-07").data
     assert ("Finalize", False) in step_actions(page, "Finalize")
     assert b"Go to locks" not in page
+
+
+def test_every_workflow_step_has_at_most_one_action(client, app):
+    """One button per step keeps the row aligned; two made step 2 taller than the rest."""
+    with app.app_context():
+        seed_mixed_month()
+
+    login(client)
+    page = client.get("/payroll/2026-07").data
+    for label in ("Import attendance", "Load wages", "Review &amp; submit", "Calculate payroll", "Finalize"):
+        actions = step_actions(page, label)
+        assert len(actions) <= 1, f"{label} has {len(actions)} actions: {actions}"
+    # Step 1 keeps its entry point into Attendance Manager.
+    assert step_actions(page, "Import attendance")[0][0] == "Review attendance"
+    # Step 2 keeps the action that does the work, not the link to master.
+    assert step_actions(page, "Load wages")[0][0] == "Reload wages"
+    # Step 4 has no button of its own.
+    assert step_actions(page, "Calculate payroll") == []
+
+
+# --- Branded error pages ---
+
+def test_unknown_url_renders_the_branded_404_page(client):
+    response = client.get("/no-such-page")
+    assert response.status_code == 404
+    assert b"Page not found" in response.data
+    assert b"error-card" in response.data
+    assert b"Go to dashboard" in response.data
+    # Not the default Werkzeug body.
+    assert b"nabla" not in response.data.lower()
+
+
+def test_malformed_month_uses_the_404_page_too(client, app):
+    login(client)
+    response = client.get("/payroll/2026-99")
+    assert response.status_code == 404
+    assert b"Page not found" in response.data
+    assert b"YYYY-MM" in response.data
+
+
+# --- Login hardening ---
+
+def test_repeated_failures_lock_the_account(client, app):
+    from attendance.models import User
+
+    for attempt in range(4):
+        response = client.post("/login", data={"username": "admin", "password": "wrong"}, follow_redirects=True)
+        assert b"Invalid username or password" in response.data, attempt
+
+    locked = client.post("/login", data={"username": "admin", "password": "wrong"}, follow_redirects=True)
+    assert b"Too many failed attempts" in locked.data
+
+    # The correct password is refused while the lockout stands.
+    blocked = client.post("/login", data={"username": "admin", "password": "12345"}, follow_redirects=True)
+    assert b"Too many failed attempts" in blocked.data
+    assert b"Dashboard" not in blocked.data
+
+    with app.app_context():
+        user = User.query.filter_by(username="admin").one()
+        assert user.locked_until is not None
+        assert AuditLog.query.filter_by(action="User Login Locked").count() == 1
+        assert AuditLog.query.filter_by(action="User Login Failed").count() == 4
+
+
+def test_lockout_expires_and_a_good_password_clears_the_counter(client, app):
+    from attendance.models import User
+
+    for _ in range(5):
+        client.post("/login", data={"username": "admin", "password": "wrong"})
+
+    with app.app_context():
+        user = User.query.filter_by(username="admin").one()
+        user.locked_until = datetime.utcnow() - timedelta(seconds=1)
+        db.session.commit()
+
+    response = client.post("/login", data={"username": "admin", "password": "12345"}, follow_redirects=True)
+    assert b"Dashboard" in response.data
+    with app.app_context():
+        user = User.query.filter_by(username="admin").one()
+        assert user.locked_until is None
+        assert user.failed_login_count == 0
+
+
+def test_unknown_username_is_not_distinguishable_and_is_logged(client, app):
+    response = client.post("/login", data={"username": "ghost", "password": "whatever"}, follow_redirects=True)
+    assert b"Invalid username or password" in response.data
+    assert b"not found" not in response.data.lower()
+    with app.app_context():
+        audit = AuditLog.query.filter_by(action="User Login Failed").one()
+        assert audit.actor == "ghost"
+
+
+def test_stale_takeover_confirmation_is_rejected(client, app):
+    first = app.test_client()
+    second = app.test_client()
+    first.post("/login", data={"username": "admin", "password": "12345"})
+
+    blocked = second.post("/login", data={"username": "admin", "password": "12345"})
+    assert b"already signed in" in blocked.data
+
+    # Let the window that the password check authorised go stale.
+    with second.session_transaction() as sess:
+        sess["pending_login_granted_at"] = datetime.utcnow().timestamp() - 3600
+    stale = second.post("/login", data={"action": "force_login"}, follow_redirects=True)
+    assert b"Login confirmation expired" in stale.data
+    assert b"Dashboard" not in stale.data
+
+
+def test_password_policy_rejects_weak_choices(client, app):
+    login(client)
+    for new_password, expected in [
+        ("short1", b"at least 10 characters"),
+        ("alllettersonly", b"one letter and one number"),
+        ("12345", b"at least 10 characters"),
+    ]:
+        response = client.post("/settings/security", data={
+            "current_password": "12345", "new_password": new_password, "confirm_password": new_password,
+        }, follow_redirects=True)
+        assert expected in response.data, new_password
+
+
+def test_session_cookie_is_hardened(client, app):
+    assert app.config["SESSION_COOKIE_HTTPONLY"] is True
+    assert app.config["SESSION_COOKIE_SAMESITE"] == "Lax"
+    response = client.post("/login", data={"username": "admin", "password": "12345"})
+    cookie = response.headers.get("Set-Cookie", "")
+    assert "HttpOnly" in cookie
+    assert "SameSite=Lax" in cookie
+
+
+# --- Conveyance Allowance merged into Allowance ---
+
+def test_conveyance_value_is_folded_into_allowance_on_upgrade(tmp_path):
+    """An existing breakup must still add up after the column is removed."""
+    import sqlite3
+    from app import create_app
+
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db_path)
+    connection.executescript(
+        """
+        CREATE TABLE employee (
+            id VARCHAR(64) PRIMARY KEY,
+            name VARCHAR(160) NOT NULL,
+            department VARCHAR(160),
+            designation VARCHAR(160),
+            salary NUMERIC(12,2) NOT NULL DEFAULT 0,
+            basic_salary NUMERIC(12,2) NOT NULL DEFAULT 0,
+            hra NUMERIC(12,2) NOT NULL DEFAULT 0,
+            allowance NUMERIC(12,2) NOT NULL DEFAULT 0,
+            conveyance_allowance NUMERIC(12,2) NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO employee (id, name, salary, basic_salary, hra, allowance, conveyance_allowance)
+        VALUES ('1', 'Worker', 30000, 15000, 6000, 6000, 3000);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    app = create_app({"SQLALCHEMY_DATABASE_URI": "sqlite:///" + str(db_path), "TESTING": True})
+    with app.app_context():
+        employee = db.session.get(Employee, "1")
+        assert Decimal(employee.allowance) == Decimal("9000")  # 6000 + 3000
+        total = employee.basic_salary + employee.hra + employee.allowance
+        assert Decimal(total) == Decimal(employee.salary)
+
+
+def test_import_rejects_a_file_that_still_carries_conveyance(client, app):
+    from io import BytesIO
+
+    with app.app_context():
+        db.session.add(Employee(id="1", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    response = client.post("/master/import", data={"employee_master_csv": (BytesIO(
+        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance,Conveyance Allowance\n"
+        b"1,Worker,Monthly,30000,15000,6000,6000,3000\n"), "old.csv")},
+        content_type="multipart/form-data", follow_redirects=True)
+    assert b"merged into Allowance" in response.data
+    with app.app_context():
+        assert Decimal(db.session.get(Employee, "1").allowance) == Decimal("0")
+
+
+def test_import_accepts_the_old_basic_salary_column_name(client, app):
+    from io import BytesIO
+
+    with app.app_context():
+        db.session.add(Employee(id="1", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    response = client.post("/master/import", data={"employee_master_csv": (BytesIO(
+        b"Employee ID,Name,Wage Type,Salary,Basic Salary,HRA,Allowance\n"
+        b"1,Worker,Monthly,30000,15000,6000,9000\n"), "old.csv")},
+        content_type="multipart/form-data", follow_redirects=True)
+    assert b"Employee master imported" in response.data
+    with app.app_context():
+        assert Decimal(db.session.get(Employee, "1").basic_salary) == Decimal("15000")
+
+
+# --- Exports carry a self-documenting sample template ---
+
+def test_master_export_leads_with_sample_rows(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="9", name="Real Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000"),
+                                ot_ignored=True, less_hours_ignored=False))
+        db.session.commit()
+
+    login(client)
+    body = client.get("/master/export.csv").data.decode()
+    lines = [line for line in body.splitlines() if line.strip()]
+    assert lines[0].endswith("Ignore OT,Ignore Less Hours")
+    assert lines[1].startswith("1,John C Smith,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,Yes,No,Yes,No")
+    assert lines[2].startswith("2,Elvis D Grey,Mechanical Production,Helper,Daily,5000,0,0,0,No,No,Yes,No")
+    # The sample breakup demonstrates the rule it documents.
+    assert Decimal("35000") + Decimal("10000") + Decimal("5000") == Decimal("50000")
+    # Real data follows the samples.
+    assert any(line.startswith("9,Real Worker") for line in lines)
+    assert "Yes,No" in [line for line in lines if line.startswith("9,")][0]
+
+
+def test_exported_master_reimports_without_touching_sample_ids(client, app):
+    """The samples reuse IDs 1 and 2, so import must skip them, not apply them."""
+    with app.app_context():
+        db.session.add(Employee(id="1", name="Manish C Hirani", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("68200")))
+        db.session.add(Employee(id="2", name="Bijal T Patel", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("22500")))
+        db.session.commit()
+
+    login(client)
+    exported = client.get("/master/export.csv").data
+    assert b"John C Smith" in exported
+
+    response = client.post("/master/import", data={
+        "employee_master_csv": (BytesIO(exported), "employee_master.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"Employee master imported" in response.data
+    assert b"already named" not in response.data
+    with app.app_context():
+        # Real records are untouched and never renamed to the sample names.
+        assert db.session.get(Employee, "1").name == "Manish C Hirani"
+        assert Decimal(db.session.get(Employee, "1").salary) == Decimal("68200")
+        assert db.session.get(Employee, "2").name == "Bijal T Patel"
+
+
+def test_master_import_reads_the_ignore_flags(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    response = client.post("/master/import", data={"employee_master_csv": (BytesIO(
+        b"Employee ID,Name,Wage Type,Salary,Ignore OT,Ignore Less Hours\n"
+        b"5,Worker,Monthly,30000,Yes,Yes\n"), "master.csv")},
+        content_type="multipart/form-data", follow_redirects=True)
+    assert b"Employee master imported" in response.data
+    with app.app_context():
+        employee = db.session.get(Employee, "5")
+        assert employee.ot_ignored is True
+        assert employee.less_hours_ignored is True
+        audit = AuditLog.query.filter_by(action="Employee Master Bulk Updated").one()
+        assert "Ignore OT No -> Yes" in audit.detail
+
+
+def test_leave_balance_export_and_reimport_skip_samples(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="1", name="Manish C Hirani", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    exported = client.get("/leave-balances/export.csv").data
+    lines = [line for line in exported.decode().splitlines() if line.strip()]
+    assert lines[1].startswith("1,John C Smith,12.5")
+    assert lines[2].startswith("2,Elvis D Grey,0")
+
+    response = client.post("/leave-balances/import", data={
+        "leave_balance_csv": (BytesIO(exported), "leave_balances.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"not found" not in response.data
+    with app.app_context():
+        # Employee 2 is only a sample and must not have been created or touched.
+        assert db.session.get(Employee, "2") is None
+
+
+# --- Dashboard analytics ---
+
+def test_dashboard_shows_analytics_sections(client, app):
+    with app.app_context():
+        seed_mixed_month()
+        employee = db.session.get(Employee, "5")
+        employee.department = "Accounts"
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/").data
+    for marker in (b"Payable trend", b"Cost by department", b"Deductions",
+                   b"Attendance clean", b"Leave liability", b"trend-chart", b"share-track"):
+        assert marker in page, marker
+    assert b"Accounts" in page
+
+
+def test_dashboard_compares_against_the_previous_month(client, app):
+    with app.app_context():
+        seed_mixed_month()
+        calculate_payroll_month("2026-07")
+        # An earlier, cheaper month to compare against.
+        db.session.add(PayrollMonth(month="2026-06"))
+        db.session.add(SalaryRecord(payroll_month="2026-06", employee_id="5", name="Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("10000")))
+        db.session.add(PayrollResult(payroll_month="2026-06", employee_id="5", payroll_rule_type="MONTHLY",
+                                     calculation_status="Calculated", final_salary=Decimal("10000"),
+                                     total_deduction=Decimal("0")))
+        db.session.commit()
+
+    login(client)
+    page = client.get("/?month=2026-07").data
+    assert b"Compared with June 2026" in page
+    assert b"delta-" in page
+
+
+def test_dashboard_handles_a_month_with_no_data(client, app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.commit()
+
+    login(client)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"No calculated months yet" in response.data or b"trend-chart" in response.data
+    assert b"Load wages to see department costs" in response.data
+    assert b"No deductions this month" in response.data
+
+
+def test_report_totals_match_the_payroll_figures_not_rounded_row_sums(app):
+    """KPI totals must equal what payroll deducted, not the sum of displayed rows.
+
+    Each day's shortage is rounded to 2dp for display; adding those up drifts from
+    the once-rounded total that is actually deducted.
+    """
+    from attendance.reports import build_less_hours_report_pdf
+
+    with app.app_context():
+        seed_month()
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("30000")))
+        # A salary that makes the quarter-hour rate a repeating decimal, so per-day
+        # rounding and once-rounding genuinely differ across several days.
+        for day in (1, 2, 3, 6, 7, 8, 9, 10):
+            db.session.add(AttendanceRecord(
+                payroll_month="2026-07", employee_id="5", employee_name="Worker",
+                date=date(2026, 7, day), day="Weekday", first_punch="09:30 AM",
+                last_punch="05:15 PM", raw_working_hours="7h 45m",
+                actual_minutes=465, parse_status="OK"))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        stored_total = Decimal(result.less_hours_deduction)
+        per_day_sum = sum(
+            (Decimal(str(item.get("shortage_deduction") or "0")) for item in result.detail_json or []),
+            Decimal("0"),
+        )
+
+        text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(build_less_hours_report_pdf("2026-07"))).pages)
+        assert f"{stored_total:,.2f}" in text, f"report should show the payroll total {stored_total}"
+        if per_day_sum != stored_total:
+            assert f"{per_day_sum:,.2f}" not in text, "report must not show the drifted row sum"

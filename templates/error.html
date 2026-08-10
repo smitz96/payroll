@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{{ code }} &middot; SMARTfill Payroll</title>
+  <script>
+    (function () {
+      var savedTheme = localStorage.getItem('smartfill-theme') || 'light';
+      document.documentElement.dataset.theme = savedTheme === 'dark' ? 'dark' : 'light';
+    }());
+  </script>
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='img/favicon.png') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body class="error-body">
+  <main class="error-stage">
+    <section class="error-card">
+      <span class="error-code" aria-hidden="true">{{ code }}</span>
+      <h1>{{ title }}</h1>
+      <p class="error-detail">{{ message }}</p>
+      <div class="error-actions">
+        <a class="btn btn-primary btn-lg" href="{{ url_for('dashboard.index') }}">Go to dashboard</a>
+        <button class="btn btn-plain btn-lg" type="button" onclick="history.back()">Go back</button>
+      </div>
+      <footer class="error-footer">
+        <span class="brand-lockup-mini">
+          <img src="{{ url_for('static', filename='img/smartfill-logo.png') }}" alt="SMARTfill" onerror="this.replaceWith(document.createTextNode('SMARTfill'));">
+        </span>
+        <span>SMARTfill Payroll</span>
+      </footer>
+    </section>
+  </main>
+</body>
+</html>

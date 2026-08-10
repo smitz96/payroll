@@ -56,11 +56,11 @@ def test_login_logout_and_password_change(client):
     assert b"Invalid username or password" in bad.data
     good = client.post("/login", data={"username": "admin", "password": "12345"}, follow_redirects=True)
     assert b"Dashboard" in good.data
-    changed = client.post("/settings/security", data={"current_password": "12345", "new_password": "newpassword", "confirm_password": "newpassword"}, follow_redirects=True)
+    changed = client.post("/settings/security", data={"current_password": "12345", "new_password": "newpassword1", "confirm_password": "newpassword1"}, follow_redirects=True)
     assert b"Password changed successfully" in changed.data
     client.get("/logout")
     assert b"Invalid username" in client.post("/login", data={"username": "admin", "password": "12345"}, follow_redirects=True).data
-    assert b"Dashboard" in client.post("/login", data={"username": "admin", "password": "newpassword"}, follow_redirects=True).data
+    assert b"Dashboard" in client.post("/login", data={"username": "admin", "password": "newpassword1"}, follow_redirects=True).data
 
 
 def test_inactive_session_auto_logs_out(client, app):
@@ -429,7 +429,7 @@ def test_employee_master_import_export_updates_only_wage_fields(client, app):
 
     export_response = client.get("/master/export.csv")
     assert export_response.status_code == 200
-    assert b"Employee ID,Name,Department,Designation,Wage Type,Salary,Basic Salary,HRA,Allowance,Conveyance Allowance,PF,ESIC" in export_response.data
+    assert b"Employee ID,Name,Department,Designation,Wage Type,Salary,Basic,HRA,Allowance,PF,ESIC" in export_response.data
 
     blocked = client.post("/master/import", data={
         "employee_master_csv": (
@@ -474,7 +474,7 @@ def test_payroll_month_loads_salary_from_active_master(client, app):
         db.session.commit()
     client.post("/login", data={"username": "admin", "password": "12345"})
     page = client.get("/payroll/2026-07")
-    assert b"Load wages from master" in page.data or b"Reload wages" in page.data
+    assert b"Load wages" in page.data or b"Reload wages" in page.data
     response = client.post("/payroll/2026-07", data={"action": "salary"}, follow_redirects=True)
     assert b"Wage data loaded from master: 1 created, 0 updated, 1 skipped" in response.data
     with app.app_context():

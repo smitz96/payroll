@@ -50,16 +50,14 @@
       <div class="monthly-only" data-monthly-only hidden>
         <h4 class="form-subhead">Salary breakup</h4>
         <div class="breakup-grid">
-          <div><label class="form-label" for="detail_basic_salary">Basic Salary</label>
+          <div><label class="form-label" for="detail_basic_salary">Basic</label>
             <input class="form-control" id="detail_basic_salary" name="basic_salary" value="{{ employee.basic_salary or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
           <div><label class="form-label" for="detail_hra">HRA</label>
             <input class="form-control" id="detail_hra" name="hra" value="{{ employee.hra or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
           <div><label class="form-label" for="detail_allowance">Allowance</label>
             <input class="form-control" id="detail_allowance" name="allowance" value="{{ employee.allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
-          <div><label class="form-label" for="detail_conveyance_allowance">Conveyance Allowance</label>
-            <input class="form-control" id="detail_conveyance_allowance" name="conveyance_allowance" value="{{ employee.conveyance_allowance or 0 }}" inputmode="decimal" data-breakup {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
         </div>
-        <div class="breakup-total" data-breakup-total>Leave all four at 0 if the breakup is not captured yet.</div>
+        <div class="breakup-total" data-breakup-total>Leave all three at 0 if the breakup is not captured yet.</div>
 
         <h4 class="form-subhead">Compliance</h4>
         <div class="d-flex gap-3 flex-wrap">

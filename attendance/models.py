@@ -15,6 +15,10 @@ class User(db.Model):
     active_session_token = db.Column(db.String(64))
     active_session_started_at = db.Column(db.DateTime)
     active_session_last_seen_at = db.Column(db.DateTime)
+    # Brute-force protection state, persisted so a restart cannot clear a lockout.
+    failed_login_count = db.Column(db.Integer, default=0, nullable=False)
+    last_failed_login_at = db.Column(db.DateTime)
+    locked_until = db.Column(db.DateTime)
 
 
 class Employee(db.Model):
@@ -30,7 +34,6 @@ class Employee(db.Model):
     basic_salary = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
     hra = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
     allowance = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
-    conveyance_allowance = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
     pf_enabled = db.Column(db.Boolean, default=False, nullable=False)
     esic_enabled = db.Column(db.Boolean, default=False, nullable=False)
     # Both flags read the same way as the UI: ticked means "skip this rule for this

@@ -351,7 +351,13 @@ def build_attendance_detail_pdf(month):
 def build_overtime_report_pdf(month):
     rows = []
     names = employee_name_map(month)
+    # Totals come from the stored payroll figures, which are rounded once. Adding up
+    # the per-day amounts shown in the table would drift from what payroll actually
+    # paid, because each of those is rounded for display.
+    total_minutes = 0
+    total_amount = Decimal("0")
     for result in PayrollResult.query.filter_by(payroll_month=month).order_by(PayrollResult.employee_id):
+        contributed = False
         for item in result.detail_json or []:
             payable_ot = int(item.get("payable_ot") or 0)
             ot_amount = Decimal(str(item.get("ot_amount") or "0"))
@@ -367,8 +373,10 @@ def build_overtime_report_pdf(month):
                 payable_ot,
                 pdf_money(ot_amount),
             ])
-    total_minutes = sum(int(row[6] or 0) for row in rows)
-    total_amount = sum(Decimal(str(row[7]).replace(",", "") or 0) for row in rows)
+            contributed = True
+        if contributed:
+            total_minutes += int(result.payable_ot_minutes or 0)
+            total_amount += Decimal(result.ot_amount or 0)
     return report_pdf(
         "Overtime Report",
         f"{display_month(month)} · Only days with payable overtime",
@@ -388,7 +396,10 @@ def build_overtime_report_pdf(month):
 def build_less_hours_report_pdf(month):
     rows = []
     names = employee_name_map(month)
+    total_minutes = 0
+    total_deduction = Decimal("0")
     for result in PayrollResult.query.filter_by(payroll_month=month).order_by(PayrollResult.employee_id):
+        contributed = False
         for item in result.detail_json or []:
             shortage = int(item.get("shortage_minutes") or 0)
             deduction = Decimal(str(item.get("shortage_deduction") or "0"))
@@ -404,8 +415,10 @@ def build_less_hours_report_pdf(month):
                 shortage,
                 pdf_money(deduction),
             ])
-    total_minutes = sum(int(row[6] or 0) for row in rows)
-    total_deduction = sum(Decimal(str(row[7]).replace(",", "") or 0) for row in rows)
+            contributed = True
+        if contributed:
+            total_minutes += int(result.less_hours_minutes or 0)
+            total_deduction += Decimal(result.less_hours_deduction or 0)
     return report_pdf(
         "Less Hours Report",
         f"{display_month(month)} · Only days with a short-hours deduction",

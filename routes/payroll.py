@@ -292,10 +292,14 @@ def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count,
             "label": "Load wages",
             "done": salary_count > 0,
             "detail": f"{salary_count} wage record(s)" if salary_count else "Pull wage type and salary from Employee Master",
-            "href": url_for("master.index"),
-            "cta": "Employee Master",
+            # No link: Employees is one click away in the sidebar, and a second button
+            # here made this the only step with two, throwing the row out of line.
+            "href": None,
+            "cta": None,
             "action": None if locked else "salary",
-            "action_label": "Reload wages" if salary_count else "Load wages from master",
+            # Kept short so it stays on one line and lines up with the other steps;
+            # the step title and detail already say where the wages come from.
+            "action_label": "Reload wages" if salary_count else "Load wages",
             "action_hint": "Wage type and salary come from Employee Master. Employees with a zero salary or an inactive status are skipped.",
         },
         {
@@ -304,15 +308,18 @@ def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count,
             "done": bool(payroll_month.attendance_submitted),
             "detail": "Attendance submitted" if payroll_month.attendance_submitted else "Fix punch errors, then submit",
             "href": url_for("attendance_manager.month", month=month),
-            "cta": "Attendance Manager",
+            # Short enough to stay on one line, so every step button is the same height.
+            "cta": "Review punches",
         },
         {
             "key": "calculate",
             "label": "Calculate payroll",
             "done": calculated_count > 0,
-            "detail": f"{calculated_count} employee(s) calculated" if calculated_count else "Run the payroll calculation",
-            "href": "#run-calculation",
-            "cta": "Run calculation",
+            "detail": f"{calculated_count} employee(s) calculated" if calculated_count else "Use Recalculate at the top of the page",
+            # Recalculate and Reset & Recalculate both live in the page header now,
+            # so this step reports progress rather than carrying a duplicate button.
+            "href": None,
+            "cta": None,
         },
         {
             "key": "finalize",

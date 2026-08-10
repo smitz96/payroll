@@ -14,11 +14,14 @@ MASTER_IMPORT_REQUIRED_COLUMNS = {"Employee ID", "Wage Type", "Salary"}
 # Monthly salary breakup. These are informational/compliance fields: payroll is still
 # calculated from `salary`, and the components must add up to it exactly.
 SALARY_COMPONENTS = (
-    ("basic_salary", "Basic Salary"),
+    ("basic_salary", "Basic"),
     ("hra", "HRA"),
     ("allowance", "Allowance"),
-    ("conveyance_allowance", "Conveyance Allowance"),
 )
+# Files exported before Conveyance Allowance was folded into Allowance, and before
+# "Basic Salary" was shortened, still import cleanly.
+COMPONENT_COLUMN_ALIASES = {"basic_salary": ("Basic", "Basic Salary"), "hra": ("HRA",), "allowance": ("Allowance",)}
+RETIRED_IMPORT_COLUMNS = ("Conveyance Allowance",)
 COMPLIANCE_FLAGS = (("pf_enabled", "PF"), ("esic_enabled", "ESIC"))
 YES_VALUES = {"yes", "y", "true", "1", "enabled", "applicable"}
 NO_VALUES = {"no", "n", "false", "0", "disabled", "not applicable", ""}
@@ -91,25 +94,54 @@ def employee_master_export_rows():
             "Salary": employee.salary or Decimal("0"),
             # Breakup and compliance apply to monthly wage only; leave them blank for
             # daily so the file cannot suggest they are editable there.
-            "Basic Salary": (employee.basic_salary or Decimal("0")) if monthly else "",
+            "Basic": (employee.basic_salary or Decimal("0")) if monthly else "",
             "HRA": (employee.hra or Decimal("0")) if monthly else "",
             "Allowance": (employee.allowance or Decimal("0")) if monthly else "",
-            "Conveyance Allowance": (employee.conveyance_allowance or Decimal("0")) if monthly else "",
             "PF": ("Yes" if employee.pf_enabled else "No") if monthly else "",
             "ESIC": ("Yes" if employee.esic_enabled else "No") if monthly else "",
+            "Ignore OT": "Yes" if employee.ot_ignored else "No",
+            "Ignore Less Hours": "Yes" if employee.less_hours_ignored else "No",
         })
-    return rows
+    return list(EMPLOYEE_MASTER_SAMPLE_ROWS) + rows
 
 
 EMPLOYEE_MASTER_EXPORT_COLUMNS = [
     "Employee ID", "Name", "Department", "Designation", "Wage Type", "Salary",
-    "Basic Salary", "HRA", "Allowance", "Conveyance Allowance", "PF", "ESIC",
+    "Basic", "HRA", "Allowance", "PF", "ESIC", "Ignore OT", "Ignore Less Hours",
 ]
+
+# Illustrative rows shipped at the top of the export so the expected shape of every
+# column is obvious without opening the docs. They are not database records: the
+# import skips any row matching one of them, so an exported file round-trips safely.
+EMPLOYEE_MASTER_SAMPLE_ROWS = [
+    {
+        "Employee ID": "1", "Name": "John C Smith", "Department": "Accounts",
+        "Designation": "Accounts Executive", "Wage Type": "Monthly", "Salary": "50000",
+        "Basic": "35000", "HRA": "10000", "Allowance": "5000",
+        "PF": "Yes", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
+    },
+    {
+        "Employee ID": "2", "Name": "Elvis D Grey", "Department": "Mechanical Production",
+        "Designation": "Helper", "Wage Type": "Daily", "Salary": "5000",
+        "Basic": "0", "HRA": "0", "Allowance": "0",
+        "PF": "No", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
+    },
+]
+SAMPLE_ROW_KEYS = {(row["Employee ID"], row["Name"]) for row in EMPLOYEE_MASTER_SAMPLE_ROWS}
+
+
+def is_sample_row(row):
+    """True for the illustrative rows the export adds, so import can skip them."""
+    return (clean(row.get("Employee ID")), clean(row.get("Name"))) in SAMPLE_ROW_KEYS
 
 
 def apply_employee_master_import(rows, actor):
     changed = []
     for row_number, row in enumerate(rows, start=2):
+        # The export leads with illustrative rows; ignore them on the way back in so
+        # an untouched export can be re-imported without error.
+        if is_sample_row(row):
+            continue
         employee_id = clean(row.get("Employee ID"))
         if not employee_id:
             raise ValueError(f"Row {row_number}: Employee ID is required.")
@@ -162,15 +194,25 @@ def apply_employee_master_import(rows, actor):
             changes.append(f"Salary {old_salary} -> {salary}")
             employee.salary = salary
 
+        # Conveyance Allowance is gone; an old file carrying it would silently lose
+        # that amount, so say so instead of importing a breakup that no longer adds up.
+        for retired in RETIRED_IMPORT_COLUMNS:
+            if clean(row.get(retired)) and decimal_money(row.get(retired) or 0) != 0:
+                raise ValueError(
+                    f"Row {row_number}: {retired} has been merged into Allowance and is no longer imported. "
+                    f"Add its amount to Allowance and remove the {retired} column."
+                )
+
         effective_type = normalize_salary_type(employee.salary_type)
         if effective_type == "MONTHLY":
             components = {}
             for key, label in SALARY_COMPONENTS:
-                if label not in row:
+                column = next((name for name in COMPONENT_COLUMN_ALIASES[key] if name in row), None)
+                if column is None:
                     components[key] = Decimal(getattr(employee, key) or 0)
                     continue
                 try:
-                    value = decimal_money(row.get(label) or 0)
+                    value = decimal_money(row.get(column) or 0)
                 except ValueError as exc:
                     raise ValueError(f"Row {row_number}: {exc}") from exc
                 if value < 0:
@@ -193,8 +235,9 @@ def apply_employee_master_import(rows, actor):
                     setattr(employee, key, flag)
         else:
             # Reject breakup values on a daily wage row instead of silently dropping them.
-            for _key, label in SALARY_COMPONENTS:
-                if clean(row.get(label)) and decimal_money(row.get(label) or 0) != 0:
+            for key, label in SALARY_COMPONENTS:
+                column = next((name for name in COMPONENT_COLUMN_ALIASES[key] if name in row), None)
+                if column and clean(row.get(column)) and decimal_money(row.get(column) or 0) != 0:
                     raise ValueError(
                         f"Row {row_number}: {label} only applies to monthly wage employees. "
                         f"Employee {employee_id} is {employee.salary_type or 'not set'}."
@@ -205,6 +248,14 @@ def apply_employee_master_import(rows, actor):
                         f"Row {row_number}: {label} only applies to monthly wage employees. "
                         f"Employee {employee_id} is {employee.salary_type or 'not set'}."
                     )
+
+        for field, label in (("ot_ignored", "Ignore OT"), ("less_hours_ignored", "Ignore Less Hours")):
+            if label not in row:
+                continue
+            flag = parse_yes_no(row.get(label), f"Row {row_number}: {label}")
+            if flag != bool(getattr(employee, field)):
+                changes.append(f"{label} {'Yes' if getattr(employee, field) else 'No'} -> {'Yes' if flag else 'No'}")
+                setattr(employee, field, flag)
 
         if not changes:
             continue

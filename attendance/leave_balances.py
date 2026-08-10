@@ -87,6 +87,20 @@ def leave_balance_rows():
     return rows
 
 
+# Same idea as the employee master export: lead with illustrative rows so the file
+# documents itself, and skip them on import.
+LEAVE_BALANCE_SAMPLE_ROWS = [
+    {"Employee ID": "1", "Employee Name": "John C Smith", "Current Leave Balance": "12.5"},
+    {"Employee ID": "2", "Employee Name": "Elvis D Grey", "Current Leave Balance": "0"},
+]
+LEAVE_BALANCE_SAMPLE_KEYS = {(row["Employee ID"], row["Employee Name"]) for row in LEAVE_BALANCE_SAMPLE_ROWS}
+
+
+def is_leave_balance_sample_row(row):
+    key = (str(row.get("Employee ID") or "").strip(), str(row.get("Employee Name") or "").strip())
+    return key in LEAVE_BALANCE_SAMPLE_KEYS
+
+
 def leave_balance_export_rows():
     rows = []
     for row in leave_balance_rows():
@@ -96,12 +110,14 @@ def leave_balance_export_rows():
             "Employee Name": employee.name,
             "Current Leave Balance": row["current_balance"],
         })
-    return rows
+    return list(LEAVE_BALANCE_SAMPLE_ROWS) + rows
 
 
 def apply_leave_balance_import(rows, username):
     changes = []
     for row_number, row in enumerate(rows, start=2):
+        if is_leave_balance_sample_row(row):
+            continue
         employee_id = str(row.get("Employee ID") or "").strip()
         if not employee_id:
             raise ValueError(f"Row {row_number}: Employee ID is required.")

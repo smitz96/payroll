@@ -28,6 +28,113 @@ def scoped_results(month):
     return [result for result in results if employee_active_for_payroll_month(db.session.get(Employee, result.employee_id), month)]
 
 
+def delta(current, previous):
+    """Signed change and percentage between two months, for the KPI cards."""
+    current = Decimal(current or 0)
+    previous = Decimal(previous or 0)
+    if previous == 0:
+        return {"has_previous": False, "direction": "flat", "amount": money(current - previous), "percent": None}
+    change = current - previous
+    percent = (change / previous) * 100
+    direction = "up" if change > 0 else ("down" if change < 0 else "flat")
+    return {
+        "has_previous": True,
+        "direction": direction,
+        "amount": money(abs(change)),
+        "percent": f"{abs(percent):.1f}",
+    }
+
+
+def payable_trend(months, limit=6):
+    """Total payable per month, oldest first, with bar heights for the inline chart."""
+    points = []
+    for item in sorted(months, key=lambda m: m.month)[-limit:]:
+        results = scoped_results(item.month)
+        total = sum(
+            (Decimal(r.final_salary) for r in results
+             if r.final_salary is not None and r.calculation_status in {"Calculated", "Needs Review"}),
+            Decimal("0"),
+        )
+        points.append({"month": item.month, "label": display_month(item.month), "total": total})
+    peak = max((point["total"] for point in points), default=Decimal("0"))
+    for point in points:
+        # Keep a visible stub for zero months so the axis reads as a real series.
+        point["height"] = int((point["total"] / peak) * 100) if peak else 0
+        point["display"] = money(point["total"])
+        point["short"] = point["label"].split(" ")[0][:3]
+    return points
+
+
+def department_costs(salaries, calculated, limit=6):
+    """Payable split by department, so cost concentration is visible at a glance."""
+    payable_by_employee = {r.employee_id: Decimal(r.final_salary or 0) for r in calculated}
+    totals = {}
+    headcount = {}
+    for salary in salaries:
+        employee = db.session.get(Employee, salary.employee_id)
+        name = (employee.department if employee else "") or "Unassigned"
+        totals[name] = totals.get(name, Decimal("0")) + payable_by_employee.get(salary.employee_id, Decimal("0"))
+        headcount[name] = headcount.get(name, 0) + 1
+    grand_total = sum(totals.values(), Decimal("0"))
+    rows = []
+    for name, total in sorted(totals.items(), key=lambda item: item[1], reverse=True)[:limit]:
+        rows.append({
+            "name": name,
+            "employees": headcount[name],
+            "total": money(total),
+            "share": int((total / grand_total) * 100) if grand_total else 0,
+        })
+    return rows
+
+
+def deduction_breakdown(calculated):
+    """Where the deductions came from, largest first."""
+    buckets = [
+        ("LOP", sum((Decimal(r.lop_deduction or 0) for r in calculated), Decimal("0"))),
+        ("Less hours", sum((Decimal(r.less_hours_deduction or 0) for r in calculated), Decimal("0"))),
+        ("Loan", sum((Decimal(getattr(r, "loan_deduction", 0) or 0) for r in calculated), Decimal("0"))),
+        ("Advance", sum((Decimal(getattr(r, "advance_deduction", 0) or 0) for r in calculated), Decimal("0"))),
+    ]
+    total = sum((amount for _label, amount in buckets), Decimal("0"))
+    rows = []
+    for label, amount in sorted(buckets, key=lambda item: item[1], reverse=True):
+        if amount <= 0:
+            continue
+        rows.append({"label": label, "amount": money(amount), "share": int((amount / total) * 100) if total else 0})
+    return {"rows": rows, "total": money(total)}
+
+
+def attendance_quality(month):
+    """How much of the imported attendance still needs a human look."""
+    if not month:
+        return {"total": 0, "clean": 0, "review": 0, "clean_percent": 0}
+    total = AttendanceRecord.query.filter_by(payroll_month=month).count()
+    review = AttendanceRecord.query.filter(
+        AttendanceRecord.payroll_month == month,
+        AttendanceRecord.parse_status != "OK",
+    ).count()
+    clean = total - review
+    return {
+        "total": total,
+        "clean": clean,
+        "review": review,
+        "clean_percent": int(round((clean / total) * 100)) if total else 0,
+    }
+
+
+def leave_liability(calculated):
+    """Unused leave carried forward, and what encashing it would cost."""
+    days = sum((Decimal(r.closing_leave or 0) for r in calculated if r.payroll_rule_type == "MONTHLY"), Decimal("0"))
+    cost = Decimal("0")
+    for result in calculated:
+        if result.payroll_rule_type != "MONTHLY":
+            continue
+        salary = SalaryRecord.query.filter_by(payroll_month=result.payroll_month, employee_id=result.employee_id).first()
+        if salary:
+            cost += (Decimal(salary.salary) / Decimal(30)) * Decimal(result.closing_leave or 0)
+    return {"days": f"{days:.1f}", "cost": money(cost)}
+
+
 def month_snapshot(month):
     salaries = scoped_salaries(month.month)
     results = scoped_results(month.month)
@@ -130,6 +237,28 @@ def index():
     month_rows = [month_snapshot(item) for item in months[:6]]
     month_options = [{"value": item.month, "label": display_month(item.month)} for item in months]
     recent_logs = AuditLog.query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(8).all()
+
+    # Compare against the closest earlier month so the headline numbers have context.
+    previous_month = next((item for item in months if selected and item.month < selected), None)
+    previous_calculated = []
+    if previous_month:
+        previous_results = scoped_results(previous_month.month)
+        previous_calculated = [
+            r for r in previous_results
+            if r.final_salary is not None and r.calculation_status in {"Calculated", "Needs Review"}
+        ]
+    current_payable = sum((Decimal(r.final_salary) for r in calculated), Decimal("0"))
+    previous_payable = sum((Decimal(r.final_salary) for r in previous_calculated), Decimal("0"))
+    current_deduction = sum((Decimal(r.total_deduction) for r in calculated), Decimal("0"))
+    previous_deduction = sum((Decimal(r.total_deduction) for r in previous_calculated), Decimal("0"))
+
+    comparison = {
+        "previous_label": display_month(previous_month.month) if previous_month else None,
+        "payable": delta(current_payable, previous_payable),
+        "deduction": delta(current_deduction, previous_deduction),
+        "headcount": delta(len(calculated), len(previous_calculated)),
+    }
+
     return render_template(
         "dashboard.html",
         cards=cards,
@@ -143,4 +272,20 @@ def index():
         top_payables=top_payables,
         month_rows=month_rows,
         recent_logs=recent_logs,
+        comparison=comparison,
+        trend=payable_trend(months),
+        department_costs=department_costs(salaries, calculated),
+        deductions=deduction_breakdown(calculated),
+        attendance_quality=attendance_quality(selected),
+        leave_liability=leave_liability(calculated),
+        wage_split={
+            "monthly": {
+                "count": len(monthly),
+                "payable": money(sum((Decimal(r.final_salary or 0) for r in calculated if r.payroll_rule_type == "MONTHLY"), Decimal("0"))),
+            },
+            "daily": {
+                "count": len(daily),
+                "payable": money(sum((Decimal(r.final_salary or 0) for r in calculated if r.payroll_rule_type == "DAILY"), Decimal("0"))),
+            },
+        },
     )

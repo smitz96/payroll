@@ -13,7 +13,7 @@
       var salaryField = form.querySelector('[data-salary-total]');
       var parts = Array.prototype.slice.call(form.querySelectorAll('[data-breakup]'));
       var readout = form.querySelector('[data-breakup-total]');
-      var EMPTY_HINT = 'Leave all four at 0 if the breakup is not captured yet.';
+      var EMPTY_HINT = 'Leave all three at 0 if the breakup is not captured yet.';
 
       function num(field) {
         var value = parseFloat(String(field.value).replace(/,/g, ''));

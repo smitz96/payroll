@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from flask import Flask, url_for
+from flask import Flask, flash, redirect, render_template, url_for
 from flask_wtf import CSRFProtect
+from flask_wtf.csrf import CSRFError
 
 from attendance import db
 from attendance.authentication import init_admin_user
@@ -24,6 +25,12 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE user ADD COLUMN active_session_started_at DATETIME"))
         if "active_session_last_seen_at" not in user_columns:
             db.session.execute(db.text("ALTER TABLE user ADD COLUMN active_session_last_seen_at DATETIME"))
+        if "failed_login_count" not in user_columns:
+            db.session.execute(db.text("ALTER TABLE user ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0"))
+        if "last_failed_login_at" not in user_columns:
+            db.session.execute(db.text("ALTER TABLE user ADD COLUMN last_failed_login_at DATETIME"))
+        if "locked_until" not in user_columns:
+            db.session.execute(db.text("ALTER TABLE user ADD COLUMN locked_until DATETIME"))
     if "salary_record" in tables:
         salary_columns = {column["name"] for column in inspector.get_columns("salary_record")}
         if "loan" not in salary_columns:
@@ -56,7 +63,17 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN less_hours_ignored BOOLEAN NOT NULL DEFAULT 0"))
             if "less_hours_exempt" in employee_columns:
                 db.session.execute(db.text("UPDATE employee SET less_hours_ignored = less_hours_exempt"))
-        stale_employee_columns = [name for name in ("ot_enabled", "less_hours_exempt") if name in employee_columns]
+        # Conveyance Allowance was the same thing as Allowance, so fold any captured
+        # value into it before dropping the column; otherwise a stored breakup would
+        # stop adding up to the salary.
+        if "conveyance_allowance" in employee_columns:
+            db.session.execute(db.text(
+                "UPDATE employee SET allowance = COALESCE(allowance, 0) + COALESCE(conveyance_allowance, 0)"
+            ))
+        stale_employee_columns = [
+            name for name in ("ot_enabled", "less_hours_exempt", "conveyance_allowance")
+            if name in employee_columns
+        ]
         if "employment_status" not in employee_columns:
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN employment_status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE'"))
         if "inactive_at" not in employee_columns:
@@ -67,7 +84,6 @@ def ensure_schema_columns():
             ("basic_salary", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
             ("hra", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
             ("allowance", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
-            ("conveyance_allowance", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
             ("pf_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
             ("esic_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
         ):
@@ -128,6 +144,32 @@ def ensure_schema_columns():
             db.session.rollback()
 
 
+ERROR_PAGES = {
+    403: ("Not allowed", "You do not have access to this page."),
+    404: ("Page not found", "The page you asked for does not exist, or the payroll month is not a valid YYYY-MM value."),
+    405: ("Not allowed here", "That action is not available on this page."),
+    413: ("Upload too large", "The file is larger than the 16 MB upload limit."),
+    500: ("Something went wrong", "The action could not be completed. The error has been logged; try again, and check Activity Logs if it keeps happening."),
+}
+
+
+def register_error_pages(app):
+    """Serve the branded error page instead of the default Werkzeug text."""
+    def render_error(code):
+        title, message = ERROR_PAGES[code]
+        return render_template("error.html", code=code, title=title, message=message), code
+
+    for code in ERROR_PAGES:
+        app.register_error_handler(code, lambda error, code=code: render_error(code))
+
+    @app.errorhandler(CSRFError)
+    def handle_csrf_error(error):
+        # A stale form after a session timeout is the common cause, so send the
+        # user somewhere they can act rather than showing a raw 400.
+        flash("Your form expired. Please sign in and try again.", "warning")
+        return redirect(url_for("auth.login"))
+
+
 def register_static_versioning(app):
     """Stamp static URLs with the file's mtime.
 
@@ -153,6 +195,7 @@ def create_app(test_config=None):
         app.config.update(test_config)
     app.jinja_env.filters["ist_datetime"] = format_ist_datetime
     register_static_versioning(app)
+    register_error_pages(app)
     Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)
     Path("data").mkdir(exist_ok=True)
     db.init_app(app)
