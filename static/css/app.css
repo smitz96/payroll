@@ -1115,6 +1115,11 @@ html[data-theme="dark"] .attendance-log-footer { background:var(--ios-surface-2)
 .report-snapshot-grid strong { display:block; color:var(--smartfill-ink); font-size:1.05rem; margin:4px 0 0; overflow-wrap:anywhere; }
 .report-page-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; padding:16px; background:var(--smartfill-surface); }
 .report-card-large { min-height:116px; box-shadow:none; }
+.report-card-locked { cursor:default; background:var(--ios-surface-2); border-style:dashed; }
+.report-card-locked:hover { transform:none; box-shadow:none; }
+.report-card-locked .report-card-main { color:var(--smartfill-muted); }
+.report-card-locked .report-icon { background:color-mix(in srgb, var(--ios-label-3) 22%, transparent); color:var(--smartfill-muted); }
+.report-card-lock-note { display:block; margin-top:6px; font-size:.78rem; font-weight:620; color:var(--ios-orange-text); }
 .drawer-dialog {
   width:min(720px, calc(100vw - 28px));
   min-height:100vh;

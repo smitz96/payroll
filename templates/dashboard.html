@@ -247,7 +247,11 @@
         <div class="report-card-grid">
         {% if month %}
         <a class="report-card" href="{{ url_for('payroll.month', month=month) }}"><span class="report-icon">{{ icon("payroll") }}</span><span><strong>Monthly Payroll</strong><span>Upload, calculate, finalize</span></span></a>
-        <a class="report-card" href="{{ url_for('reports.final_report_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("pdf") }}</span><span><strong>Salary Report</strong><span>Open final salary PDF</span></span></a>
+        {% if monthly_finalized %}
+        <a class="report-card" href="{{ url_for('reports.final_report_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("pdf") }}</span><span><strong>Salary Slips</strong><span>Open monthly salary slips</span></span></a>
+        {% else %}
+        <span class="report-card report-card-locked"><span class="report-icon">{{ icon("pdf") }}</span><span><strong>Salary Slips</strong><span>Available once monthly payroll is finalized</span></span></span>
+        {% endif %}
         <a class="report-card" href="{{ url_for('reports.overtime_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("overtime") }}</span><span><strong>Overtime Report</strong><span>Employees with paid OT</span></span></a>
         <a class="report-card" href="{{ url_for('reports.less_hours_pdf', month=month) }}" target="_blank" rel="noopener"><span class="report-icon">{{ icon("less-hours") }}</span><span><strong>Less hours Report</strong><span>Short working-hour deductions</span></span></a>
         {% endif %}

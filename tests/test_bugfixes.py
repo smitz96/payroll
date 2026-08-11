@@ -6,6 +6,7 @@ from decimal import Decimal
 from io import BytesIO
 
 from pypdf import PdfReader
+from conftest import finalize_group
 
 from attendance import db
 from attendance.calculator import calculate_payroll_month
@@ -2274,6 +2275,13 @@ def pdf_text(data):
     return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
 
 
+def slip_text(client, app, employee_id="5", month="2026-07"):
+    """Read a salary slip. Slips only leave the app once the wage group is signed
+    off, so the month is finalized first."""
+    finalize_group(app, month, "MONTHLY")
+    return pdf_text(client.get(f"/reports/{month}/employee/{employee_id}.pdf").data)
+
+
 def test_monthly_summary_drops_pay_figures_but_keeps_the_logo(client, app):
     with app.app_context():
         seed_two_wage_groups()
@@ -2663,6 +2671,7 @@ def test_professional_tax_uses_the_earned_wage_not_the_contracted_one(app):
 def test_salary_register_matches_the_payroll_sheet_layout(client, app):
     with app.app_context():
         seed_statutory_employee(pf=True)
+    finalize_group(app, "2026-07", "MONTHLY")
 
     login(client)
     response = client.get("/reports/2026-07/salary-sheet.pdf")
@@ -2677,6 +2686,7 @@ def test_salary_register_downloads_as_xlsx(client, app):
     import openpyxl
     with app.app_context():
         seed_statutory_employee(pf=True)
+    finalize_group(app, "2026-07", "MONTHLY")
 
     login(client)
     response = client.get("/reports/2026-07/salary-sheet.xlsx")
@@ -2871,7 +2881,9 @@ def test_navigation_links_sit_outside_the_form(client, app):
     page = client.get("/payroll/2026-07/employee/5").data.decode()
     head, _, rest = page.partition('<form method="post" id="employeeDetailForm">')
     assert "Back to payroll" in head and "Back to payroll" not in rest
-    assert "Open PDF" in head and "Open PDF" not in rest
+    # The month is still a draft, so the slip control is present but disabled.
+    assert "Slip after finalize" in head and "Slip after finalize" not in rest
+    assert "Open PDF" not in page
 
 
 def test_finalized_month_shows_no_submit_buttons_but_keeps_navigation(client, app):
@@ -3018,6 +3030,7 @@ def test_attendance_manager_submits_from_one_sticky_bar(client, app):
 def test_salary_slips_cover_monthly_wage_only(client, app):
     with app.app_context():
         seed_two_wage_groups()
+    finalize_group(app, "2026-07", "MONTHLY")
 
     login(client)
     response = client.get("/reports/2026-07/final-report.pdf")
@@ -3050,6 +3063,7 @@ def test_a_daily_employee_pdf_is_an_attendance_summary_not_a_slip(client, app):
 def test_a_monthly_employee_pdf_is_still_a_salary_slip(client, app):
     with app.app_context():
         seed_two_wage_groups()
+    finalize_group(app, "2026-07", "MONTHLY")
 
     login(client)
     response = client.get("/reports/2026-07/employee/5.pdf")
@@ -3075,7 +3089,7 @@ def test_salary_slip_has_the_payslip_structure(client, app):
         seed_statutory_employee(pf=True)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     for heading in ("Pay Slip:", "Payable days:", "Loss of pay days:",
                     "Employee Name", "Employee Code", "Department", "Designation",
                     "EARNINGS (INR)", "DEDUCTIONS (INR)", "Actual Amount", "Paid Amount",
@@ -3164,7 +3178,7 @@ def test_slip_deductions_are_ordered_pf_esic_pt_tds(client, app):
         seed_statutory_employee(pf=True)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     order = [text.index(label) for label in ("P.F", "ESIC", "Professional Tax", "TDS")]
     assert order == sorted(order)
 
@@ -3174,7 +3188,7 @@ def test_slip_shows_employee_code_before_name(client, app):
         seed_statutory_employee(pf=True)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     assert text.index("Employee Code") < text.index("Employee Name")
 
 
@@ -3185,7 +3199,7 @@ def test_slip_leave_summary_matches_the_payroll_result(client, app):
                     ("opening_leave", "leave_earned", "leave_used", "closing_leave")]
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     assert "LEAVE SUMMARY" in text
     for value in expected:
         assert value in text
@@ -3241,7 +3255,7 @@ def test_slip_page_carries_only_the_footnote(client, app):
         seed_statutory_employee(pf=True)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     assert "SMARTfill Payroll" not in text
     assert "Page 1" not in text
     assert "system generated payslip" in text
@@ -3253,7 +3267,7 @@ def test_slip_net_pay_carries_the_currency(client, app):
         expected = f"{Decimal(result.final_salary):,.2f} INR"
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     assert expected in text
     assert "EARNINGS (INR)" in text and "DEDUCTIONS (INR)" in text
     assert "(Rs.)" not in text
@@ -3265,7 +3279,7 @@ def test_slip_shows_the_total_paid_into_the_pf_account(client, app):
         total = Decimal(result.pf_employee) + Decimal(result.pf_employer)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     assert "Total contribution to PF account" in text
     assert f"{total:,.2f}" in text
 
@@ -3418,7 +3432,7 @@ def test_tds_from_the_master_is_deducted_and_shown_on_the_slip(client, app):
         assert Decimal(result.final_salary) == Decimal("30000") - Decimal(result.total_deduction)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     assert "TDS" in text
     assert "2,500.00" in text
 
@@ -3564,7 +3578,7 @@ def test_slip_pf_rows_are_ordered_employer_employee_charges(client, app):
         seed_statutory_employee(pf=True)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     order = [text.index(label) for label in
              ("PF contribution by Employer", "PF contribution by Employee", "PF Admin & EDLI Charges")]
     assert order == sorted(order)
@@ -3578,10 +3592,99 @@ def test_slip_band_shows_days_in_month_between_period_and_payable(client, app):
         result = seed_statutory_employee(pf=True)
 
     login(client)
-    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    text = slip_text(client, app)
     assert "Days in this Month: 31" in text
     order = [text.index(label) for label in
              ("Pay Slip:", "Days in this Month:", "Payable days:", "Loss of pay days:")]
     assert order == sorted(order)
     # Nothing wraps: each cell is one line in the extracted text.
     assert f"Payable days: {total_paid_days(result)}" in text
+
+
+# --- Pay documents are released only after the wage group is finalized ---
+
+
+def test_pay_documents_are_blocked_while_the_month_is_a_draft(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    for path in ("/reports/2026-07/final-report.pdf",
+                 "/reports/2026-07/employee/5.pdf",
+                 "/reports/2026-07/salary-sheet.pdf",
+                 "/reports/2026-07/salary-sheet.xlsx"):
+        response = client.get(path)
+        assert response.status_code == 302, path
+        assert not response.data.startswith(b"%PDF"), path
+        followed = client.get(path, follow_redirects=True)
+        assert b"once monthly wage payroll is finalized" in followed.data, path
+
+
+def test_pay_documents_open_once_monthly_payroll_is_finalized(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+    finalize_group(app, "2026-07", "MONTHLY")
+
+    login(client)
+    for path in ("/reports/2026-07/final-report.pdf",
+                 "/reports/2026-07/employee/5.pdf",
+                 "/reports/2026-07/salary-sheet.pdf"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.data.startswith(b"%PDF"), path
+    assert client.get("/reports/2026-07/salary-sheet.xlsx").status_code == 200
+
+
+def test_a_draft_month_still_issues_the_daily_wage_attendance_summary(client, app):
+    """Daily wage employees get an attendance summary, not a slip, so no pay figure
+    leaves the app early and the document stays available through the draft month."""
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    for path in ("/reports/2026-07/employee/6.pdf",
+                 "/reports/2026-07/summary-daily-wage.pdf",
+                 "/reports/2026-07/attendance-summary-monthly.pdf",
+                 "/reports/2026-07/department-wise.pdf"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.data.startswith(b"%PDF"), path
+
+
+def test_reports_page_locks_the_pay_document_cards_until_finalized(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    draft = client.get("/reports/").data
+    # The cards stay listed, so the month's report set reads the same either way.
+    assert b"Salary Slips (Monthly)" in draft and b"Salary Sheet (PF &amp; ESIC)" in draft
+    assert b"/reports/2026-07/final-report.pdf" not in draft
+    assert b"/reports/2026-07/salary-sheet.pdf" not in draft
+    assert b"/reports/2026-07/salary-sheet.xlsx" not in draft
+    assert draft.count(b"Available once monthly wage payroll is finalized.") == 2
+    # Attendance reports are unaffected.
+    assert b"/reports/2026-07/summary-daily-wage.pdf" in draft
+
+    finalize_group(app, "2026-07", "MONTHLY")
+    final = client.get("/reports/").data
+    assert b"/reports/2026-07/final-report.pdf" in final
+    assert b"/reports/2026-07/salary-sheet.xlsx" in final
+    assert b"Available once monthly wage payroll is finalized." not in final
+
+
+def test_employee_page_offers_the_slip_only_after_finalization(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    draft = client.get("/payroll/2026-07/employee/5").data
+    assert b"Slip after finalize" in draft
+    assert b"/reports/2026-07/employee/5.pdf" not in draft
+    # The daily wage employee's attendance PDF is never gated.
+    assert b"/reports/2026-07/employee/6.pdf" in client.get("/payroll/2026-07/employee/6").data
+
+    finalize_group(app, "2026-07", "MONTHLY")
+    final = client.get("/payroll/2026-07/employee/5").data
+    assert b"/reports/2026-07/employee/5.pdf" in final
+    assert b"Slip after finalize" not in final

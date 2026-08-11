@@ -44,7 +44,21 @@
   <div class="report-page-grid">
     {% for card in cards %}
     {# A card with a spreadsheet form keeps the whole tile as the PDF link and adds a
-       separate XLSX link, so one tap still opens the report. #}
+       separate XLSX link, so one tap still opens the report. Pay documents are shown
+       greyed out until the wage group is finalized rather than hidden, so the month's
+       full report list stays the same shape. #}
+    {% if card.locked %}
+    <div class="report-card report-card-large report-card-locked">
+      <span class="report-card-main">
+        <span class="report-icon">{{ icon(card.icon) }}</span>
+        <span>
+          <strong>{{ card.title }}</strong>
+          <span>{{ card.detail }}</span>
+          <span class="report-card-lock-note">{{ card.locked_note }}</span>
+        </span>
+      </span>
+    </div>
+    {% else %}
     <div class="report-card report-card-large{{ ' has-alt-format' if card.xlsx }}">
       <a class="report-card-main" href="{{ url_for(card.href, month=month) }}" target="_blank" rel="noopener">
         <span class="report-icon">{{ icon(card.icon) }}</span>
@@ -57,6 +71,7 @@
       <a class="report-card-alt" href="{{ url_for(card.xlsx, month=month) }}">XLSX</a>
       {% endif %}
     </div>
+    {% endif %}
     {% endfor %}
   </div>
 </div>

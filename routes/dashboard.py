@@ -9,6 +9,7 @@ from attendance.master import employee_active_for_payroll_month
 from attendance.models import AuditLog, AttendanceRecord, Employee, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
 from attendance.payroll_rules import PAYROLL_RULES
 from attendance.utils import display_month
+from attendance.wage_groups import MONTHLY, is_group_finalized
 
 bp = Blueprint("dashboard", __name__)
 SUPPORTED_WAGE_TYPES = set(PAYROLL_RULES)
@@ -263,6 +264,8 @@ def index():
         "dashboard.html",
         cards=cards,
         month=selected,
+        # Salary slips are only released once monthly payroll is signed off.
+        monthly_finalized=is_group_finalized(month, MONTHLY),
         months=months,
         month_options=month_options,
         payroll_health=payroll_health,

@@ -8,6 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from pypdf import PdfReader
+from conftest import finalize_group
 from attendance import db
 from attendance.calculator import calculate_payroll_month
 from attendance.models import AdvanceSalary, AuditLog, AttendanceOverride, AttendanceRecord, Employee, Holiday, LeaveLedger, Loan, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User, WeekOffRule
@@ -288,7 +289,13 @@ def test_reports_page_has_dedicated_route_and_pdf_cards(client, app):
     assert b"Salary Slips (Monthly)" in response.data
     assert b"Payroll Summary" in response.data
     assert b"Detailed Attendance" in response.data
-    assert b"/reports/2026-07/final-report.pdf" in response.data
+    # The slips card is listed while the month is a draft but is not yet a link.
+    assert b"/reports/2026-07/final-report.pdf" not in response.data
+    assert b"Available once monthly wage payroll is finalized." in response.data
+
+    finalize_group(app, "2026-07", "MONTHLY")
+    finalized = client.get("/reports/")
+    assert b"/reports/2026-07/final-report.pdf" in finalized.data
 
 
 def test_employee_master_locks_wage_type_and_requires_disable_confirmation(client, app):
@@ -1433,6 +1440,8 @@ def test_pdf_reports_download(client, app):
         db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="6", name="Worker Two", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000"), adjustment=Decimal("0"), loan=Decimal("0")))
         db.session.commit()
         calculate_payroll_month("2026-07")
+    # Salary slips are only released after the wage group is signed off.
+    finalize_group(app, "2026-07", "MONTHLY")
     client.post("/login", data={"username": "admin", "password": "12345"})
     employee_pdf = client.get("/reports/2026-07/employee/5.pdf")
     final_pdf = client.get("/reports/2026-07/final-report.pdf")

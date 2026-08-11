@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from flask import Blueprint, Response, abort, render_template, request
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 
 from attendance.authentication import login_required
 from attendance.calculator import attendance_missing_salary
@@ -28,6 +28,7 @@ from attendance.reports import (
     payroll_summary_csv,
 )
 from attendance.utils import display_month, is_valid_payroll_month
+from attendance.wage_groups import GROUP_LABELS, MONTHLY, is_group_finalized
 
 bp = Blueprint("reports", __name__, url_prefix="/reports")
 
@@ -54,6 +55,28 @@ def scoped_results(month):
     return [result for result in results if employee_active_for_payroll_month(db.session.get(Employee, result.employee_id), month)]
 
 
+def group_finalized(month, group):
+    return is_group_finalized(db.session.get(PayrollMonth, month), group)
+
+
+def pay_document_block(month, group, document, back_to=None):
+    """Guard for documents that state an employee's pay.
+
+    Salary slips and the statutory register are what an employee and the PF/ESIC
+    office are handed, so they must not leave the building off a draft month whose
+    figures can still move. Returns a redirect when the group is still open, else
+    None so the caller goes on to build the document.
+    """
+    if group_finalized(month, group):
+        return None
+    flash(
+        f"{document} for {display_month(month)} can be downloaded once "
+        f"{GROUP_LABELS[group].lower()} wage payroll is finalized.",
+        "warning",
+    )
+    return redirect(back_to or url_for("reports.index", month=month))
+
+
 def csv_response(content, filename):
     return Response(content, mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
@@ -74,17 +97,22 @@ def index():
     calculated = [result for result in results if result.final_salary is not None and result.calculation_status in {"Calculated", "Needs Review"}]
     missing_salary = attendance_missing_salary(selected_month) if selected_month else {}
     cards = [
-        {"title": "Salary Slips (Monthly)", "detail": "One salary slip per monthly wage employee. Daily wage employees do not receive a slip.", "icon": "pdf", "href": "reports.final_report_pdf"},
+        {"title": "Salary Slips (Monthly)", "detail": "One salary slip per monthly wage employee. Daily wage employees do not receive a slip.", "icon": "pdf", "href": "reports.final_report_pdf", "requires_final": MONTHLY},
         {"title": "Attendance Summary for Monthly", "detail": "Attendance sheet per monthly wage employee, one to a page.", "icon": "attendance", "href": "reports.monthly_attendance_summary_pdf"},
         {"title": "Summary for Daily Wage Group", "detail": "Attendance sheet per daily wage employee. Carries no company branding.", "icon": "attendance", "href": "reports.daily_attendance_summary_pdf"},
         {"title": "Department Wise Attendance", "detail": "Attendance and leave by department, with each employee's calendar. No salary figures.", "icon": "users", "href": "reports.department_wise_pdf"},
         {"title": "Payroll Summary", "detail": "Employee-wise salary summary and deductions.", "icon": "salary", "href": "reports.payroll_summary_pdf"},
-        {"title": "Salary Sheet (PF & ESIC)", "detail": "Full payroll register with PF, ESIC and professional tax. Also downloadable as XLSX.", "icon": "salary", "href": "reports.salary_register_pdf", "xlsx": "reports.salary_register_xlsx"},
+        {"title": "Salary Sheet (PF & ESIC)", "detail": "Full payroll register with PF, ESIC and professional tax. Also downloadable as XLSX.", "icon": "salary", "href": "reports.salary_register_pdf", "xlsx": "reports.salary_register_xlsx", "requires_final": MONTHLY},
         {"title": "Detailed Attendance", "detail": "Daily working hours, status, shortage, and overtime.", "icon": "attendance", "href": "reports.attendance_detail_pdf"},
         {"title": "Overtime Report", "detail": "Only employees and dates with paid overtime.", "icon": "overtime", "href": "reports.overtime_pdf"},
         {"title": "Less Hours Report", "detail": "Shortage rows with less-hours deductions.", "icon": "less-hours", "href": "reports.less_hours_pdf"},
         {"title": "Error Report", "detail": "Missing salary, attendance, and payroll review items.", "icon": "review", "href": "reports.errors_pdf"},
     ]
+    for card in cards:
+        group = card.pop("requires_final", None)
+        card["locked"] = bool(group and selected_month and not group_finalized(selected_month, group))
+        card["locked_note"] = (f"Available once {GROUP_LABELS[group].lower()} wage payroll is finalized."
+                               if card["locked"] else "")
     snapshot = {
         "month": selected,
         "month_label": display_month(selected_month) if selected_month else "Not started",
@@ -120,12 +148,18 @@ def payroll_summary_pdf(month):
 @bp.route("/<month>/salary-sheet.pdf")
 @login_required
 def salary_register_pdf(month):
+    blocked = pay_document_block(month, MONTHLY, "The salary sheet")
+    if blocked:
+        return blocked
     return pdf_response(build_salary_register_pdf(month), f"smartfill-salary-sheet-{month}.pdf")
 
 
 @bp.route("/<month>/salary-sheet.xlsx")
 @login_required
 def salary_register_xlsx(month):
+    blocked = pay_document_block(month, MONTHLY, "The salary sheet")
+    if blocked:
+        return blocked
     return Response(
         build_salary_register_xlsx(month),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -188,6 +222,13 @@ def employee_pdf(month, employee_id):
     # must not carry the company name either.
     salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=employee_id).first()
     daily = bool(salary and salary.normalized_salary_type == "DAILY")
+    if not daily:
+        # Only the monthly document is a salary slip. A daily wage employee's PDF is an
+        # attendance summary with no pay on it, so it stays open through the draft month.
+        blocked = pay_document_block(month, MONTHLY, "This salary slip",
+                                     back_to=url_for("payroll.employee", month=month, employee_id=employee_id))
+        if blocked:
+            return blocked
     filename = (f"attendance-summary-{month}-{employee_id}.pdf" if daily
                 else f"smartfill-salary-slip-{month}-{employee_id}.pdf")
     return pdf_response(build_employee_pdf(month, employee_id), filename)
@@ -216,6 +257,9 @@ def department_wise_pdf(month):
 @bp.route("/<month>/final-report.pdf")
 @login_required
 def final_report_pdf(month):
+    blocked = pay_document_block(month, MONTHLY, "Salary slips")
+    if blocked:
+        return blocked
     return pdf_response(build_all_employees_pdf(month), f"smartfill-salary-slips-{month}.pdf")
 
 
