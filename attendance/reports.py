@@ -1452,11 +1452,14 @@ def salary_slip_story(month, salary_record, result, styles, available_width):
     ]))
 
     lop_days = Decimal(result.lop_days or 0) if result else Decimal("0")
+    # Widths sized against the longest month name so no cell wraps.
     band = Table([[
         Paragraph(f"Pay Slip: {display_month(month)}", band_style),
+        Paragraph(f"Days in this Month: {payroll_month_days(month)}", band_style),
         Paragraph(f"Payable days: {total_paid_days(result) if result else '—'}", band_style),
         Paragraph(f"Loss of pay days: {leave_days(lop_days)}", band_style),
-    ]], colWidths=[available_width * 0.42, available_width * 0.29, available_width * 0.29])
+    ]], colWidths=[available_width * 0.26, available_width * 0.24,
+                   available_width * 0.24, available_width * 0.26])
     band.setStyle(TableStyle(hairline + [("BACKGROUND", (0, 0), (-1, -1), SURFACE_SOFT)]))
 
     # Bank, PF, UAN and PAN are deliberately absent: the slip identifies the employee

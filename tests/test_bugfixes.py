@@ -12,7 +12,7 @@ from attendance.calculator import calculate_payroll_month
 from attendance.models import AttendanceOverride, AttendanceRecord, AuditLog, Employee, Holiday, LeaveLedger, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
 from attendance.parser import implausible_session_minutes, parse_punch_times, working_minutes_from_punches
 from attendance.settings import MONTHLY_RULES, monthly_rule_rows
-from attendance.reports import pdf_money
+from attendance.reports import pdf_money, total_paid_days
 from attendance.utils import display_month, is_valid_payroll_month, leave_days
 
 
@@ -3571,3 +3571,17 @@ def test_slip_pf_rows_are_ordered_employer_employee_charges(client, app):
     # The charge line says who bears it.
     assert "Paid by" in text
     assert "\nPF Employee\n" not in text
+
+
+def test_slip_band_shows_days_in_month_between_period_and_payable(client, app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=True)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    assert "Days in this Month: 31" in text
+    order = [text.index(label) for label in
+             ("Pay Slip:", "Days in this Month:", "Payable days:", "Loss of pay days:")]
+    assert order == sorted(order)
+    # Nothing wraps: each cell is one line in the extracted text.
+    assert f"Payable days: {total_paid_days(result)}" in text
