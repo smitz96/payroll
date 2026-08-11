@@ -96,6 +96,12 @@ def money(value):
     return Decimal(value).quantize(Decimal("0.01"))
 
 
+def money_text(value):
+    """Amount for display, always two decimals. Decimal("0.00") is falsy, so a
+    template writing `value or 0` would otherwise print a bare 0."""
+    return f"{Decimal(value or 0):.2f}"
+
+
 # Leave is tracked to two decimals. Pro-rated accrual rarely lands on a clean
 # tenth, so a single decimal quietly lost up to 0.09 of a day per month.
 LEAVE_DAY_PRECISION = Decimal("0.01")

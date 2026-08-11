@@ -16,10 +16,11 @@ from attendance.loans import active_loans_for_employee, employee_has_loan, loan_
 from attendance.master import employee_active_for_payroll_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv
-from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation
+from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
 from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
-from attendance.utils import decimal_money, display_month, is_valid_payroll_month, minutes_to_duration, money
+from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
+from attendance.utils import LEAVE_DAY_PRECISION, decimal_money, display_month, is_valid_payroll_month, minutes_to_duration, money
 from attendance.wage_groups import (
     GROUP_LABELS,
     any_group_finalized,
@@ -71,7 +72,9 @@ def parse_leave_encashment_days(value):
         raise ValueError(f"Invalid leave encashment days: {value}") from exc
     if days < 0:
         raise ValueError("Leave encashment days cannot be negative.")
-    return days.quantize(Decimal("0.1"), rounding=ROUND_DOWN)
+    # Two decimals, matching the tracked balance. Flooring to one decimal here threw
+    # away part of a remainder such as 0.38 that is only available for encashment.
+    return days.quantize(LEAVE_DAY_PRECISION, rounding=ROUND_DOWN)
 
 
 def verify_admin_password():
@@ -101,6 +104,7 @@ def attendance_display_status(raw_status):
         "Unpaid Leave / LOP": "LOP",
         "Absent / Attendance Missing": "Absent",
         "Half-Day Paid Leave / Half-Day LOP": "Half Leave + Half LOP",
+        "Half Day Present / Half-Day Leave": "Half Day + Half Leave",
         "Needs Review": "Needs Review",
         "Punch Error": "Punch Error",
         "Holiday": "Holiday",
@@ -123,7 +127,7 @@ def attendance_note(record, raw_status, is_shortage, explanation=""):
         return ""
     # Once a day has been resolved into leave or LOP, the raw import warning that
     # produced it ("Missing punch and working hours") is no longer the story.
-    resolved = {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave",
+    resolved = {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave", "Half Day Present / Half-Day Leave",
                 "Half-Day Paid Leave / Half-Day LOP", "Absent / Attendance Missing",
                 "Full Day LOP", "Half Day LOP", "Unpaid Leave / LOP"}
     if raw_status in resolved:
@@ -134,7 +138,7 @@ def attendance_note(record, raw_status, is_shortage, explanation=""):
 
 
 def is_attendance_error(record, raw_status):
-    if raw_status in {"Full Day Present", "Half Day Present", "Paid Leave", "Half-Day Paid Leave", "Holiday", "Week Off", "Week Off Worked", "Sandwich Leave", "Worked On-Site", "Work From Home", "Ignore"}:
+    if raw_status in {"Full Day Present", "Half Day Present", "Half Day Present / Half-Day Leave", "Paid Leave", "Half-Day Paid Leave", "Holiday", "Week Off", "Week Off Worked", "Sandwich Leave", "Worked On-Site", "Work From Home", "Ignore"}:
         return False
     if record.parse_status != "OK":
         return True
@@ -150,7 +154,7 @@ def attendance_status_tone(display_status, is_error, is_shortage):
         return "offsite"
     if display_status in {"Full Day", "Half Day", "Week Off Worked"}:
         return "ok"
-    if display_status in {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave"}:
+    if display_status in {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave", "Half Day + Half Leave"}:
         return "leave"
     return "other"
 
@@ -319,15 +323,43 @@ def is_payroll_finalized(month, employee_id=None):
     return bool(payroll_month and payroll_month.status == "FINALIZED")
 
 
-def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count, results, locked=False):
+def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count, results,
+                           locked=False, wage_filter=None):
     """The five stages of a payroll month, in order, with the first unfinished one marked current.
 
     Each step carries everything needed to act on it, so the stepper is the only
-    place these actions live. A step may offer a link (`href`) and/or a POST action
-    (`action`); actions stay available on completed steps so wages can be reloaded
-    after Employee Master changes.
+    place these actions live. A step may offer a link (`href`) and a list of POST
+    `actions`; actions stay available on completed steps so wages can be reloaded
+    after Employee Master changes, or a calculated month recalculated.
     """
     calculated_count = len([r for r in results.values() if r.final_salary is not None])
+    attendance_pending = bool(attendance_count) and not payroll_month.attendance_submitted
+    scope = f"{wage_filter.capitalize()} wage" if wage_filter else "every open wage type"
+    # Recalculating is blocked until attendance is submitted, and hidden once every
+    # wage group is locked, unless the page is filtered to one group.
+    calc_blocked = "Submit attendance from Attendance Manager first" if attendance_pending else ""
+    calculate_actions = [] if (locked and not wage_filter) else [
+        {
+            "action": "recheck_holidays",
+            "label": "Recalculate",
+            "variant": "btn-primary",
+            "confirm": f"Recalculate payroll for {month} keeping all manual changes?",
+            "hint": f"Recalculates {scope} from submitted attendance against the current holiday "
+                    "calendar, week offs, loans and advances. Manual overrides and adjustments are "
+                    "preserved, and finalized wage types are never touched.",
+            "disabled_reason": calc_blocked,
+        },
+        {
+            "action": "calculate",
+            "label": "Reset & recalculate",
+            "variant": "btn-outline-danger",
+            "confirm": f"Recalculate from attendance and DISCARD all manual overrides, adjustments, "
+                       f"loan entries and leave encashment for {month}?",
+            "hint": f"Clears manual overrides, adjustments, manual loan amounts and leave encashment "
+                    f"for {scope}, then recalculates from scratch.",
+            "disabled_reason": calc_blocked,
+        },
+    ]
     steps = [
         {
             "key": "attendance",
@@ -346,11 +378,15 @@ def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count,
             # here made this the only step with two, throwing the row out of line.
             "href": None,
             "cta": None,
-            "action": None if locked else "salary",
-            # Kept short so it stays on one line and lines up with the other steps;
-            # the step title and detail already say where the wages come from.
-            "action_label": "Reload wages" if salary_count else "Load wages",
-            "action_hint": "Wage type and salary come from Employee Master. Employees with a zero salary or an inactive status are skipped.",
+            "actions": [] if locked else [{
+                # Kept short so it stays on one line and lines up with the other steps;
+                # the step title and detail already say where the wages come from.
+                "action": "salary",
+                "label": "Reload wages" if salary_count else "Load wages",
+                "variant": "btn-outline-primary",
+                "hint": "Wage type and salary come from Employee Master. Employees with a zero "
+                        "salary or an inactive status are skipped.",
+            }],
         },
         {
             "key": "submit",
@@ -365,11 +401,12 @@ def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count,
             "key": "calculate",
             "label": "Calculate payroll",
             "done": calculated_count > 0,
-            "detail": f"{calculated_count} employee(s) calculated" if calculated_count else "Use Recalculate at the top of the page",
-            # Recalculate and Reset & Recalculate both live in the page header now,
-            # so this step reports progress rather than carrying a duplicate button.
+            "detail": f"{calculated_count} employee(s) calculated" if calculated_count else "Run the calculation from attendance",
+            # Both recalculate actions live on this step. They used to sit in the page
+            # header, which left the step that names the action with no way to run it.
             "href": None,
             "cta": None,
+            "actions": calculate_actions,
         },
         {
             "key": "finalize",
@@ -384,8 +421,13 @@ def payroll_workflow_steps(month, payroll_month, attendance_count, salary_count,
     # already done stay actionable so wages can be reloaded or attendance revisited.
     prerequisites_met = True
     for step in steps:
+        step.setdefault("actions", [])
         step["enabled"] = step["done"] or prerequisites_met
         step["blocked_reason"] = "" if step["enabled"] else "Complete the earlier steps first"
+        for action in step["actions"]:
+            reason = action.get("disabled_reason") or ("" if step["enabled"] else step["blocked_reason"])
+            action["disabled_reason"] = reason
+            action["enabled"] = not reason
         prerequisites_met = prerequisites_met and step["done"]
     current_marked = False
     for step in steps:
@@ -479,7 +521,15 @@ def new():
         db.session.add(AuditLog(actor=current_username(), action="Payroll Month Created", detail=month))
         db.session.commit()
         return redirect(url_for("payroll.month", month=month))
-    return render_template("payroll_new.html", default_month=previous_calendar_month())
+    # Existing months are offered as links so a returning user does not have to
+    # retype a month that is already open.
+    months = PayrollMonth.query.order_by(PayrollMonth.month.desc()).limit(12).all()
+    return render_template(
+        "payroll_new.html",
+        default_month=previous_calendar_month(),
+        recent_months=[{"month": item.month, "label": display_month(item.month),
+                        "status": item.status} for item in months],
+    )
 
 
 def save_upload(file, month, label):
@@ -632,7 +682,8 @@ def month(month):
     wage_types = sorted({s.normalized_salary_type or "MISSING" for s in salaries})
     wage_filter = normalize_group(request.args.get("wage")) if request.args.get("wage") else None
     groups = group_summary(month, payroll_month)
-    steps = payroll_workflow_steps(month, payroll_month, attendance_count, len(salaries), results, locked=any_group_finalized(payroll_month))
+    steps = payroll_workflow_steps(month, payroll_month, attendance_count, len(salaries), results,
+                                   locked=any_group_finalized(payroll_month), wage_filter=wage_filter)
     total_payable = sum((Decimal(r.final_salary) for r in results.values() if r.final_salary is not None), Decimal("0"))
     return render_template(
         "payroll_month.html",
@@ -703,6 +754,7 @@ def employee(month, employee_id):
     return render_template(
         "employee_detail.html",
         calendar_weeks=attendance_calendar(month, attendance_rows),
+        month_label=display_month(month),
         weekday_headings=WEEKDAY_HEADINGS,
         month=month,
         employee_id=employee_id,
@@ -724,6 +776,25 @@ def employee(month, employee_id):
             bool(employee and employee.bonus_ignored),
         ) if result else "",
         bonus_ignored=bool(employee and employee.bonus_ignored),
+        esi_ceiling=money(STATUTORY_RULES["ESI_WAGE_CEILING"]),
+        # Leave is taken in half-day steps, so a carried balance of 1.38 can only be
+        # redeemed as 1 day. The remainder stays available for encashment.
+        redeemable_closing_leave=redeemable_leave(getattr(result, "closing_leave", 0)) if result else 0,
+        pt_threshold=money(PROFESSIONAL_TAX_SLABS[0][0]),
+        # The employer side is a company cost and never nets off the payable salary,
+        # so the two totals are kept apart rather than summed.
+        compliance_employee_total=money(
+            Decimal(getattr(result, "pf_employee", 0) or 0)
+            + Decimal(getattr(result, "esi_employee", 0) or 0)
+            + Decimal(getattr(result, "professional_tax", 0) or 0)
+            + Decimal(getattr(result, "tds", 0) or 0)
+        ) if result else 0,
+        compliance_employer_total=money(
+            Decimal(getattr(result, "pf_employer", 0) or 0)
+            + Decimal(getattr(result, "pf_edli", 0) or 0)
+            + Decimal(getattr(result, "pf_admin", 0) or 0)
+            + Decimal(getattr(result, "esi_employer", 0) or 0)
+        ) if result else 0,
         bonus_allowance_duration=minutes_to_duration(DAILY_BONUS_RULES["PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES"]),
         attendance_rows=attendance_rows,
         overrides=overrides,

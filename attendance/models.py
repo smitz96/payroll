@@ -34,6 +34,9 @@ class Employee(db.Model):
     basic_salary = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
     hra = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
     allowance = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
+    # Monthly wage only. Entered by hand, not derived: the amount to deduct as
+    # tax at source each month.
+    tds = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal("0"))
     pf_enabled = db.Column(db.Boolean, default=False, nullable=False)
     esic_enabled = db.Column(db.Boolean, default=False, nullable=False)
     # Both flags read the same way as the UI: ticked means "skip this rule for this
@@ -207,6 +210,19 @@ class PayrollResult(db.Model):
     absence_minutes = db.Column(db.Integer, default=0)
     attendance_bonus_percent = db.Column(db.Numeric(5, 2), default=0)
     attendance_bonus_amount = db.Column(db.Numeric(12, 2), default=0)
+    # Statutory contributions. The employee shares reduce take-home pay; the employer
+    # shares are a company cost and never touch the payable salary.
+    pf_wage = db.Column(db.Numeric(12, 2), default=0)
+    pf_employee = db.Column(db.Numeric(12, 2), default=0)
+    pf_employer = db.Column(db.Numeric(12, 2), default=0)
+    pf_pension = db.Column(db.Numeric(12, 2), default=0)
+    pf_edli = db.Column(db.Numeric(12, 2), default=0)
+    pf_admin = db.Column(db.Numeric(12, 2), default=0)
+    esi_wage = db.Column(db.Numeric(12, 2), default=0)
+    esi_employee = db.Column(db.Numeric(12, 2), default=0)
+    esi_employer = db.Column(db.Numeric(12, 2), default=0)
+    professional_tax = db.Column(db.Numeric(12, 2), default=0)
+    tds = db.Column(db.Numeric(12, 2), default=0)
     lop_deduction = db.Column(db.Numeric(12, 2), default=0)
     manual_adjustment = db.Column(db.Numeric(12, 2), default=0)
     leave_encashment_days = db.Column(db.Numeric(8, 2), default=0)

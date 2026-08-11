@@ -1,5 +1,6 @@
 """Regression tests for defects found during the UI and workflow review."""
 import pathlib
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
@@ -11,7 +12,8 @@ from attendance.calculator import calculate_payroll_month
 from attendance.models import AttendanceOverride, AttendanceRecord, AuditLog, Employee, Holiday, LeaveLedger, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
 from attendance.parser import implausible_session_minutes, parse_punch_times, working_minutes_from_punches
 from attendance.settings import MONTHLY_RULES, monthly_rule_rows
-from attendance.utils import display_month, is_valid_payroll_month
+from attendance.reports import pdf_money
+from attendance.utils import display_month, is_valid_payroll_month, leave_days
 
 
 def login(client):
@@ -220,11 +222,10 @@ def test_payroll_month_page_shows_workflow_steps(client, app):
         assert label in page.data
     # First unfinished step is highlighted as the current one.
     assert b"workflow-step is-current" in page.data
-    # Recalculate and Reset & Recalculate both sit in the header now, and the
-    # Run calculation panel they used to live in is gone.
-    header = page.data.split(b'<div class="page-head">')[1].split(b"</div>\n</div>")[0]
-    assert b"Reset &amp; Recalculate" in header
-    assert b">Recalculate<" in header
+    # Both recalculate buttons sit on the Calculate payroll step, and the
+    # Run calculation panel they once lived in is gone.
+    assert b">Recalculate</button>" in page.data
+    assert b">Reset &amp; recalculate</button>" in page.data
     assert b'id="run-calculation"' not in page.data
     # The stale "Monthly only" claim is gone now that DAILY has a rule.
     assert b"Wage Type Monthly only" not in page.data
@@ -644,8 +645,8 @@ def test_import_round_trips_breakup_and_compliance(client, app):
 
     login(client)
     ok = client.post("/master/import", data={"employee_master_csv": (BytesIO(
-        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance,PF,ESIC\n"
-        b"1,Worker,Monthly,30000,15000,6000,9000,Yes,No\n"), "master.csv")},
+        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance,TDS,PF,ESIC\n"
+        b"1,Worker,Monthly,30000,15000,6000,9000,2500,Yes,No\n"), "master.csv")},
         content_type="multipart/form-data", follow_redirects=True)
     assert b"Employee master imported" in ok.data
     with app.app_context():
@@ -655,8 +656,8 @@ def test_import_round_trips_breakup_and_compliance(client, app):
         assert employee.esic_enabled is False
 
     export = client.get("/master/export.csv")
-    assert b"Basic,HRA,Allowance,PF,ESIC" in export.data
-    assert b"15000.00,6000.00,9000.00,Yes,No" in export.data
+    assert b"Basic,HRA,Allowance,TDS,PF,ESIC" in export.data
+    assert b"15000.00,6000.00,9000.00,2500.00,Yes,No" in export.data
 
     bad = client.post("/master/import", data={"employee_master_csv": (BytesIO(
         b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance\n"
@@ -853,8 +854,10 @@ def test_later_steps_are_disabled_until_attendance_is_imported(client, app):
         actions = step_actions(page, label)
         assert actions, label
         assert all(disabled for _text, disabled in actions), f"{label} should be disabled: {actions}"
-    # Calculate payroll reports progress only; both recalculate buttons are in the header.
-    assert step_actions(page, "Calculate payroll") == []
+    # Calculate payroll carries both recalculate buttons, disabled until attendance lands.
+    calculate = step_actions(page, "Calculate payroll")
+    assert [text for text, _ in calculate] == ["Recalculate", "Reset &amp; recalculate"]
+    assert all(disabled for _text, disabled in calculate)
     assert b"disabled-link" in page
     assert b"Complete the earlier steps first" in page
 
@@ -887,20 +890,23 @@ def test_completed_steps_stay_actionable(client, app):
         actions = step_actions(page, label)
         assert actions, label
         assert all(not disabled for _text, disabled in actions), f"{label} should be enabled: {actions}"
-    assert step_actions(page, "Calculate payroll") == []
+    # Both recalculate buttons live on the step that names the action.
+    calculate = step_actions(page, "Calculate payroll")
+    assert [text for text, _ in calculate] == ["Recalculate", "Reset &amp; recalculate"]
+    assert all(not disabled for _text, disabled in calculate)
 
 
-def test_header_holds_reset_and_drops_the_duplicate_attendance_link(client, app):
+def test_header_carries_only_the_page_level_action(client, app):
+    """Recalculating belongs to its workflow step, not to three red header buttons."""
     with app.app_context():
         seed_mixed_month()
 
     login(client)
     page = client.get("/payroll/2026-07").data
     header = page.split(b'<div class="page-head">')[1].split(b"</div>\n</div>")[0]
-    assert b"Reset &amp; Recalculate" in header
     assert b"Delete payroll" in header
-    # The header link duplicated steps 1 and 3, so it is gone.
-    assert b"Attendance Manager" not in header
+    for moved in (b"Recalculate", b"Reset", b"Attendance Manager"):
+        assert moved not in header, moved
 
 
 def test_finalize_step_cta_is_named_finalize(client, app):
@@ -914,22 +920,25 @@ def test_finalize_step_cta_is_named_finalize(client, app):
     assert b"Go to locks" not in page
 
 
-def test_every_workflow_step_has_at_most_one_action(client, app):
-    """One button per step keeps the row aligned; two made step 2 taller than the rest."""
+def test_each_step_carries_only_its_own_actions(client, app):
+    """Every stage owns its buttons, so the stepper is the whole flow."""
     with app.app_context():
         seed_mixed_month()
 
     login(client)
     page = client.get("/payroll/2026-07").data
-    for label in ("Import attendance", "Load wages", "Review &amp; submit", "Calculate payroll", "Finalize"):
+    for label in ("Import attendance", "Load wages", "Review &amp; submit", "Finalize"):
         actions = step_actions(page, label)
-        assert len(actions) <= 1, f"{label} has {len(actions)} actions: {actions}"
+        assert len(actions) == 1, f"{label} has {len(actions)} actions: {actions}"
+    # Calculate is the one stage with two, because resetting is a distinct action.
+    assert len(step_actions(page, "Calculate payroll")) == 2
     # Step 1 keeps its entry point into Attendance Manager.
     assert step_actions(page, "Import attendance")[0][0] == "Review attendance"
     # Step 2 keeps the action that does the work, not the link to master.
     assert step_actions(page, "Load wages")[0][0] == "Reload wages"
-    # Step 4 has no button of its own.
-    assert step_actions(page, "Calculate payroll") == []
+    # Step 4 owns the recalculate pair.
+    assert [text for text, _ in step_actions(page, "Calculate payroll")] == [
+        "Recalculate", "Reset &amp; recalculate"]
 
 
 # --- Branded error pages ---
@@ -1130,8 +1139,8 @@ def test_master_export_leads_with_sample_rows(client, app):
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
     assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus")
-    assert lines[1].startswith("1,John C Smith,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,Yes,No,Yes,No")
-    assert lines[2].startswith("2,Elvis D Grey,Mechanical Production,Helper,Daily,5000,0,0,0,No,No,Yes,No")
+    assert lines[1].startswith("1,John C Smith,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
+    assert lines[2].startswith("2,Elvis D Grey,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
     # The sample breakup demonstrates the rule it documents.
     assert Decimal("35000") + Decimal("10000") + Decimal("5000") == Decimal("50000")
     # Real data follows the samples.
@@ -1678,8 +1687,8 @@ def test_new_employee_breakup_must_reconcile(client, app):
         assert db.session.get(Employee, "7") is None
 
     good = import_master(client, (
-        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance,PF,ESIC,Ignore OT,Ignore Less Hours\n"
-        b"7,Breakup Starter,Monthly,30000,15000,6000,9000,Yes,No,Yes,No\n"
+        b"Employee ID,Name,Wage Type,Salary,Basic,HRA,Allowance,TDS,PF,ESIC,Ignore OT,Ignore Less Hours\n"
+        b"7,Breakup Starter,Monthly,30000,15000,6000,9000,1200,Yes,No,Yes,No\n"
     ))
     assert b"1 employee(s) added" in good.data
     with app.app_context():
@@ -1804,7 +1813,8 @@ def test_worked_on_site_is_offered_and_shown(client, app):
     assert b"Worked On-Site" in page
     assert b"tone-offsite" in page
 
-    pdf = client.get("/reports/2026-07/employee/5.pdf")
+    # The status shows on the attendance calendar, which is on the summary report.
+    pdf = client.get("/reports/2026-07/attendance-summary-monthly.pdf")
     assert pdf.status_code == 200
     from io import BytesIO
     text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
@@ -1954,7 +1964,8 @@ def test_attendance_bonus_is_shown_on_the_page_and_the_pdf(client, app):
     pdf = client.get("/reports/2026-07/employee/6.pdf")
     assert pdf.status_code == 200
     text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
-    assert "Attendance Bonus" in text
+    # The daily sheet states the band only, with no amount anywhere.
+    assert "Bonus" in text
     assert "10%" in text
     assert "of earned wage" not in text
     assert "Absence This Month" in text
@@ -2130,9 +2141,12 @@ def test_excluded_employee_reads_as_excluded_not_unearned(client, app):
     assert b"Excluded" in page
     assert b"excluded from the attendance bonus in Employee Master" in page
 
+    # The page explains why the bonus is zero; the worker's own sheet states the
+    # band only, so an excluded employee reads as NIL there.
     pdf = client.get("/reports/2026-07/employee/6.pdf")
     text = "\n".join(p.extract_text() or "" for p in PdfReader(BytesIO(pdf.data)).pages)
-    assert "Excluded in Employee Master" in text
+    assert "NIL" in text
+    assert "Excluded in Employee Master" not in text
     assert "Not earned this month" not in text
 
 
@@ -2298,7 +2312,7 @@ def test_daily_summary_carries_no_company_branding_anywhere(client, app):
     # No employee number, no designation, no department on a daily sheet.
     for removed in ("Salary Slip", "Payable Salary", "Daily Wage", "Helper", "Stores", "Days in Month"):
         assert removed not in text, removed
-    for kept in ("Payable Days", "Absence This Month", "Attendance Bonus"):
+    for kept in ("Payable Days", "Absence This Month", "Bonus"):
         assert kept in text, kept
 
 
@@ -2499,3 +2513,1061 @@ def test_long_designation_wraps_instead_of_overrunning_its_column(client, app):
     assert "Head of" in text
     assert "Development" in text
     assert "Month Worker" in text
+
+
+# --- PF and ESIC statutory contributions ---
+
+def test_pf_is_capped_at_the_statutory_wage_ceiling(app):
+    from attendance.statutory import pf_contributions
+    # Basic well above the ceiling contributes on the ceiling only.
+    pf = pf_contributions(Decimal("43614.52"))
+    assert pf["wage"] == Decimal("15000.00")
+    assert pf["employee"] == Decimal("1800")
+    assert pf["employer"] == Decimal("1800")
+    # Pension is 8.33% of the ceiling; the fund takes the balance of the 12%.
+    assert pf["pension"] == Decimal("1250")
+    assert pf["fund"] == Decimal("550")
+    assert pf["pension"] + pf["fund"] == pf["employer"]
+    assert pf["edli"] == Decimal("75")
+    assert pf["admin"] == Decimal("75")
+
+
+def test_pf_follows_earned_basic_below_the_ceiling(app):
+    from attendance.statutory import pf_contributions
+    # 25.5 of 31 days on a basic of 15,000 earns 12,338.71.
+    pf = pf_contributions(Decimal("12338.71"))
+    assert pf["wage"] == Decimal("12338.71")
+    assert pf["employee"] == Decimal("1481")
+
+
+def test_esi_stops_above_the_wage_ceiling(app):
+    from attendance.statutory import esi_contributions
+    covered = esi_contributions(Decimal("18500"), Decimal("18000"))
+    assert covered["covered"] is True
+    # Rounded up to the next rupee, as ESIC requires.
+    assert covered["employee"] == Decimal("139")
+    assert covered["employer"] == Decimal("602")
+    outside = esi_contributions(Decimal("22000"), Decimal("22000"))
+    assert outside["covered"] is False
+    assert outside["employee"] == Decimal("0")
+    assert outside["employer"] == Decimal("0")
+
+
+def test_overtime_counts_for_esi_but_does_not_end_coverage(app):
+    """Overtime is part of ESI wages but must not push someone out of the scheme."""
+    from attendance.statutory import esi_contributions
+    # Wage 20,800 plus 500 overtime exceeds the ceiling in total, but eligibility is
+    # judged on the 20,800.
+    result = esi_contributions(Decimal("21300"), Decimal("20800"))
+    assert result["covered"] is True
+    assert result["wage"] == Decimal("21300.00")
+
+
+def seed_statutory_employee(pf=True, esic=False, salary="30000", basic="19500", hra="10500"):
+    db.session.add(PayrollMonth(month="2026-07"))
+    db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                            normalized_salary_type="MONTHLY", salary=Decimal(salary),
+                            basic_salary=Decimal(basic), hra=Decimal(hra), allowance=Decimal("0"),
+                            pf_enabled=pf, esic_enabled=esic))
+    db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+    db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker",
+                                salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                salary=Decimal(salary)))
+    add_july_attendance(set())
+    db.session.commit()
+    calculate_payroll_month("2026-07")
+    return PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+
+
+def test_pf_employee_share_reduces_the_payable_salary(app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=True)
+        assert Decimal(result.pf_employee) == Decimal("1800.00")
+        # The employer share is a company cost and must not touch take-home pay.
+        assert Decimal(result.pf_employer) == Decimal("1800.00")
+        assert Decimal(result.total_deduction) >= Decimal("1800.00")
+        assert Decimal(result.final_salary) == (
+            Decimal("30000") - Decimal(result.total_deduction) + Decimal(result.total_addition))
+
+
+def test_no_statutory_deduction_when_the_flags_are_off(app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=False, esic=False)
+        assert Decimal(result.pf_employee) == 0
+        assert Decimal(result.pf_employer) == 0
+        assert Decimal(result.esi_employee) == 0
+        # Professional tax still applies; only PF and ESI are switched off.
+        assert Decimal(result.professional_tax) == Decimal("200.00")
+        assert Decimal(result.final_salary) == Decimal("29800.00")
+
+
+def test_esi_applies_when_the_employee_is_under_the_ceiling(app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=False, esic=True, salary="18000", basic="11700", hra="6300")
+        assert Decimal(result.esi_wage) > 0
+        assert Decimal(result.esi_employee) > 0
+        assert Decimal(result.esi_employer) > Decimal(result.esi_employee)
+
+
+def test_daily_wage_never_carries_statutory_contributions(app):
+    with app.app_context():
+        result = daily_bonus_result({1: 540, 2: 540, 3: 540, 4: 540})
+        assert Decimal(result.pf_employee or 0) == 0
+        assert Decimal(result.esi_employee or 0) == 0
+
+
+def test_statutory_contributions_are_shown_on_the_employee_page(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data
+    # PF and ESIC live in the compliance panel, not in the metric cards.
+    assert b"PF (employee)" not in page
+    assert b"Payroll compliance" in page
+    assert b"1800.00" in page
+
+
+# --- Gujarat professional tax and the salary register ---
+
+def test_professional_tax_follows_the_gujarat_slab(app):
+    from attendance.statutory import professional_tax
+    assert professional_tax(Decimal("30000")) == Decimal("200")
+    assert professional_tax(Decimal("12000.01")) == Decimal("200")
+    # At or below the threshold there is no tax.
+    assert professional_tax(Decimal("12000")) == Decimal("0")
+    assert professional_tax(Decimal("0")) == Decimal("0")
+
+
+def test_professional_tax_is_deducted_from_the_payable_salary(app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=False, esic=False)
+        assert Decimal(result.professional_tax) == Decimal("200.00")
+        assert Decimal(result.final_salary) == Decimal("29800.00")
+
+
+def test_professional_tax_uses_the_earned_wage_not_the_contracted_one(app):
+    with app.app_context():
+        # Heavy loss of pay drops the earned wage under the slab, so no tax is due.
+        seed_leave_month(opening=Decimal("0"))
+        db.session.query(Employee).filter_by(id="5").update({"salary": Decimal("13000")})
+        db.session.query(SalaryRecord).filter_by(employee_id="5").update({"salary": Decimal("13000")})
+        add_july_attendance(set(range(1, 26)))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(result.lop_days) > 0
+        assert Decimal(result.professional_tax) == Decimal("0.00")
+
+
+def test_salary_register_matches_the_payroll_sheet_layout(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    response = client.get("/reports/2026-07/salary-sheet.pdf")
+    assert response.status_code == 200
+    text = pdf_text(response.data)
+    for heading in ("Sr.NO", "NAME", "Attendance", "WO", "BASIC", "HRA", "ALLOWANCE",
+                    "PAID BASIC", "PAID HRA", "LATE", "LOAN", "ESI", "PF", "NET SALARY"):
+        assert heading in text, heading
+
+
+def test_salary_register_downloads_as_xlsx(client, app):
+    import openpyxl
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    response = client.get("/reports/2026-07/salary-sheet.xlsx")
+    assert response.status_code == 200
+    assert "spreadsheetml" in response.headers["Content-Type"]
+    assert response.headers["Content-Disposition"].endswith(".xlsx")
+
+    sheet = openpyxl.load_workbook(BytesIO(response.data)).active
+    assert sheet.cell(1, 1).value == "Salary Sheet - July 2026"
+    assert sheet.cell(2, 2).value == "Days of Month"
+    assert sheet.cell(2, 3).value == 31
+    assert [sheet.cell(3, c).value for c in (1, 2, 3)] == ["Sr.NO", "ID", "NAME"]
+    # Money lands as numbers, not text, so the sheet stays usable for further work.
+    basic = sheet.cell(4, 8)
+    assert isinstance(basic.value, (int, float))
+    assert basic.number_format == "#,##0.00"
+    # The rate cells sit directly above the columns they drive.
+    assert sheet.cell(2, 18).value == 0.0075
+    assert sheet.cell(2, 19).value == 0.12
+    assert sheet.cell(3, 18).value == "ESI"
+    assert sheet.cell(3, 19).value == "PF"
+
+
+def test_salary_register_totals_the_money_columns(app):
+    from attendance.reports import salary_register_rows, salary_register_totals
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+        rows = salary_register_rows("2026-07")
+        totals = salary_register_totals(rows)
+        assert len(rows) == 1
+        # Net salary is the last column and must total the rows above it.
+        assert totals[20] == Decimal(rows[0][20])
+        assert totals[18] == Decimal("1800.00")
+        assert totals[19] == Decimal("200.00")
+
+
+def test_salary_register_excludes_daily_wage_employees(app):
+    from attendance.reports import salary_register_rows
+    with app.app_context():
+        seed_two_wage_groups()
+        rows = salary_register_rows("2026-07")
+        assert [row[2] for row in rows] == ["Month Worker"]
+
+
+def test_payroll_compliance_panel_shows_both_sides_of_each_contribution(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    assert "Payroll compliance" in page
+    figures = dict(re.findall(r"<dt>([^<]+)</dt><dd>([^<]+)</dd>", page))
+    assert figures["Employee PF"] == "1800.00"
+    assert figures["Employer PF"] == "1800.00"
+    # The employer 12% splits into pension and fund, and both are shown.
+    assert figures["Pension (EPS)"] == "1250.00"
+    assert figures["Fund (EPF)"] == "550.00"
+    assert figures["EDLI"] == "75.00"
+    assert figures["Admin charges"] == "75.00"
+    assert figures["Professional tax"] == "200.00"
+    # Deducted 1800 PF + 200 PT; company pays 1800 + 75 EDLI + 75 admin.
+    assert figures["Deducted from employee"] == "2000.00"
+    assert figures["Paid by company"] == "1950.00"
+
+
+def test_uncovered_contributions_read_as_zero_not_a_bare_digit(client, app):
+    """Decimal("0.00") is falsy, so a plain `or 0` printed a bare 0."""
+    with app.app_context():
+        seed_statutory_employee(pf=True, esic=False)
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    figures = dict(re.findall(r"<dt>([^<]+)</dt><dd>([^<]+)</dd>", page))
+    assert figures["Employee ESIC"] == "0.00"
+    assert figures["Employer ESIC"] == "0.00"
+    assert "Not applicable" in page
+
+
+def test_daily_wage_has_no_compliance_panel(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    assert b"Payroll compliance" not in client.get("/payroll/2026-07/employee/6").data
+    assert b"Payroll compliance" in client.get("/payroll/2026-07/employee/5").data
+
+
+# --- Leave is redeemed in half-day steps ---
+
+def test_leave_is_redeemable_only_in_half_day_steps(app):
+    from attendance.payroll_rules import redeemable_leave
+    # The two cases from the rule: 1.38 redeems 1 day, 1.92 redeems 1.5.
+    assert redeemable_leave(Decimal("1.38")) == Decimal("1")
+    assert redeemable_leave(Decimal("1.92")) == Decimal("1.5")
+    assert redeemable_leave(Decimal("0.80")) == Decimal("0.5")
+    # A fraction under half a day cannot offset anything.
+    assert redeemable_leave(Decimal("0.49")) == Decimal("0")
+    assert redeemable_leave(Decimal("0.50")) == Decimal("0.5")
+    assert redeemable_leave(Decimal("3.75")) == Decimal("3.5")
+    assert redeemable_leave(Decimal("0")) == Decimal("0")
+    assert redeemable_leave(Decimal("-1")) == Decimal("0")
+
+
+def absent_rows(count=6):
+    from attendance.payroll_rules import ABSENT_STATUS
+    return [(None, None, {"status": ABSENT_STATUS, "paid_day": Decimal("0"),
+                          "leave_used": Decimal("0"), "explanation": ""}) for _ in range(count)]
+
+
+def test_a_balance_of_1_38_covers_exactly_one_absence(app):
+    from attendance.payroll_rules import apply_leave_balance
+    rows = absent_rows()
+    assert apply_leave_balance(rows, Decimal("1.38")) == Decimal("1")
+    statuses = [row[2]["status"] for row in rows]
+    assert statuses[0] == "Paid Leave"
+    # The 0.38 remainder cannot split a second day.
+    assert statuses[1] == "Absent / Attendance Missing"
+
+
+def test_a_balance_of_1_92_covers_a_day_and_a_half(app):
+    from attendance.payroll_rules import apply_leave_balance, HALF_LEAVE_HALF_LOP_STATUS
+    rows = absent_rows()
+    assert apply_leave_balance(rows, Decimal("1.92")) == Decimal("1.5")
+    statuses = [row[2]["status"] for row in rows]
+    assert statuses[0] == "Paid Leave"
+    assert statuses[1] == HALF_LEAVE_HALF_LOP_STATUS
+    assert statuses[2] == "Absent / Attendance Missing"
+
+
+def test_leftover_opening_leave_joins_the_earned_pool(app):
+    """Leave is settled in two passes; a fraction must not be stranded in one."""
+    with app.app_context():
+        # An opening of 0.4 redeems nothing on its own, and so does an earning of 0.4,
+        # but together they make 0.8, which redeems half a day.
+        seed_leave_month(opening=Decimal("0.4"))
+        add_july_attendance({3})
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(result.leave_earned) > Decimal("0.4")
+        assert Decimal(result.leave_used) >= Decimal("0.5")
+        by_date = {row["date"]: row["attendance_status"] for row in result.detail_json}
+        assert by_date["2026-07-03"] != "Full Day LOP"
+
+
+def test_carried_balance_shows_what_is_redeemable_as_leave(client, app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        carried = Decimal(result.closing_leave)
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    assert "Leave carried forward" in page
+    assert "Redeemable as leave:" in page
+    from attendance.payroll_rules import redeemable_leave
+    assert str(redeemable_leave(carried)) in page
+
+
+def test_encashment_days_keep_two_decimals(app):
+    from routes.payroll import parse_leave_encashment_days
+    # A remainder such as 0.38 can be encashed in full; one decimal lost 0.08 of it.
+    assert parse_leave_encashment_days("0.38") == Decimal("0.38")
+    assert parse_leave_encashment_days("1.929") == Decimal("1.92")
+    assert parse_leave_encashment_days("") == Decimal("0")
+
+
+# --- Employee page: one action bar, navigation out of the form ---
+
+def test_employee_page_has_one_pair_of_submit_buttons(client, app):
+    """The panel and the sticky bar each carried Save and Recalculate: four buttons
+    for two actions."""
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    submits = re.findall(r'name="action" value="(\w+)">([^<]+)</button>', page)
+    assert submits == [("save", "Save only"), ("recalculate", "Save &amp; recalculate")]
+
+
+def test_navigation_links_sit_outside_the_form(client, app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    head, _, rest = page.partition('<form method="post" id="employeeDetailForm">')
+    assert "Back to payroll" in head and "Back to payroll" not in rest
+    assert "Open PDF" in head and "Open PDF" not in rest
+
+
+def test_finalized_month_shows_no_submit_buttons_but_keeps_navigation(client, app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        calculate_payroll_month("2026-07")
+        month = db.session.get(PayrollMonth, "2026-07")
+        month.status = "FINALIZED"
+        month.monthly_finalized_at = datetime.utcnow()
+        month.daily_finalized_at = datetime.utcnow()
+        db.session.commit()
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    assert 'name="action" value="save"' not in page
+    assert 'name="action" value="recalculate"' not in page
+    assert "Back to payroll" in page and "Open PDF" in page
+
+
+def test_adjustment_cards_match_the_wage_type(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    def cards(employee_id):
+        page = client.get(f"/payroll/2026-07/employee/{employee_id}").data.decode()
+        return [f.strip() for f in re.findall(
+            r'<div class="adjust-field[^"]*">\s*<(?:label|span)[^>]*>(?:\s*<input[^>]*>\s*<span>)?([^<]+)', page)]
+
+    # Leave encashment is monthly only; the attendance bonus is daily only.
+    assert "Encash leave" in cards("5")
+    assert "Attendance bonus" not in cards("5")
+    assert "Attendance bonus" in cards("6")
+    assert "Encash leave" not in cards("6")
+
+
+# --- Wage filtering is one control, not a button per card ---
+
+def test_wage_filter_is_a_single_segmented_control(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    page = client.get("/payroll/2026-07").data.decode()
+    options = re.findall(r'wage-filter-option[^>]*>([^<]+)<', page)
+    assert options == ["All (2)", "Monthly (1)", "Daily (1)"]
+    # The per-card "View X only" buttons and the "Show all wage types" alert are gone.
+    assert "View monthly only" not in page
+    assert "Show all wage types" not in page
+
+
+def test_wage_filter_marks_the_current_view(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    for wage, active in (("", "All"), ("monthly", "Monthly"), ("daily", "Daily")):
+        page = client.get(f"/payroll/2026-07?wage={wage}").data.decode()
+        current = re.findall(r'wage-filter-option is-active"[^>]*>([^ ]+)', page)
+        assert current == [active], (wage, current)
+
+
+def test_filtered_recalculate_keeps_the_wage_group(client, app):
+    """The step's buttons must post the filter, or a filtered view would recalculate
+    every wage group."""
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    page = client.get("/payroll/2026-07?wage=daily").data.decode()
+    step = re.search(r'<li class="workflow-step[^>]*>(?:(?!</li>).)*?Calculate payroll.*?</li>', page, re.S).group(0)
+    assert step.count('name="wage_group" value="DAILY"') == 2
+    # Unfiltered, the step posts no wage group, so every open group recalculates.
+    page = client.get("/payroll/2026-07").data.decode()
+    steps = re.search(r'<ol class="workflow-steps".*?</ol>', page, re.S).group(0)
+    assert 'name="wage_group"' not in steps
+
+
+# --- Page flow: one action location per page, navigation out of forms ---
+
+def visible_buttons(page):
+    """Buttons the user actually sees: dialog contents are hidden until opened."""
+    body = re.sub(r"<dialog.*?</dialog>", "", page, flags=re.S)
+    found = re.findall(r'class="btn[^"]*"[^>]*>\s*([^<]{1,40}?)\s*<', body)
+    return [b.strip() for b in found if b.strip() and b.strip() != "Logout"]
+
+
+def test_month_picker_explains_itself_and_lists_recent_months(client, app):
+    with app.app_context():
+        seed_month()
+
+    login(client)
+    page = client.get("/payroll/new").data.decode()
+    assert visible_buttons(page) == ["Open payroll month"]
+    # Says what pressing it does, rather than "Continue".
+    assert "A month that does not exist yet is created" in page
+    # Existing months are reachable without retyping them.
+    assert "Recent months" in page
+    assert "July 2026" in page
+
+
+def test_week_offs_has_one_save_and_a_search(client, app):
+    with app.app_context():
+        seed_month()
+
+    login(client)
+    page = client.get("/weekoffs").data.decode()
+    assert visible_buttons(page) == ["Save week offs"]
+    assert 'id="weekoffSearch"' in page
+    # The save sits with the rows it applies to, not above a long table.
+    assert "sticky-actions" in page
+
+
+def test_employee_list_has_three_actions_and_quiet_row_links(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    page = client.get("/master").data.decode()
+    assert visible_buttons(page) == ["Export", "Import", "Add employee"]
+    assert 'id="employeeSearch"' in page
+    # Marking someone left is a link, not a red button on every row.
+    assert 'class="btn btn-sm btn-outline-danger disable-employee-button"' not in page
+    assert "link-button is-danger disable-employee-button" in page
+
+
+def test_attendance_manager_submits_from_one_sticky_bar(client, app):
+    with app.app_context():
+        seed_month()
+
+    login(client)
+    page = client.get("/attendance/2026-07").data.decode()
+    submits = re.findall(r'data-attendance-action="(\w+)"[^>]*>\s*([^<]+?)\s*</button>', page)
+    assert submits == [("save", "Save only"), ("submit", "Save &amp; calculate payroll")]
+    # They live in the sticky bar at the end of the form, not in the card header.
+    _, _, after_table = page.partition("table-footer")
+    assert "Save &amp; calculate payroll" in after_table
+    assert "module-card-actions" not in page
+
+
+# --- Salary slips are a monthly wage document only ---
+
+def test_salary_slips_cover_monthly_wage_only(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    response = client.get("/reports/2026-07/final-report.pdf")
+    assert response.status_code == 200
+    assert "salary-slips" in response.headers["Content-Disposition"]
+    text = pdf_text(response.data)
+    assert "Pay Slip" in text
+    assert "EARNINGS (INR)" in text
+    assert "Month Worker" in text
+    # Daily wage employees are not issued a salary slip.
+    assert "Day Worker" not in text
+
+
+def test_a_daily_employee_pdf_is_an_attendance_summary_not_a_slip(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    response = client.get("/reports/2026-07/employee/6.pdf")
+    assert response.status_code == 200
+    text = pdf_text(response.data)
+    assert "Pay Slip" not in text
+    assert "Day Worker" in text
+    # Same regulatory rule as the bulk daily report: no branding anywhere,
+    # including the filename.
+    assert b"SMARTfill" not in response.data
+    assert "smartfill" not in response.headers["Content-Disposition"].lower()
+
+
+def test_a_monthly_employee_pdf_is_still_a_salary_slip(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    response = client.get("/reports/2026-07/employee/5.pdf")
+    assert response.status_code == 200
+    assert "Pay Slip" in pdf_text(response.data)
+    assert "salary-slip" in response.headers["Content-Disposition"]
+
+
+def test_reports_page_names_the_slip_report_by_wage_group(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    page = client.get("/reports/").data
+    assert b"Salary Slips (Monthly)" in page
+    assert b"Final Salary Report" not in page
+
+
+# --- Salary slip in the classic payslip layout ---
+
+def test_salary_slip_has_the_payslip_structure(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    for heading in ("Pay Slip:", "Payable days:", "Loss of pay days:",
+                    "Employee Name", "Employee Code", "Department", "Designation",
+                    "EARNINGS (INR)", "DEDUCTIONS (INR)", "Actual Amount", "Paid Amount",
+                    "Sub Total", "Others", "Gross Pay", "Gross Deductions", "Net Pay",
+                    "In words:", "PF & ESIC Contributions",
+                    "PF contribution by Employer", "ESIC contribution by Employer",
+                    "PF Admin & EDLI Charges", "ESIC contribution by Employee",
+                    "PF contribution by Employee",
+                    "Total contribution to PF account",
+                    "LEAVE SUMMARY", "Balance from last month", "Earned this month",
+                    "Used this month", "Carry forward",
+                    "system generated payslip"):
+        assert heading in text, heading
+    # Only the three components survive from the sample slip.
+    assert "Basic" in text and "House Rent Allowance" in text and "Conveyance Allowance" in text
+    for dropped in ("Kit Allowance", "Medical Allowance", "Special Allowance", "Travel Allowance"):
+        assert dropped not in text, dropped
+    # Bank, PF number, UAN and PAN are deliberately absent.
+    for dropped in ("Bank A/C", "UAN No", "PAN No", "Business Unit", "Cost Center", "Date of Join"):
+        assert dropped not in text, dropped
+
+
+def test_slip_net_pay_reconciles_with_the_payroll_result(app):
+    from attendance.reports import slip_earning_rows, slip_other_earnings, slip_other_deductions
+    with app.app_context():
+        result = seed_statutory_employee(pf=True)
+        salary = SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        employee = db.session.get(Employee, "5")
+        paid = sum((row[2] for row in slip_earning_rows(employee, salary, result)), Decimal("0"))
+        other_in = sum((amount for _l, amount in slip_other_earnings(result)), Decimal("0"))
+        statutory = (Decimal(result.professional_tax) + Decimal(result.pf_employee)
+                     + Decimal(result.esi_employee))
+        other_out = sum((amount for _l, amount in slip_other_deductions(result)), Decimal("0"))
+        net = paid + other_in - statutory - other_out
+        assert net.quantize(Decimal("0.01")) == Decimal(result.final_salary)
+
+
+def test_paid_amounts_follow_loss_of_pay_only(app):
+    """Short hours is its own deduction line, so it must not also shrink the
+    paid component amounts."""
+    from attendance.reports import slip_paid_ratio
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set(range(1, 8)))
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        salary = SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        expected = (Decimal(salary.salary) - Decimal(result.lop_deduction)) / Decimal(salary.salary)
+        assert slip_paid_ratio(salary, result) == expected
+
+
+def test_slip_shows_the_whole_salary_when_no_breakup_is_captured(app):
+    from attendance.reports import slip_earning_rows
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        salary = SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        employee = db.session.get(Employee, "5")
+        assert Decimal(employee.basic_salary or 0) == 0
+        rows = slip_earning_rows(employee, salary, result)
+        # Otherwise the slip would show a gross of zero against a real net figure.
+        assert rows[0][0] == "Basic"
+        assert rows[0][1] == Decimal(salary.salary)
+
+
+def test_slip_carries_one_signed_adjustment(app):
+    """A positive and a negative Adjustment row on opposite sides read as two
+    separate amounts; one signed line is unambiguous."""
+    from attendance.reports import slip_other_earnings, slip_other_deductions
+    with app.app_context():
+        result = seed_statutory_employee(pf=True)
+        db.session.query(SalaryRecord).filter_by(employee_id="5").update({"adjustment": Decimal("-2500")})
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        earnings = dict(slip_other_earnings(result))
+        assert earnings["Adjustment (+/-)"] == Decimal("-2500.00")
+        # Deductions no longer carry a second Adjustment line.
+        assert "Adjustment" not in dict(slip_other_deductions(result))
+
+
+def test_slip_deductions_are_ordered_pf_esic_pt_tds(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    order = [text.index(label) for label in ("P.F", "ESIC", "Professional Tax", "TDS")]
+    assert order == sorted(order)
+
+
+def test_slip_shows_employee_code_before_name(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    assert text.index("Employee Code") < text.index("Employee Name")
+
+
+def test_slip_leave_summary_matches_the_payroll_result(client, app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=True)
+        expected = [str(leave_days(getattr(result, field))) for field in
+                    ("opening_leave", "leave_earned", "leave_used", "closing_leave")]
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    assert "LEAVE SUMMARY" in text
+    for value in expected:
+        assert value in text
+
+
+def test_daily_slip_has_no_leave_summary(app):
+    """Daily wage employees do not accrue leave, so the block would be all zeroes."""
+    from attendance.reports import salary_slip_story
+    from reportlab.lib.styles import getSampleStyleSheet
+    with app.app_context():
+        seed_two_wage_groups()
+        salary = SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        story = salary_slip_story("2026-07", salary, result, getSampleStyleSheet(), 190)
+        rendered = " ".join(str(item) for item in story)
+        assert "LEAVE SUMMARY" not in rendered
+
+
+# --- Session inactivity timeout ---
+
+def test_session_survives_fourteen_minutes_of_inactivity(client, app):
+    """Reviewing a payroll month means long gaps between clicks; 5 minutes was
+    logging people out mid-task."""
+    client.post("/login", data={"username": "admin", "password": "12345"})
+    with client.session_transaction() as user_session:
+        user_session["last_activity_at"] = datetime.utcnow().timestamp() - (14 * 60)
+    response = client.get("/", follow_redirects=True)
+    assert b"session expired" not in response.data
+    assert b"Dashboard" in response.data
+
+
+def test_session_expires_after_fifteen_minutes_of_inactivity(client, app):
+    client.post("/login", data={"username": "admin", "password": "12345"})
+    with client.session_transaction() as user_session:
+        user_session["last_activity_at"] = datetime.utcnow().timestamp() - (15 * 60 + 1)
+    response = client.get("/", follow_redirects=True)
+    assert b"Your session expired after 15 minutes of inactivity" in response.data
+
+
+def test_timeout_message_follows_the_configured_value(app):
+    """The wording used to hardcode "5 minutes", so changing the setting left the
+    message telling people something untrue."""
+    from attendance.authentication import inactivity_timeout_label
+    for seconds, expected in ((900, "15 minutes"), (300, "5 minutes"), (60, "1 minute"), (90, "90 seconds")):
+        app.config["SESSION_INACTIVITY_TIMEOUT_SECONDS"] = seconds
+        with app.test_request_context():
+            assert inactivity_timeout_label() == expected
+
+
+def test_slip_page_carries_only_the_footnote(client, app):
+    """No brand line and no page number: the masthead already identifies the slip."""
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    assert "SMARTfill Payroll" not in text
+    assert "Page 1" not in text
+    assert "system generated payslip" in text
+
+
+def test_slip_net_pay_carries_the_currency(client, app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=True)
+        expected = f"{Decimal(result.final_salary):,.2f} INR"
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    assert expected in text
+    assert "EARNINGS (INR)" in text and "DEDUCTIONS (INR)" in text
+    assert "(Rs.)" not in text
+
+
+def test_slip_shows_the_total_paid_into_the_pf_account(client, app):
+    with app.app_context():
+        result = seed_statutory_employee(pf=True)
+        total = Decimal(result.pf_employee) + Decimal(result.pf_employer)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    assert "Total contribution to PF account" in text
+    assert f"{total:,.2f}" in text
+
+
+# --- A half day worked draws half a leave for the unworked half ---
+
+def test_half_day_draws_half_a_leave_when_the_balance_allows(app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("1"))
+        add_july_attendance(set())
+        # 22 July worked 5h 21m: over the 3h half-day floor, under the 6h full-day one.
+        record = AttendanceRecord.query.filter_by(employee_id="5", date=date(2026, 7, 22)).one()
+        record.actual_minutes = 321
+        record.raw_working_hours = "5h 21m"
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row for row in result.detail_json}
+        day = by_date["2026-07-22"]
+        assert day["attendance_status"] == "Half Day Present / Half-Day Leave"
+        assert Decimal(day["leave_used"]) == Decimal("0.5")
+        # The day is paid in full, so it costs leave rather than pay.
+        assert Decimal(day["paid_day_value"]) == Decimal("1")
+        assert Decimal(result.lop_days) == 0
+        assert Decimal(result.leave_used) == Decimal("0.5")
+
+
+def test_half_day_is_half_unpaid_when_no_leave_is_left(app):
+    """Without this the unworked half was neither charged to leave nor deducted,
+    so a half day was quietly paid in full."""
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        for day in (6, 7, 8, 9, 10, 13, 14):
+            record = AttendanceRecord.query.filter_by(employee_id="5", date=date(2026, 7, day)).one()
+            record.actual_minutes = 321
+            record.raw_working_hours = "5h 21m"
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        statuses = [row["attendance_status"] for row in result.detail_json]
+        assert "Half Day Present" in statuses
+        # Half a day of loss of pay for every half day the balance could not cover.
+        uncovered = statuses.count("Half Day Present")
+        assert Decimal(result.lop_days) == Decimal("0.5") * uncovered
+        assert Decimal(result.lop_deduction) > 0
+
+
+def test_daily_wage_half_days_do_not_touch_leave_or_lop(app):
+    """Daily wage has no leave balance, so a half day is simply half paid."""
+    with app.app_context():
+        result = daily_bonus_result({1: 540, 2: 300, 3: 540, 4: 540})
+        assert Decimal(result.half_days) == Decimal("1")
+        assert Decimal(result.leave_used or 0) == 0
+        assert Decimal(result.lop_days or 0) == 0
+        assert Decimal(result.paid_working_days) == Decimal("3.5")
+
+
+def test_half_day_with_leave_reads_clearly_everywhere(client, app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("1"))
+        add_july_attendance(set())
+        record = AttendanceRecord.query.filter_by(employee_id="5", date=date(2026, 7, 22)).one()
+        record.actual_minutes = 321
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    assert b"Half Day + Half Leave" in client.get("/payroll/2026-07/employee/5").data
+    # The label wraps inside the narrow calendar cell, so match the words.
+    text = pdf_text(client.get("/reports/2026-07/attendance-summary-monthly.pdf").data)
+    assert "Half Day + Half" in text and "Leave" in text
+
+
+# --- Off-site days: full day, no overtime, no short hours ---
+
+def offsite_before_and_after(day, minutes, status):
+    """The same day calculated with punch data, then again as an off-site override."""
+    seed_leave_month(opening=Decimal("0"))
+    add_july_attendance(set())
+    record = AttendanceRecord.query.filter_by(employee_id="5", date=date(2026, 7, day)).one()
+    record.actual_minutes = minutes
+    record.raw_working_hours = f"{minutes // 60}h {minutes % 60:02d}m"
+    db.session.commit()
+
+    def calculate():
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        return result, next(x for x in result.detail_json if x["date"] == f"2026-07-{day:02d}")
+
+    before = calculate()
+    db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="5",
+                                      date=date(2026, 7, day), manual_status=status))
+    db.session.commit()
+    return before, calculate()
+
+
+def test_offsite_day_earns_no_overtime(app):
+    with app.app_context():
+        # 10 hours would otherwise be 45 payable overtime minutes.
+        (_, plain), (result, day) = offsite_before_and_after(6, 600, "Worked On-Site")
+        assert plain["raw_ot"] == 45
+        assert day["attendance_status"] == "Worked On-Site"
+        assert Decimal(day["paid_day_value"]) == Decimal("1")
+        assert day["raw_ot"] == 0 and day["payable_ot"] == 0
+        assert result.ot_minutes == 0
+        assert Decimal(result.ot_amount) == 0
+
+
+def test_offsite_day_attracts_no_short_hours_deduction(app):
+    with app.app_context():
+        # 7 hours would otherwise be 120 short-hours minutes.
+        (_, plain), (result, day) = offsite_before_and_after(7, 420, "Work From Home")
+        assert plain["shortage_minutes"] == 120
+        assert day["attendance_status"] == "Work From Home"
+        assert Decimal(day["paid_day_value"]) == Decimal("1")
+        # Reported as zero too, so no phantom "Less hours" badge appears.
+        assert day["shortage_minutes"] == 0
+        assert result.less_hours_minutes == 0
+        assert Decimal(result.less_hours_deduction) == 0
+
+
+def test_daily_wage_offsite_day_is_also_exempt(app):
+    with app.app_context():
+        seed_daily_bonus_month({1: 600, 2: 540, 3: 540, 4: 540})
+        record = AttendanceRecord.query.filter_by(employee_id="6", date=date(2026, 7, 1)).one()
+        db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="6",
+                                          date=record.date, manual_status="Worked On-Site"))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        day = next(x for x in result.detail_json if x["date"] == "2026-07-01")
+        assert day["attendance_status"] == "Worked On-Site"
+        assert day["raw_ot"] == 0 and day["shortage_minutes"] == 0
+        assert result.ot_minutes == 0
+        assert Decimal(result.paid_working_days) == Decimal("4")
+
+
+# --- TDS entered on the employee master and deducted as-is ---
+
+def test_tds_from_the_master_is_deducted_and_shown_on_the_slip(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+        db.session.get(Employee, "5").tds = Decimal("2500")
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(result.tds) == Decimal("2500.00")
+        # Not derived from anything: whatever is entered is what is deducted.
+        assert Decimal(result.final_salary) == Decimal("30000") - Decimal(result.total_deduction)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    assert "TDS" in text
+    assert "2,500.00" in text
+
+
+def test_tds_is_editable_from_the_employee_page(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    login(client)
+    client.post("/master/5", data={
+        "employee_id": "5", "name": "Worker", "wage_type": "Monthly", "salary": "30000",
+        "basic_salary": "0", "hra": "0", "allowance": "0", "tds": "1750",
+        "employment_status": "ACTIVE", "master_controls_present": "1",
+    }, follow_redirects=True)
+    with app.app_context():
+        assert db.session.get(Employee, "5").tds == Decimal("1750.00")
+        audit = AuditLog.query.filter_by(action="Employee Master Updated").first()
+        assert "TDS" in audit.detail
+
+
+def test_tds_round_trips_through_import_and_export(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000"),
+                                tds=Decimal("3200")))
+        db.session.commit()
+
+    login(client)
+    export = client.get("/master/export.csv").data.decode()
+    assert "TDS" in export.splitlines()[0]
+    assert "3200.00" in export
+    # An untouched export re-imports cleanly.
+    assert b"imported" in import_master(client, export.encode()).data
+    with app.app_context():
+        assert db.session.get(Employee, "5").tds == Decimal("3200.00")
+
+    import_master(client, (
+        "Employee ID,Name,Wage Type,Salary,TDS\n"
+        "5,Worker,Monthly,30000,4100\n"
+    ).encode())
+    with app.app_context():
+        assert db.session.get(Employee, "5").tds == Decimal("4100.00")
+
+
+def test_import_rejects_tds_on_a_daily_employee(client, app):
+    with app.app_context():
+        db.session.add(Employee(id="6", name="Day Worker", salary_type="Daily",
+                                normalized_salary_type="DAILY", salary=Decimal("600")))
+        db.session.commit()
+
+    login(client)
+    page = import_master(client, (
+        "Employee ID,Name,Wage Type,Salary,TDS\n"
+        "6,Day Worker,Daily,600,2000\n"
+    ).encode())
+    assert b"only applies to monthly wage employees" in page.data
+    with app.app_context():
+        assert Decimal(db.session.get(Employee, "6").tds or 0) == 0
+
+
+def test_switching_an_employee_to_daily_clears_tds(client, app):
+    """TDS is a monthly-only field, so a daily record must not keep one."""
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000"),
+                                tds=Decimal("2500")))
+        db.session.commit()
+
+    login(client)
+    # Wage type cannot change on an active employee, so this exercises the daily branch
+    # of the form handler directly.
+    with app.app_context():
+        from attendance.master import save_master_employee
+        db.session.query(Employee).filter_by(id="5").update(
+            {"salary_type": None, "normalized_salary_type": None})
+        db.session.commit()
+        save_master_employee({"employee_id": "5", "name": "Worker", "wage_type": "Daily",
+                              "salary": "600", "master_controls_present": "1"}, "admin")
+        db.session.commit()
+        assert Decimal(db.session.get(Employee, "5").tds) == 0
+
+
+def test_tds_appears_in_the_compliance_panel(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+        db.session.get(Employee, "5").tds = Decimal("2500")
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    figures = dict(re.findall(r"<dt>([^<]+)</dt><dd>([^<]+)</dd>", page))
+    assert figures["TDS"] == "2500.00"
+    # It is an employee-side deduction, so it belongs in that total.
+    assert figures["Deducted from employee"] == "4500.00"
+
+
+# --- Daily sheet states time and a band, never an amount ---
+
+def test_daily_sheet_states_hours_not_amounts(client, app):
+    with app.app_context():
+        # 8h 00m worked: an hour short, so both a shortage and a deduction exist.
+        result = daily_bonus_result({1: 480, 2: 540, 3: 540, 4: 540})
+        assert Decimal(result.less_hours_deduction) > 0
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/summary-daily-wage.pdf").data)
+    assert "Less Hours" in text and "Over Time" in text
+    # The label lost the word "Deduction" and the value is a duration.
+    assert "Less Hours Deduction" not in text
+    assert "1h 00m" in text
+    assert pdf_money(result.less_hours_deduction) not in text
+
+
+def test_daily_sheet_bonus_is_a_bare_band(client, app):
+    from attendance.reports import bonus_band_text
+    with app.app_context():
+        earned = daily_bonus_result({1: 540, 2: 540, 3: 540, 4: 540})
+        assert bonus_band_text(earned) == "10%"
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/summary-daily-wage.pdf").data)
+    assert "Bonus" in text
+    assert "Attendance Bonus" not in text
+    assert "10%" in text
+    # No amount, and none of the longer wordings.
+    assert "of earned wage" not in text
+    assert "Not earned this month" not in text
+    assert pdf_money(earned.attendance_bonus_amount) not in text
+
+
+def test_bonus_band_is_nil_when_nothing_is_earned(app):
+    from attendance.reports import bonus_band_text
+    with app.app_context():
+        missed = daily_bonus_result({1: None, 2: None, 3: 540, 4: 540})
+        assert bonus_band_text(missed) == "NIL"
+
+
+def test_slip_pf_rows_are_ordered_employer_employee_charges(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+
+    login(client)
+    text = pdf_text(client.get("/reports/2026-07/employee/5.pdf").data)
+    order = [text.index(label) for label in
+             ("PF contribution by Employer", "PF contribution by Employee", "PF Admin & EDLI Charges")]
+    assert order == sorted(order)
+    # The charge line says who bears it.
+    assert "Paid by" in text
+    assert "\nPF Employee\n" not in text

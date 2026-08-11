@@ -12,7 +12,7 @@ from attendance import db
 from attendance.calculator import calculate_payroll_month
 from attendance.models import AdvanceSalary, AuditLog, AttendanceOverride, AttendanceRecord, Employee, Holiday, LeaveLedger, Loan, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User, WeekOffRule
 from attendance.parser import import_attendance_csv, import_salary_csv
-from attendance.reports import build_employee_pdf
+from attendance.reports import build_attendance_summary_pdf, build_employee_pdf
 from attendance.utils import parse_duration
 from routes.settings import APP_VERSION
 from attendance.loans import loan_installment_for_employee
@@ -67,9 +67,9 @@ def test_login_logout_and_password_change(client):
 def test_inactive_session_auto_logs_out(client, app):
     client.post("/login", data={"username": "admin", "password": "12345"})
     with client.session_transaction() as user_session:
-        user_session["last_activity_at"] = datetime.utcnow().timestamp() - 301
+        user_session["last_activity_at"] = datetime.utcnow().timestamp() - 901
     response = client.get("/", follow_redirects=True)
-    assert b"Your session expired after 5 minutes of inactivity" in response.data
+    assert b"Your session expired after 15 minutes of inactivity" in response.data
     assert b"Username" in response.data
     with app.app_context():
         audit = AuditLog.query.filter_by(action="User Auto Logout").one()
@@ -285,7 +285,7 @@ def test_reports_page_has_dedicated_route_and_pdf_cards(client, app):
     assert b"<h1" in response.data
     assert b"Reports" in response.data
     assert b"Payroll PDF Reports" in response.data
-    assert b"Final Salary Report" in response.data
+    assert b"Salary Slips (Monthly)" in response.data
     assert b"Payroll Summary" in response.data
     assert b"Detailed Attendance" in response.data
     assert b"/reports/2026-07/final-report.pdf" in response.data
@@ -431,7 +431,7 @@ def test_employee_master_import_export_updates_only_wage_fields(client, app):
 
     export_response = client.get("/master/export.csv")
     assert export_response.status_code == 200
-    assert b"Employee ID,Name,Department,Designation,Wage Type,Salary,Basic,HRA,Allowance,PF,ESIC" in export_response.data
+    assert b"Employee ID,Name,Department,Designation,Wage Type,Salary,Basic,HRA,Allowance,TDS,PF,ESIC" in export_response.data
 
     blocked = client.post("/master/import", data={
         "employee_master_csv": (
@@ -688,7 +688,9 @@ def test_sandwich_leave_marks_weekoff_between_leave_days_and_pdf(app):
         assert result.paid_leaves == Decimal("3")
         assert result.lop_days == Decimal("0")
 
-        pdf_bytes = build_employee_pdf("2026-07", "5")
+        # The day-by-day calendar lives on the attendance summary; the salary slip
+        # carries the pay figures only.
+        pdf_bytes = build_attendance_summary_pdf("2026-07", "MONTHLY")
         text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf_bytes)).pages)
         assert "Sandwich Leave" in text
         # The calendar shows day numbers under weekday headings, not full dates.
@@ -912,8 +914,8 @@ def test_bulk_attendance_manager_submit_required_before_payroll_calculation(tmp_
         )
     assert upload.status_code == 200
     assert b"Attendance Manager" in upload.data
-    assert b"Re-import attendance" in upload.data
-    assert b"Submit &amp; calculate payroll" in upload.data
+    assert b"Re-import the punch sheet" in upload.data
+    assert b"Save &amp; calculate payroll" in upload.data
     with app.app_context():
         month = db.session.get(PayrollMonth, "2026-07")
         assert month.attendance_submitted is False
@@ -1054,10 +1056,10 @@ def test_employee_detail_common_save_recalculates_adjustment_and_loan(client, ap
         # 3.00 of the 3.06 available were encashed, so the accrual remainder carries.
         assert result.closing_leave == Decimal("0.06")
         assert result.loan_deduction == Decimal("500.00")
-        assert result.final_salary == Decimal("32600.00")
+        assert result.final_salary == Decimal("32400.00")
         audit = AuditLog.query.filter_by(action="Employee Payroll Data Changed").one()
         assert "Adjustment: 0.00 -> 100.00" in audit.detail
-        assert "Leave Encashment: Disabled 0 day(s) / 0.00 -> Enabled 3.0 day(s) / 3000.00" in audit.detail
+        assert "Leave Encashment: Disabled 0 day(s) / 0.00 -> Enabled 3.00 day(s) / 3000.00" in audit.detail
         assert "Loan: 0.00 -> 500.00" in audit.detail
 
 
@@ -1212,14 +1214,13 @@ def test_payroll_summary_includes_loan_and_advance_deductions(app):
         assert result.loan_deduction == Decimal("1000.00")
         assert result.loan_pending_amount == Decimal("11000.00")
         assert result.advance_deduction == Decimal("2500.00")
-        assert result.total_deduction == Decimal("3500.00")
-        assert result.final_salary == Decimal("26500.00")
+        assert result.total_deduction == Decimal("3700.00")
+        assert result.final_salary == Decimal("26300.00")
         reader = PdfReader(BytesIO(build_employee_pdf("2026-08", "5")))
         pdf_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        assert "Loan Deduction" in pdf_text
-        assert "Pending Loan Amount" in pdf_text
-        assert "11,000.00" in pdf_text
-        assert "Advance Salary Deduction" in pdf_text
+        # Loan and advance are listed under Others on the slip.
+        assert "Loan" in pdf_text
+        assert "Advance Salary" in pdf_text
 
 
 def test_employee_payroll_can_skip_loan_installment_for_month(client, app):
@@ -1249,7 +1250,7 @@ def test_employee_payroll_can_skip_loan_installment_for_month(client, app):
         skip = LoanInstallmentSkip.query.filter_by(employee_id="5", payroll_month="2026-07").one()
         assert skip.skip is True
         assert result.loan_deduction == Decimal("0.00")
-        assert result.final_salary == Decimal("30000.00")
+        assert result.final_salary == Decimal("29800.00")
         audit = AuditLog.query.filter_by(action="Employee Payroll Data Changed").one()
         assert "Loan Installment Skip: No -> Yes" in audit.detail
 
@@ -1355,7 +1356,7 @@ def test_global_leave_encashment_encashes_all_available_leaves(client, app):
         assert result.leave_encashment_days == Decimal("3.06")
         assert result.leave_encashment_amount == Decimal("3060.00")
         assert result.closing_leave == Decimal("0.00")
-        assert result.final_salary == Decimal("33060.00")
+        assert result.final_salary == Decimal("32860.00")
 
 
 def test_global_leave_encashment_can_be_disabled_per_employee(client, app):
@@ -1385,7 +1386,7 @@ def test_global_leave_encashment_can_be_disabled_per_employee(client, app):
         assert result.leave_encashment_days == Decimal("0")
         assert result.leave_encashment_amount == Decimal("0.00")
         assert result.closing_leave == Decimal("3.06")
-        assert result.final_salary == Decimal("30000.00")
+        assert result.final_salary == Decimal("29800.00")
 
 
 def test_logs_page_paginates_at_50(client, app):
@@ -1439,42 +1440,40 @@ def test_pdf_reports_download(client, app):
     assert employee_pdf.mimetype == "application/pdf"
     assert employee_pdf.data.startswith(b"%PDF")
     employee_reader = PdfReader(BytesIO(employee_pdf.data))
-    assert employee_reader.metadata.title == "Worker Salary Report - July 2026"
+    assert employee_reader.metadata.title == "Worker Salary Slip - July 2026"
     employee_text = "\n".join(page.extract_text() or "" for page in employee_reader.pages)
     assert "Final Salary Report" not in employee_text
-    assert "Salary Slip" in employee_text
-    assert "SMARTfill Payroll" in employee_text
-    assert "Payable Salary" in employee_text
-    assert "Days in Month" in employee_text
-    assert "Paid Working Days" in employee_text
-    assert "Week Offs" in employee_text
-    assert "Total Paid Days" in employee_text
-    assert "SUN" in employee_text  # calendar weekday headings
-    assert "Leave Balance" in employee_text
-    assert "Leave Earned This Month" in employee_text
-    assert "Leave Used This Month" in employee_text
-    assert "Leave Carry Forwarded" in employee_text
-    assert "In Words" in employee_text
+    assert "Pay Slip: July 2026" in employee_text
+    # The slip carries no brand line or page number; the masthead identifies it.
+    assert "SMARTfill Payroll" not in employee_text
+    assert "Panchratna Industrial Estate" in employee_text
+    assert "EARNINGS (INR)" in employee_text
+    assert "DEDUCTIONS (INR)" in employee_text
+    assert "Net Pay" in employee_text
+    # Attendance day counts and the calendar belong to the attendance summary now;
+    # the slip carries the pay components and the statutory figures.
+    assert "Payable days" in employee_text
+    assert "Loss of pay days" in employee_text
+    assert "Basic" in employee_text
+    assert "House Rent Allowance" in employee_text
+    assert "Professional Tax" in employee_text
+    assert "PF & ESIC Contributions" in employee_text
+    assert "LEAVE SUMMARY" in employee_text
+    assert "In words:" in employee_text
     assert "Rupees" in employee_text
-    assert "Loan Deduction" not in employee_text
-    assert "Pending Loan Amount" not in employee_text
-    assert "Advance Salary Deduction" not in employee_text
     assert final_pdf.status_code == 200
     assert final_pdf.mimetype == "application/pdf"
     assert final_pdf.data.startswith(b"%PDF")
     final_reader = PdfReader(BytesIO(final_pdf.data))
-    assert final_reader.metadata.title == "Final Salary Report - July 2026"
+    assert final_reader.metadata.title == "Salary Slips - July 2026"
     final_text = "\n".join(page.extract_text() or "" for page in final_reader.pages)
-    assert len(final_reader.pages) == 1
+    # One slip to a page, because each is handed to a different person.
+    assert len(final_reader.pages) == 2
     assert "Final Payroll Report" not in final_text
-    assert "Salary Slip" in final_text
-    assert "SMARTfill Payroll" in final_text
-    assert "Payable Salary" in final_text
-    assert "Total Paid Days" in final_text
+    assert "Pay Slip: July 2026" in final_text
+    assert "SMARTfill Payroll" not in final_text
+    assert "Net Pay" in final_text
     assert "Worker Two" in final_text
-    assert "Loan Deduction" not in final_text
-    assert "Pending Loan Amount" not in final_text
-    assert "Advance Salary Deduction" not in final_text
 
 
 def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
@@ -1566,7 +1565,7 @@ def test_employee_payroll_controls_disable_ot_and_less_hours_deduction(app):
         assert short_row["shortage_minutes"] == 0
         assert result.less_hours_minutes == 0
         assert result.less_hours_deduction == Decimal("0.00")
-        assert result.final_salary == Decimal("30000.00")
+        assert result.final_salary == Decimal("29800.00")
 
 
 def test_payroll_finalize_unlock_and_logs(client, app):

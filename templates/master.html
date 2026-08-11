@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="page-head">
   <div>
     <h1 class="page-title">Employees</h1>
     <p class="text-muted mb-0">Maintain employee department, designation, wage, and payroll status.</p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a class="btn btn-outline-secondary" href="{{ url_for('master.export_csv') }}">Export</a>
+    <button class="btn btn-outline-secondary open-employee-drawer" type="button" data-dialog-id="importEmployeeMasterDrawer">Import</button>
+    <button class="btn btn-primary open-employee-drawer" type="button" data-dialog-id="addEmployeeDrawer">Add employee</button>
   </div>
 </div>
 
@@ -17,12 +22,11 @@
 
 <div class="module-card">
 <div class="module-card-header">
-  <h2 class="module-card-title">Total Active Employees {{ employees|selectattr("employment_status", "equalto", "ACTIVE")|list|length }}</h2>
-  <div class="module-card-actions">
-    <a class="btn btn-outline-primary" href="{{ url_for('master.export_csv') }}">Export Master</a>
-    <button class="btn btn-outline-primary open-employee-drawer" type="button" data-dialog-id="importEmployeeMasterDrawer">Import Master</button>
-    <button class="btn btn-outline-primary open-employee-drawer" type="button" data-dialog-id="addEmployeeDrawer">Add Employee</button>
-  </div>
+  <h2 class="module-card-title">Active <span class="text-muted">{{ employees|selectattr("employment_status", "equalto", "ACTIVE")|list|length }} of {{ employees|length }}</span></h2>
+</div>
+<div class="table-filter-bar">
+  <input class="form-control" id="employeeSearch" type="search" placeholder="Search by name, ID, department or designation" autocomplete="off" aria-label="Search employees">
+  <span class="table-filter-count" id="employeeSearchCount">{{ employees|length }} employee(s)</span>
 </div>
 <div class="table-responsive">
   <table class="table table-sm smart-table sticky-id-name-table" style="--sticky-id-width: 150px; --sticky-name-width: 320px;">
@@ -45,10 +49,12 @@
         <td>{{ ("Yes" if employee.bonus_ignored else "No") if employee.normalized_salary_type == "DAILY" else "—" }}</td>
         <td><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></td>
         <td>
+          {# Marking someone left is rare and irreversible-ish, so it reads as a quiet
+             link rather than a red button repeated down every row. #}
           {% if employee.employment_status == 'ACTIVE' %}
-          <button class="btn btn-sm btn-outline-danger disable-employee-button" type="button" data-employee-id="{{ employee.id }}" data-employee-label="{{ employee.id }} - {{ employee.name }}">Mark Left / Terminated</button>
+          <button class="link-button is-danger disable-employee-button" type="button" data-employee-id="{{ employee.id }}" data-employee-label="{{ employee.id }} - {{ employee.name }}">Mark left</button>
           {% else %}
-          <button class="btn btn-sm btn-outline-primary enable-employee-button" type="button" data-employee-id="{{ employee.id }}" data-employee-label="{{ employee.id }} - {{ employee.name }}">Enable</button>
+          <button class="link-button enable-employee-button" type="button" data-employee-id="{{ employee.id }}" data-employee-label="{{ employee.id }} - {{ employee.name }}">Re-activate</button>
           {% endif %}
         </td>
       </tr>
@@ -131,6 +137,11 @@
               <input class="form-control" id="add_allowance" name="allowance" value="0" inputmode="decimal" data-breakup></div>
           </div>
           <div class="breakup-total" data-breakup-total>Leave all three at 0 if the breakup is not captured yet.</div>
+
+          <h4 class="form-subhead">Tax deducted at source</h4>
+          <label class="form-label" for="add_tds">TDS per month</label>
+          <input class="form-control mb-1" id="add_tds" name="tds" value="0" inputmode="decimal">
+          <div class="status-detail mb-3">Entered by hand, not calculated. This amount is deducted every month and shown on the salary slip.</div>
 
           <h4 class="form-subhead">Compliance</h4>
           <label class="form-check mb-2">
@@ -215,6 +226,11 @@
           </div>
           <div class="breakup-total" data-breakup-total>Leave all three at 0 if the breakup is not captured yet.</div>
 
+          <h4 class="form-subhead">Tax deducted at source</h4>
+          <label class="form-label" for="edit_{{ loop.index }}_tds">TDS per month</label>
+          <input class="form-control mb-1" id="edit_{{ loop.index }}_tds" name="tds" value="{{ employee.tds or 0 }}" inputmode="decimal" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+          <div class="status-detail mb-3">Entered by hand, not calculated. Deducted every month and shown on the salary slip.</div>
+
           <h4 class="form-subhead">Compliance</h4>
           <label class="form-check mb-2">
             <input class="form-check-input" type="checkbox" name="pf_enabled" {% if employee.pf_enabled %}checked{% endif %}  {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
@@ -246,6 +262,7 @@
           {% if employee.normalized_salary_type == 'MONTHLY' %}
           <div><span>PF</span><strong>{{ "Yes" if employee.pf_enabled else "No" }}</strong></div>
           <div><span>ESIC</span><strong>{{ "Yes" if employee.esic_enabled else "No" }}</strong></div>
+          <div><span>TDS</span><strong>{{ employee.tds or 0 }}</strong></div>
           {% elif employee.normalized_salary_type == 'DAILY' %}
           <div><span>Ignore Monthly Bonus</span><strong>{{ "Yes" if employee.bonus_ignored else "No" }}</strong></div>
           {% endif %}
@@ -378,6 +395,24 @@
   enableInput.addEventListener('drop', event => event.preventDefault());
   enableInput.addEventListener('input', refreshEnableState);
 
+  // Row filter. The drawers are rendered per row, so only the table row is hidden;
+  // the dialogs stay in the DOM and keep working.
+  const employeeSearch = document.getElementById('employeeSearch');
+  const employeeSearchCount = document.getElementById('employeeSearchCount');
+  if (employeeSearch) {
+    const bodyRows = Array.from(document.querySelectorAll('.sticky-id-name-table tbody tr'));
+    const haystack = bodyRows.map((row) => row.textContent.toLowerCase());
+    employeeSearch.addEventListener('input', () => {
+      const term = employeeSearch.value.trim().toLowerCase();
+      let shown = 0;
+      bodyRows.forEach((row, index) => {
+        const match = !term || haystack[index].includes(term);
+        row.hidden = !match;
+        if (match) shown += 1;
+      });
+      employeeSearchCount.textContent = shown + ' employee(s)' + (term ? ' of ' + bodyRows.length : '');
+    });
+  }
 </script>
 {% include "_salary_breakup.html" %}
 {% endblock %}

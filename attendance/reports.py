@@ -9,7 +9,7 @@ from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A3, A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -17,7 +17,9 @@ from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, Simple
 from attendance import db
 from attendance.loans import loan_installment_for_loan, loan_paid_before_month, loan_pending_after_month, loan_remaining_before_month, loan_repayment_schedule
 from attendance.models import AttendanceRecord, Employee, Loan, PayrollResult, SalaryRecord
-from attendance.utils import format_percent, leave_days, minutes_to_duration
+from attendance.settings import COMPANY_ADDRESS
+from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
+from attendance.utils import format_percent, leave_days, minutes_to_duration, money
 
 ONES = [
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -543,6 +545,7 @@ def display_attendance_status(status):
         # Long enough to wrap a calendar cell, so shorten it the same way the web
         # view does.
         "Half-Day Paid Leave / Half-Day LOP": "Half Leave + Half LOP",
+        "Half Day Present / Half-Day Leave": "Half Day + Half Leave",
         "Worked On-Site": "Worked On-Site",
         "Work From Home": "Work From Home",
         "Ignore": "Ignore",
@@ -631,6 +634,8 @@ def employee_salary_summary_rows(salary, result):
         ["Leave Used This Month", result.leave_used],
         ["Leave Carry Forwarded", result.closing_leave],
         ["Less-Hours Deduction", pdf_money(result.less_hours_deduction)],
+        ["PF Employee Contribution", pdf_money(getattr(result, "pf_employee", 0))],
+        ["ESIC Employee Contribution", pdf_money(getattr(result, "esi_employee", 0))],
         ["LOP Deduction", pdf_money(result.lop_deduction)],
         ["Over Time Amount", pdf_money(result.ot_amount)],
         ["Adjustment", pdf_money(result.manual_adjustment)],
@@ -714,6 +719,14 @@ def employee_compact_summary_rows(salary, result):
         ["Less Hours Deduction", pdf_money(result.less_hours_deduction), "Over Time", pdf_money(result.ot_amount)],
         ["Adjustment", pdf_money(result.manual_adjustment), "Leave Encashed", f"{getattr(result, 'leave_encashment_days', 0)}d / {pdf_money(getattr(result, 'leave_encashment_amount', 0))}"],
     ]
+    # Statutory rows appear only where the employee is actually covered, so a slip
+    # for someone outside PF or ESI is not padded with zeroes.
+    if Decimal(getattr(result, "pf_employee", 0) or 0):
+        rows.append(["PF Employee Contribution", pdf_money(result.pf_employee),
+                     "PF Employer Contribution", pdf_money(result.pf_employer)])
+    if Decimal(getattr(result, "esi_employee", 0) or 0):
+        rows.append(["ESIC Employee Contribution", pdf_money(result.esi_employee),
+                     "ESIC Employer Contribution", pdf_money(result.esi_employer)])
     if result_has_loan(result):
         rows.append(["Loan Deduction", pdf_money(getattr(result, "loan_deduction", 0)), "Pending Loan Amount", pdf_money(getattr(result, "loan_pending_amount", 0))])
     if result_has_advance(result):
@@ -749,19 +762,30 @@ def monthly_attendance_summary_rows(salary, result):
     return rows
 
 
+def bonus_band_text(result):
+    """The bonus as a bare band: NIL, 5% or 10%.
+
+    The daily sheet carries no money at all, so the band is stated without the amount
+    it works out to.
+    """
+    percent = Decimal(getattr(result, "attendance_bonus_percent", 0) or 0)
+    return f"{format_percent(percent)}%" if percent > 0 else "NIL"
+
+
 def daily_attendance_summary_rows(salary, result):
     """The daily slip stripped back to attendance only.
 
-    The wage rate, payable salary, day counts that imply a rate, and the bonus amount
-    all come off. What is left says whether the worker turned up, how short they were
-    and whether that earned the attendance bonus.
+    No rupee figure appears anywhere: short hours and overtime are stated as time,
+    and the bonus as its band. What is left says whether the worker turned up, how
+    short they were, and what that earned.
     """
     if not result:
         return [["Status", "Not Calculated", "", ""]]
     return [
         ["Status", result.calculation_status, "Payable Days", total_paid_days(result)],
-        ["Less Hours Deduction", pdf_money(result.less_hours_deduction), "Over Time", pdf_money(result.ot_amount)],
-        ["Absence This Month", bonus_absence_text(result), "Attendance Bonus", bonus_percent_text(result)],
+        ["Less Hours", minutes_to_duration(result.less_hours_minutes or 0),
+         "Over Time", minutes_to_duration(result.payable_ot_minutes or 0)],
+        ["Absence This Month", bonus_absence_text(result), "Bonus", bonus_band_text(result)],
     ]
 
 
@@ -779,6 +803,7 @@ CALENDAR_TONES = {
     "Half-Day Paid Leave": (ORANGE_WASH, ORANGE_TEXT),
     "Sandwich Leave": (ORANGE_WASH, ORANGE_TEXT),
     "Half Leave + Half LOP": (ORANGE_WASH, ORANGE_TEXT),
+    "Half Day + Half Leave": (ORANGE_WASH, ORANGE_TEXT),
     "Full Day LOP": (RED_WASH, RED_TEXT),
     "Half Day LOP": (RED_WASH, RED_TEXT),
     "LOP": (RED_WASH, RED_TEXT),
@@ -1104,6 +1129,28 @@ def _pdf_header_footer(canvas, doc):
     canvas.restoreState()
 
 
+SLIP_FOOTER_NOTE = "*** This is a system generated payslip, hence a signature is not required."
+
+
+def _salary_slip_page_callback(title):
+    """Slip pages carry only the footnote, pinned to the bottom of the sheet.
+
+    Drawing it here rather than flowing it after the last table keeps it at the foot
+    whatever the slip's height, and leaves off the brand line and page number that
+    the other reports carry.
+    """
+    def callback(canvas, doc):
+        canvas.setTitle(title)
+        canvas.setAuthor("SMARTfill Attendance & Payroll Management")
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(FAINT)
+        canvas.drawCentredString(doc.pagesize[0] / 2, 9 * mm, SLIP_FOOTER_NOTE)
+        canvas.restoreState()
+
+    return callback
+
+
 def _titled_page_callback(title, variant=SLIP):
     def callback(canvas, doc):
         canvas.setTitle(title)
@@ -1291,7 +1338,7 @@ def attendance_bonus_accent_rows(summary_rows, result):
     return [
         (index, wash, text_colour)
         for index, row in enumerate(summary_rows)
-        if row and "Attendance Bonus" in (row[0], row[2] if len(row) > 2 else None)
+        if row and {"Attendance Bonus", "Bonus"} & {row[0], row[2] if len(row) > 2 else None}
     ]
 
 
@@ -1309,6 +1356,250 @@ def attendance_summary_block(month, salary, result, styles, variant, available_w
     )
     calendar = attendance_calendar_table(month, result, styles, available_width, compact=True, variant=variant)
     return KeepTogether([header, Spacer(1, 6), summary, Spacer(1, 6), calendar])
+
+
+# The salary slip's earning components. Only these three appear; anything else that
+# adds to pay is listed under Others so the slip still reconciles to the net figure.
+SLIP_EARNING_COMPONENTS = (
+    ("basic_salary", "Basic"),
+    ("hra", "House Rent Allowance"),
+    ("allowance", "Conveyance Allowance"),
+)
+
+
+def slip_paid_ratio(salary_record, result):
+    """How much of the contracted salary was actually earned this month.
+
+    Driven by loss of pay alone. Short hours, loans and statutory dues are separate
+    deduction lines, so folding them in here would count them twice.
+    """
+    contracted = Decimal(salary_record.salary or 0) if salary_record else Decimal("0")
+    if not contracted or not result:
+        return Decimal("1")
+    return (contracted - Decimal(result.lop_deduction or 0)) / contracted
+
+
+def slip_earning_rows(employee, salary_record, result):
+    """(component, actual, paid) for the three slip components.
+
+    An employee with no salary breakup captured would otherwise show a gross of zero
+    against a real net figure, so the whole salary is shown as Basic in that case.
+    """
+    ratio = slip_paid_ratio(salary_record, result)
+    actuals = [(label, Decimal(getattr(employee, field, 0) or 0) if employee else Decimal("0"))
+               for field, label in SLIP_EARNING_COMPONENTS]
+    if sum((amount for _label, amount in actuals), Decimal("0")) == 0:
+        actuals = [("Basic", Decimal(salary_record.salary or 0) if salary_record else Decimal("0")),
+                   ("House Rent Allowance", Decimal("0")), ("Conveyance Allowance", Decimal("0"))]
+    return [(label, amount, amount * ratio) for label, amount in actuals]
+
+
+def slip_other_earnings(result):
+    # One Adjustment line carrying its own sign, rather than a positive one here and
+    # a negative one under deductions.
+    return [
+        ("Overtime", Decimal(result.ot_amount or 0)),
+        ("Leave Encashment", Decimal(getattr(result, "leave_encashment_amount", 0) or 0)),
+        ("Adjustment (+/-)", Decimal(result.manual_adjustment or 0)),
+    ]
+
+
+def slip_other_deductions(result):
+    return [
+        ("Short Hours", Decimal(result.less_hours_deduction or 0)),
+        ("Loan", Decimal(getattr(result, "loan_deduction", 0) or 0)),
+        ("Advance Salary", Decimal(getattr(result, "advance_deduction", 0) or 0)),
+    ]
+
+
+def salary_slip_story(month, salary_record, result, styles, available_width):
+    """One salary slip in the classic Indian payslip layout.
+
+    Earnings and deductions sit side by side in a single grid so the rules line up,
+    with an Others block beneath for anything outside the three fixed components.
+    Employer contributions follow, since they are a company cost and must not be
+    mistaken for a deduction from the employee.
+    """
+    employee = db.session.get(Employee, salary_record.employee_id) if salary_record else None
+    name = salary_record.name if salary_record else ""
+    label_style = ParagraphStyle("SlipLabel", parent=styles["Normal"], fontName="Helvetica",
+                                 fontSize=8, leading=10.5, textColor=MUTED)
+    value_style = ParagraphStyle("SlipValue", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                 fontSize=8, leading=10.5, textColor=INK)
+    address_style = ParagraphStyle("SlipAddress", parent=styles["Normal"], fontName="Helvetica",
+                                   fontSize=7.4, leading=9.5, textColor=MUTED, alignment=TA_CENTER)
+    band_style = ParagraphStyle("SlipBand", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                fontSize=9, leading=11.5, textColor=INK)
+    words_style = ParagraphStyle("SlipWords", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                 fontSize=8, leading=10.5, textColor=TINT_TEXT)
+
+    hairline = [
+        ("GRID", (0, 0), (-1, -1), 0.5, SEPARATOR),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+
+    # Masthead: logo, then the registered address.
+    masthead = Table([[_brand_logo(width=46 * mm, height=16 * mm)], [Paragraph(COMPANY_ADDRESS, address_style)]],
+                     colWidths=[available_width])
+    masthead.setStyle(TableStyle(hairline + [
+        ("ALIGN", (0, 0), (0, 0), "CENTER"),
+        ("TOPPADDING", (0, 0), (0, 0), 8),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 8),
+    ]))
+
+    lop_days = Decimal(result.lop_days or 0) if result else Decimal("0")
+    band = Table([[
+        Paragraph(f"Pay Slip: {display_month(month)}", band_style),
+        Paragraph(f"Payable days: {total_paid_days(result) if result else '—'}", band_style),
+        Paragraph(f"Loss of pay days: {leave_days(lop_days)}", band_style),
+    ]], colWidths=[available_width * 0.42, available_width * 0.29, available_width * 0.29])
+    band.setStyle(TableStyle(hairline + [("BACKGROUND", (0, 0), (-1, -1), SURFACE_SOFT)]))
+
+    # Bank, PF, UAN and PAN are deliberately absent: the slip identifies the employee
+    # and nothing more.
+    details = Table([
+        [Paragraph("Employee Code", label_style), Paragraph(str(salary_record.employee_id if salary_record else ""), value_style),
+         Paragraph("Department", label_style), Paragraph((employee.department if employee else "") or "—", value_style)],
+        [Paragraph("Employee Name", label_style), Paragraph(name, value_style),
+         Paragraph("Designation", label_style), Paragraph((employee.designation if employee else "") or "—", value_style)],
+    ], colWidths=[available_width * 0.17, available_width * 0.33, available_width * 0.17, available_width * 0.33])
+    details.setStyle(TableStyle(hairline))
+
+    earnings = slip_earning_rows(employee, salary_record, result)
+    deductions = [
+        ("P.F", Decimal(getattr(result, "pf_employee", 0) or 0)),
+        ("ESIC", Decimal(getattr(result, "esi_employee", 0) or 0)),
+        ("Professional Tax", Decimal(getattr(result, "professional_tax", 0) or 0)),
+        ("TDS", Decimal(getattr(result, "tds", 0) or 0)),
+    ] if result else []
+    other_earnings = slip_other_earnings(result) if result else []
+    other_deductions = slip_other_deductions(result) if result else []
+
+    def money_cell(amount, bold=False):
+        return Paragraph(pdf_money(amount), value_style if bold else label_style)
+
+    rows = [[Paragraph("EARNINGS (INR)", band_style), "", "", Paragraph("DEDUCTIONS (INR)", band_style), ""]]
+    rows.append([Paragraph(text, label_style) for text in
+                 ("Component", "Actual Amount", "Paid Amount", "Component", "Paid Amount")])
+    span = max(len(earnings), len(deductions), 1)
+    for index in range(span):
+        left = earnings[index] if index < len(earnings) else ("", None, None)
+        right = deductions[index] if index < len(deductions) else ("", None)
+        rows.append([
+            Paragraph(left[0], label_style),
+            money_cell(left[1]) if left[1] is not None else "",
+            money_cell(left[2]) if left[2] is not None else "",
+            Paragraph(right[0], label_style),
+            money_cell(right[1]) if right[1] is not None else "",
+        ])
+    earn_actual = sum((row[1] for row in earnings), Decimal("0"))
+    earn_paid = sum((row[2] for row in earnings), Decimal("0"))
+    deduct_total = sum((amount for _label, amount in deductions), Decimal("0"))
+    subtotal_row = len(rows)
+    rows.append([Paragraph("Sub Total", value_style), money_cell(earn_actual, True), money_cell(earn_paid, True),
+                 Paragraph("Sub Total", value_style), money_cell(deduct_total, True)])
+
+    others_row = len(rows)
+    rows.append([Paragraph("Others", value_style), "", "", Paragraph("Others", value_style), ""])
+    other_span = max(len(other_earnings), len(other_deductions), 1)
+    for index in range(other_span):
+        left = other_earnings[index] if index < len(other_earnings) else ("", None)
+        right = other_deductions[index] if index < len(other_deductions) else ("", None)
+        rows.append([
+            Paragraph(left[0], label_style), "",
+            money_cell(left[1]) if left[1] is not None else "",
+            Paragraph(right[0], label_style),
+            money_cell(right[1]) if right[1] is not None else "",
+        ])
+    other_earn_total = sum((amount for _label, amount in other_earnings), Decimal("0"))
+    other_deduct_total = sum((amount for _label, amount in other_deductions), Decimal("0"))
+    other_subtotal_row = len(rows)
+    rows.append([Paragraph("Sub Total", value_style), "", money_cell(other_earn_total, True),
+                 Paragraph("Sub Total", value_style), money_cell(other_deduct_total, True)])
+
+    gross_row = len(rows)
+    rows.append([Paragraph("Gross Pay", value_style), money_cell(earn_actual, True),
+                 money_cell(earn_paid + other_earn_total, True),
+                 Paragraph("Gross Deductions", value_style), money_cell(deduct_total + other_deduct_total, True)])
+
+    net = Decimal(result.final_salary or 0) if result and result.final_salary is not None else Decimal("0")
+    net_row = len(rows)
+    rows.append([Paragraph("Net Pay", band_style), "", "", "",
+                 Paragraph(f"{pdf_money(net)} INR", value_style)])
+    words_row = len(rows)
+    rows.append([Paragraph(f"In words: {money_in_words(net)}", words_style), "", "", "", ""])
+
+    column_widths = [available_width * 0.22, available_width * 0.16, available_width * 0.16,
+                     available_width * 0.28, available_width * 0.18]
+    grid = Table(rows, colWidths=column_widths)
+    grid.setStyle(TableStyle(hairline + [
+        ("SPAN", (0, 0), (2, 0)), ("SPAN", (3, 0), (4, 0)),
+        ("SPAN", (0, others_row), (2, others_row)), ("SPAN", (3, others_row), (4, others_row)),
+        ("SPAN", (0, net_row), (3, net_row)),
+        ("SPAN", (0, words_row), (4, words_row)),
+        ("ALIGN", (1, 1), (2, -1), "RIGHT"), ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+        ("BACKGROUND", (0, 0), (-1, 1), SURFACE_SOFT),
+        ("BACKGROUND", (0, subtotal_row), (-1, subtotal_row), SURFACE_SOFT),
+        ("BACKGROUND", (0, other_subtotal_row), (-1, other_subtotal_row), SURFACE_SOFT),
+        ("BACKGROUND", (0, gross_row), (-1, gross_row), SURFACE_SOFT),
+        ("BACKGROUND", (0, net_row), (-1, net_row), TINT_WASH),
+    ]))
+
+    # Employer side. Kept apart from the deduction grid so it can never read as money
+    # taken from the employee.
+    pf_employee = Decimal(getattr(result, "pf_employee", 0) or 0) if result else Decimal("0")
+    pf_employer = Decimal(getattr(result, "pf_employer", 0) or 0) if result else Decimal("0")
+    esi_employee = Decimal(getattr(result, "esi_employee", 0) or 0) if result else Decimal("0")
+    esi_employer = Decimal(getattr(result, "esi_employer", 0) or 0) if result else Decimal("0")
+    edli = Decimal(getattr(result, "pf_edli", 0) or 0) if result else Decimal("0")
+    admin = Decimal(getattr(result, "pf_admin", 0) or 0) if result else Decimal("0")
+    # EDLI and the administration charge are both employer-borne PF costs, so they
+    # are shown as one line rather than two.
+    contributions = Table([
+        [Paragraph("PF &amp; ESIC Contributions", band_style), "", "", ""],
+        [Paragraph("PF contribution by Employer", label_style), money_cell(pf_employer),
+         Paragraph("ESIC contribution by Employer", label_style), money_cell(esi_employer)],
+        [Paragraph("PF contribution by Employee", label_style), money_cell(pf_employee),
+         Paragraph("ESIC contribution by Employee", label_style), money_cell(esi_employee)],
+        [Paragraph("PF Admin &amp; EDLI Charges (Paid by Employer)", label_style),
+         money_cell(edli + admin), "", ""],
+        [Paragraph("Total contribution to PF account", value_style),
+         money_cell(pf_employee + pf_employer, True), "", ""],
+    ], colWidths=[available_width * 0.32, available_width * 0.18, available_width * 0.32, available_width * 0.18])
+    contributions.setStyle(TableStyle(hairline + [
+        ("SPAN", (0, 0), (3, 0)),
+        ("SPAN", (2, 3), (3, 3)), ("SPAN", (2, 4), (3, 4)),
+        ("ALIGN", (1, 1), (1, -1), "RIGHT"), ("ALIGN", (3, 1), (3, 2), "RIGHT"),
+        ("BACKGROUND", (0, 0), (-1, 0), SURFACE_SOFT),
+        ("BACKGROUND", (0, 4), (-1, 4), SURFACE_SOFT),
+    ]))
+
+    opening = Decimal(result.opening_leave or 0) if result else Decimal("0")
+    earned = Decimal(result.leave_earned or 0) if result else Decimal("0")
+    used = Decimal(result.leave_used or 0) if result else Decimal("0")
+    closing = Decimal(result.closing_leave or 0) if result else Decimal("0")
+    leave_block = Table([
+        [Paragraph("LEAVE SUMMARY", band_style), "", "", ""],
+        [Paragraph("Balance from last month", label_style), Paragraph("Earned this month", label_style),
+         Paragraph("Used this month", label_style), Paragraph("Carry forward", label_style)],
+        [Paragraph(str(leave_days(opening)), value_style), Paragraph(str(leave_days(earned)), value_style),
+         Paragraph(str(leave_days(used)), value_style), Paragraph(str(leave_days(closing)), value_style)],
+    ], colWidths=[available_width * 0.25] * 4)
+    leave_block.setStyle(TableStyle(hairline + [
+        ("SPAN", (0, 0), (3, 0)),
+        ("ALIGN", (0, 1), (-1, -1), "CENTER"),
+        ("BACKGROUND", (0, 0), (-1, 1), SURFACE_SOFT),
+    ]))
+
+    story = [masthead, band, details, grid, Spacer(1, 6), contributions]
+    # Daily wage employees have no leave, so the block is monthly only.
+    if result and result.payroll_rule_type != "DAILY":
+        story.extend([Spacer(1, 6), leave_block])
+    return story
 
 
 def employee_report_block(month, salary, result, styles, compact=False):
@@ -1336,16 +1627,22 @@ def employee_report_block(month, salary, result, styles, compact=False):
 
 
 def build_employee_pdf(month, employee_id):
+    """One employee's payroll document.
+
+    Monthly wage gets a salary slip. Daily wage does not receive one, so the request
+    is answered with that employee's attendance summary instead.
+    """
     employee, salary, result = result_for_employee(month, employee_id)
+    if salary and salary.normalized_salary_type == "DAILY":
+        return build_attendance_summary_pdf(month, "DAILY", employee_id=employee_id)
     employee_name = salary.name if salary else (employee.name if employee else employee_id)
-    title = f"{employee_name} Salary Report - {display_month(month)}"
+    title = f"{employee_name} Salary Slip - {display_month(month)}"
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=8 * mm, rightMargin=8 * mm, topMargin=8 * mm, bottomMargin=10 * mm)
     styles = getSampleStyleSheet()
-    story = [
-        employee_report_block(month, salary, result, styles, compact=True),
-    ]
-    page_callback = _titled_page_callback(title)
+    available_width = A4[0] - doc.leftMargin - doc.rightMargin
+    story = salary_slip_story(month, salary, result, styles, available_width) if salary else []
+    page_callback = _salary_slip_page_callback(title)
     doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
     buffer.seek(0)
     return buffer.getvalue()
@@ -1358,14 +1655,17 @@ def salaries_for_wage_group(month, wage_group):
     )
 
 
-def build_attendance_summary_pdf(month, wage_group):
-    """One attendance sheet per employee for a single wage group, one to a page.
+def build_attendance_summary_pdf(month, wage_group, employee_id=None):
+    """Attendance sheets for a wage group, one employee to a page.
 
-    MONTHLY keeps the SMARTfill logo. DAILY carries no branding at all.
+    MONTHLY keeps the SMARTfill logo. DAILY carries no branding at all. Passing
+    `employee_id` narrows the file to that one employee.
     """
     variant = DAILY_SUMMARY if wage_group == "DAILY" else MONTHLY_SUMMARY
     title = "Summary for Daily Wage Group" if wage_group == "DAILY" else "Attendance Summary for Monthly"
     salaries = sorted(salaries_for_wage_group(month, wage_group), key=lambda s: employee_id_sort_key(s.employee_id))
+    if employee_id is not None:
+        salaries = [item for item in salaries if item.employee_id == employee_id]
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=10 * mm, rightMargin=10 * mm, topMargin=10 * mm, bottomMargin=10 * mm)
     styles = getSampleStyleSheet()
@@ -1392,21 +1692,26 @@ def employee_id_sort_key(value):
 
 
 def build_all_employees_pdf(month):
-    salaries = SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id).all()
-    title = f"Final Salary Report - {display_month(month)}"
+    """Salary slips for the monthly wage group.
+
+    Daily wage employees do not receive a salary slip; they get the unbranded
+    attendance summary instead, so they are excluded here rather than being given a
+    document the company does not issue to them.
+    """
+    salaries = sorted(salaries_for_wage_group(month, "MONTHLY"), key=lambda s: employee_id_sort_key(s.employee_id))
+    title = f"Salary Slips - {display_month(month)}"
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=8 * mm, rightMargin=8 * mm, topMargin=8 * mm, bottomMargin=10 * mm)
     styles = getSampleStyleSheet()
+    available_width = A4[0] - doc.leftMargin - doc.rightMargin
     story = []
     results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
     for index, salary in enumerate(salaries):
-        result = results.get(salary.employee_id)
-        if index and index % 2 == 0:
+        # One slip to a page: each is handed to a different person.
+        if index:
             story.append(PageBreak())
-        elif index:
-            story.append(Spacer(1, 8))
-        story.append(employee_report_block(month, salary, result, styles, compact=True))
-    page_callback = _titled_page_callback(title)
+        story.extend(salary_slip_story(month, salary, results.get(salary.employee_id), styles, available_width))
+    page_callback = _salary_slip_page_callback(title)
     doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
     buffer.seek(0)
     return buffer.getvalue()
@@ -1607,6 +1912,193 @@ def build_department_wise_pdf(month):
                     Spacer(1, 7),
                 ])
     page_callback = _titled_page_callback(f"Department Wise Attendance Summary - {display_month(month)}")
+    doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# The salary register, laid out like the sheet the payroll office already keeps.
+# Column names follow that sheet so the two can be read side by side.
+SALARY_REGISTER_HEADERS = [
+    "Sr.NO", "ID", "NAME", "Attendance", "WO", "Occasional Leave", "Paid Leave",
+    "BASIC", "HRA", "ALLOWANCE", "PAID BASIC", "PAID HRA", "PAID ALLOWANCE",
+    "OA", "LATE REPORTING", "SHORT LEAVE", "LOAN", "ESI", "PF",
+    "PROFESSIONAL TAX", "TDS", "NET SALARY",
+]
+# Columns holding money, used to right-align and total them in both outputs.
+SALARY_REGISTER_MONEY_COLUMNS = tuple(range(7, 22))
+SALARY_REGISTER_TOTAL_COLUMNS = (13, 14, 15, 16, 17, 18, 19, 20, 21)
+
+
+def salary_register_rows(month):
+    """One row per calculated monthly-wage employee, in the payroll sheet's order.
+
+    `PAID BASIC/HRA/ALLOWANCE` are the contracted components scaled by what the
+    employee actually earned, which is how the existing sheet derives them.
+    """
+    employees = {employee.id: employee for employee in Employee.query.all()}
+    salaries = {s.employee_id: s for s in SalaryRecord.query.filter_by(payroll_month=month).all()}
+    rows = []
+    for result in sorted(calculated_results_for_month(month), key=lambda r: employee_id_sort_key(r.employee_id)):
+        salary = salaries.get(result.employee_id)
+        if not salary or salary.normalized_salary_type != "MONTHLY":
+            continue
+        employee = employees.get(result.employee_id)
+        # Paid components reflect loss of pay only. Short hours has its own column,
+        # so folding it in here would report the reduction twice.
+        ratio = slip_paid_ratio(salary, result)
+        basic = Decimal(employee.basic_salary or 0) if employee else Decimal("0")
+        hra = Decimal(employee.hra or 0) if employee else Decimal("0")
+        allowance = Decimal(employee.allowance or 0) if employee else Decimal("0")
+        rows.append([
+            len(rows) + 1,
+            result.employee_id,
+            salary.name,
+            result.paid_working_days,
+            result.week_offs,
+            result.lop_days,
+            result.paid_leaves,
+            money(basic), money(hra), money(allowance),
+            money(basic * ratio), money(hra * ratio), money(allowance * ratio),
+            money(result.ot_amount),
+            money(result.less_hours_deduction),
+            money(result.lop_deduction),
+            money(Decimal(result.loan_deduction or 0) + Decimal(result.advance_deduction or 0)),
+            money(result.esi_employee),
+            money(result.pf_employee),
+            money(getattr(result, "professional_tax", 0)),
+            money(getattr(result, "tds", 0)),
+            money(result.final_salary),
+        ])
+    return rows
+
+
+def salary_register_totals(rows):
+    totals = {index: Decimal("0") for index in SALARY_REGISTER_TOTAL_COLUMNS}
+    for row in rows:
+        for index in totals:
+            totals[index] += Decimal(row[index] or 0)
+    return totals
+
+
+def build_salary_register_xlsx(month):
+    """The register as a spreadsheet, mirroring the sheet's own header block."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    rows = salary_register_rows(month)
+    totals = salary_register_totals(rows)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = month
+
+    last_column = len(SALARY_REGISTER_HEADERS)
+    sheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_column)
+    title = sheet.cell(1, 1, f"Salary Sheet - {display_month(month)}")
+    title.font = Font(bold=True, size=14)
+    title.alignment = Alignment(horizontal="center")
+
+    sheet.cell(2, 2, "Days of Month").font = Font(bold=True)
+    sheet.cell(2, 3, payroll_month_days(month))
+    # The rate sits directly above the column it drives, as it does on the existing
+    # sheet, so the header row below reads as its label.
+    esi_column = SALARY_REGISTER_HEADERS.index("ESI") + 1
+    pf_column = SALARY_REGISTER_HEADERS.index("PF") + 1
+    pt_column = SALARY_REGISTER_HEADERS.index("PROFESSIONAL TAX") + 1
+    esi_rate = sheet.cell(2, esi_column, float(STATUTORY_RULES["ESI_EMPLOYEE_PERCENT"] / 100))
+    pf_rate = sheet.cell(2, pf_column, float(STATUTORY_RULES["PF_EMPLOYEE_PERCENT"] / 100))
+    for cell in (esi_rate, pf_rate):
+        cell.number_format = "0.00%"
+    _threshold, amount = PROFESSIONAL_TAX_SLABS[0]
+    sheet.cell(2, pt_column, float(amount)).number_format = "#,##0"
+
+    head_fill = PatternFill("solid", fgColor="F2F2F7")
+    thin = Side(style="thin", color="D8D8DC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for column, name in enumerate(SALARY_REGISTER_HEADERS, start=1):
+        cell = sheet.cell(3, column, name)
+        cell.font = Font(bold=True)
+        cell.fill = head_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    for offset, row in enumerate(rows):
+        for column, value in enumerate(row, start=1):
+            cell = sheet.cell(4 + offset, column)
+            # Numbers go in as numbers so the sheet stays usable for further work.
+            cell.value = float(value) if isinstance(value, Decimal) else value
+            cell.border = border
+            if column - 1 in SALARY_REGISTER_MONEY_COLUMNS:
+                cell.number_format = "#,##0.00"
+
+    total_row = 4 + len(rows)
+    label = sheet.cell(total_row, 3, f"Total - {len(rows)} employee(s)")
+    label.font = Font(bold=True)
+    for index in SALARY_REGISTER_TOTAL_COLUMNS:
+        cell = sheet.cell(total_row, index + 1, float(totals[index]))
+        cell.font = Font(bold=True)
+        cell.number_format = "#,##0.00"
+        cell.border = border
+
+    widths = [7, 7, 26] + [13] * (last_column - 3)
+    for column, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    sheet.freeze_panes = "D4"
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# Sized so no heading wraps mid-word; A3 landscape leaves 400mm of usable width.
+SALARY_REGISTER_WIDTHS = [
+    12 * mm, 10 * mm, 38 * mm, 18 * mm, 10 * mm, 18 * mm, 14 * mm,
+    16 * mm, 15 * mm, 18 * mm, 18 * mm, 16 * mm, 20 * mm,
+    13 * mm, 18 * mm, 15 * mm, 14 * mm, 13 * mm, 14 * mm, 18 * mm, 14 * mm, 21 * mm,
+]
+
+
+def build_salary_register_pdf(month):
+    """The same register as a landscape sheet for printing and signature."""
+    rows = salary_register_rows(month)
+    totals = salary_register_totals(rows)
+    buffer = BytesIO()
+    pagesize = landscape(A3)
+    doc = SimpleDocTemplate(buffer, pagesize=pagesize, leftMargin=10 * mm, rightMargin=10 * mm,
+                            topMargin=10 * mm, bottomMargin=14 * mm)
+    styles = getSampleStyleSheet()
+    available_width = pagesize[0] - doc.leftMargin - doc.rightMargin
+    head_style = ParagraphStyle("RegHead", parent=styles["Normal"], fontName="Helvetica-Bold",
+                                fontSize=6, leading=7.4, textColor=MUTED, alignment=TA_CENTER)
+    name_style = ParagraphStyle("RegName", parent=styles["Normal"], fontName="Helvetica",
+                                fontSize=6.6, leading=8, textColor=INK)
+    empty_style = ParagraphStyle("RegEmpty", parent=styles["Normal"], fontSize=8, textColor=FAINT)
+
+    table_rows = [[Paragraph(name, head_style) for name in SALARY_REGISTER_HEADERS]]
+    for row in rows:
+        cells = [pdf_money(value) if index in SALARY_REGISTER_MONEY_COLUMNS else value
+                 for index, value in enumerate(row)]
+        cells[2] = Paragraph(str(cells[2]), name_style)
+        table_rows.append(cells)
+    if rows:
+        total_cells = [""] * len(SALARY_REGISTER_HEADERS)
+        total_cells[2] = Paragraph(f"Total &mdash; {len(rows)} employee(s)", name_style)
+        for index in SALARY_REGISTER_TOTAL_COLUMNS:
+            total_cells[index] = pdf_money(totals[index])
+        table_rows.append(total_cells)
+
+    story = [
+        _report_brand_header("Salary Sheet", display_month(month), styles, available_width),
+        Spacer(1, 8),
+    ]
+    if rows:
+        story.append(_table(table_rows, col_widths=SALARY_REGISTER_WIDTHS, font_size=6.6, center_from=3,
+                            accent_rows=[(len(table_rows) - 1, TINT_WASH, TINT_TEXT)]))
+    else:
+        story.append(Paragraph(f"No monthly wage employees calculated for {display_month(month)}.", empty_style))
+    page_callback = _titled_page_callback(f"Salary Sheet - {display_month(month)}")
     doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
     buffer.seek(0)
     return buffer.getvalue()

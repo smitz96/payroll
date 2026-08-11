@@ -9,25 +9,9 @@
       <span class="ms-2">Automatic rules configured for <strong>Monthly</strong> and <strong>Daily</strong> wage types.</span>
     </p>
   </div>
-  {% set attendance_pending = attendance_count and not payroll_month.attendance_submitted %}
-  {% set calc_label = (wage_filter|capitalize ~ " wage") if wage_filter else "every open wage type" %}
+  {# The only page-level action. Recalculating now lives on the workflow step that
+     names it, so the header is not three red buttons of very different weight. #}
   <div class="d-flex gap-2 flex-wrap">
-    {% if not any_finalized or wage_filter %}
-    <form method="post" onsubmit="return confirm('Recalculate payroll for {{ month }} keeping all manual changes?');">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="action" value="recheck_holidays">
-      {% if wage_filter %}<input type="hidden" name="wage_group" value="{{ wage_filter }}">{% endif %}
-      <button class="btn btn-outline-danger"
-              {% if attendance_pending %}disabled title="Submit attendance from Attendance Manager first"{% else %}title="Recalculates {{ calc_label }} from submitted attendance against the current holiday calendar, week offs, loans and advances. Manual overrides and adjustments are preserved, and finalized wage types are never touched."{% endif %}>Recalculate</button>
-    </form>
-    <form method="post" onsubmit="return confirm('Recalculate from attendance and DISCARD all manual overrides, adjustments, loan entries and leave encashment for {{ month }}?');">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="action" value="calculate">
-      {% if wage_filter %}<input type="hidden" name="wage_group" value="{{ wage_filter }}">{% endif %}
-      <button class="btn btn-outline-danger"
-              {% if attendance_pending %}disabled title="Submit attendance from Attendance Manager first"{% else %}title="Clears manual overrides, adjustments, manual loan amounts and leave encashment for {{ calc_label }}, then recalculates from scratch."{% endif %}>Reset &amp; Recalculate</button>
-    </form>
-    {% endif %}
     <button type="button" class="btn btn-outline-danger" id="openDeletePayroll">Delete payroll</button>
   </div>
 </div>
@@ -45,8 +29,9 @@
       {% elif group.finalized %}Locked on {{ group.finalized_at|ist_datetime("%d-%m-%Y %H:%M") }}. Unlock to edit or recalculate.
       {% else %}Open for calculation and employee edits.{% endif %}
     </small>
+    {# Filtering moved to the segmented control above the employee tables, so these
+       cards carry only the sign-off action. #}
     <div class="wage-lock-actions">
-      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('payroll.month', month=month, wage=group.slug) }}">View {{ group.label|lower }} only</a>
       {% if group.finalized %}
       <button type="button" class="btn btn-sm btn-outline-primary open-wage-dialog" data-dialog="unlockPayrollDialog" data-group="{{ group.key }}" data-label="{{ group.label }}">Unlock {{ group.label|lower }}</button>
       {% elif group.has_employees %}
@@ -57,13 +42,6 @@
   {% endfor %}
 </div>
 
-{% if wage_filter %}
-<div class="alert alert-info d-flex justify-content-between align-items-center gap-3 flex-wrap">
-  <span>Showing <strong>{{ wage_filter|capitalize }}</strong> wage employees only.</span>
-  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.month', month=month) }}">Show all wage types</a>
-</div>
-{% endif %}
-
 <ol class="workflow-steps" aria-label="Payroll workflow">
   {% for step in steps %}
   <li class="workflow-step is-{{ step.state }}">
@@ -72,19 +50,20 @@
       <strong>{{ step.label }}</strong>
       <small>{{ step.detail }}</small>
     </span>
-    {# Actions live on the step itself, so a completed step can still be re-run.
-       A step whose prerequisites are unmet is dimmed and inert. #}
+    {# Every action for a stage lives on that stage, so the stepper is the whole
+       flow. A step whose prerequisites are unmet is dimmed and inert. #}
     <span class="workflow-step-cta">
-      {% if step.action %}
-      <form method="post">
+      {% for item in step.actions %}
+      <form method="post"{% if item.confirm %} onsubmit="return confirm('{{ item.confirm }}');"{% endif %}>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <input type="hidden" name="action" value="{{ step.action }}">
-        <button class="btn btn-sm {{ 'btn-primary' if step.state == 'current' else 'btn-outline-primary' }}"
-                {% if not step.enabled %}disabled title="{{ step.blocked_reason }}"{% elif step.action_hint %}title="{{ step.action_hint }}"{% endif %}>{{ step.action_label }}</button>
+        <input type="hidden" name="action" value="{{ item.action }}">
+        {% if wage_filter %}<input type="hidden" name="wage_group" value="{{ wage_filter }}">{% endif %}
+        <button class="btn btn-sm {{ item.variant }}"
+                {% if not item.enabled %}disabled title="{{ item.disabled_reason }}"{% elif item.hint %}title="{{ item.hint }}"{% endif %}>{{ item.label }}</button>
       </form>
-      {% endif %}
+      {% endfor %}
       {% if step.href %}
-      <a class="btn btn-sm {{ 'btn-primary' if step.state == 'current' and not step.action else 'btn-outline-secondary' }}{{ ' disabled-link' if not step.enabled }}"
+      <a class="btn btn-sm {{ 'btn-primary' if step.state == 'current' and not step.actions else 'btn-outline-secondary' }}{{ ' disabled-link' if not step.enabled }}"
          href="{{ step.href }}"
          {% if not step.enabled %}aria-disabled="true" tabindex="-1" title="{{ step.blocked_reason }}"{% endif %}>{{ step.cta }}</a>
       {% endif %}
@@ -100,11 +79,9 @@
   <div class="metric metric-with-icon"><span class="kpi-icon">{{ icon("review") }}</span><span>Review items</span><strong>{{ review_count }}</strong><small>Needs review and missing wage data</small></div>
 </div>
 
+{# No button here: step 3 of the workflow already links to Attendance Manager. #}
 {% if attendance_count and not payroll_month.attendance_submitted %}
-<div class="alert alert-warning">
-  Attendance is imported but not submitted. Review punches in Attendance Manager, then submit.
-  <a class="btn btn-sm btn-outline-primary ms-2" href="{{ url_for('attendance_manager.month', month=month) }}">Open Attendance Manager</a>
-</div>
+<div class="alert alert-warning">Attendance is imported but not submitted. Review punches in <strong>Review &amp; submit</strong> above, then submit. Calculation stays disabled until you do.</div>
 {% endif %}
 
 <form method="post" class="tool-panel mb-4">
@@ -180,6 +157,14 @@
 {% if note %}<p class="text-muted mb-0 px-3 pb-3">{{ note }}</p>{% endif %}
 </div>
 {%- endmacro %}
+{# One control instead of a "View X only" button per wage card plus a "Show all"
+   button in an alert. The current view is always visible here. #}
+<div class="wage-filter" role="group" aria-label="Filter employees by wage type">
+  <span class="wage-filter-label">Show</span>
+  <a class="wage-filter-option{{ ' is-active' if not wage_filter }}" href="{{ url_for('payroll.month', month=month) }}">All ({{ salaries|length }})</a>
+  <a class="wage-filter-option{{ ' is-active' if wage_filter == 'MONTHLY' }}" href="{{ url_for('payroll.month', month=month, wage='monthly') }}">Monthly ({{ monthly_salaries|length }})</a>
+  <a class="wage-filter-option{{ ' is-active' if wage_filter == 'DAILY' }}" href="{{ url_for('payroll.month', month=month, wage='daily') }}">Daily ({{ daily_salaries|length }})</a>
+</div>
 {% if wage_filter in (none, "MONTHLY") %}
 {{ payroll_employee_table("Monthly wage employees", monthly_salaries, "Monthly wage calculation includes working days, week offs, paid leave, leave earned, leave encashment, loan, advance, overtime, and less-hours rules.") }}
 {% endif %}

@@ -32,6 +32,9 @@ SALARY_COMPONENTS = (
 COMPONENT_COLUMN_ALIASES = {"basic_salary": ("Basic", "Basic Salary"), "hra": ("HRA",), "allowance": ("Allowance",)}
 RETIRED_IMPORT_COLUMNS = ("Conveyance Allowance",)
 COMPLIANCE_FLAGS = (("pf_enabled", "PF"), ("esic_enabled", "ESIC"))
+# Monthly-only amounts that are typed in rather than derived. TDS is not
+# calculated by the app: whatever is entered here is deducted each month.
+MONTHLY_ONLY_AMOUNTS = (("tds", "TDS"),)
 # Daily wage only, the mirror image of the monthly-only breakup and compliance fields.
 DAILY_ONLY_FLAGS = (("bonus_ignored", "Ignore Monthly Bonus"),)
 YES_VALUES = {"yes", "y", "true", "1", "enabled", "applicable"}
@@ -109,6 +112,7 @@ def employee_master_export_rows():
             "Basic": (employee.basic_salary or Decimal("0")) if monthly else "",
             "HRA": (employee.hra or Decimal("0")) if monthly else "",
             "Allowance": (employee.allowance or Decimal("0")) if monthly else "",
+            "TDS": (employee.tds or Decimal("0")) if monthly else "",
             "PF": ("Yes" if employee.pf_enabled else "No") if monthly else "",
             "ESIC": ("Yes" if employee.esic_enabled else "No") if monthly else "",
             "Ignore OT": "Yes" if employee.ot_ignored else "No",
@@ -122,7 +126,7 @@ def employee_master_export_rows():
 
 EMPLOYEE_MASTER_EXPORT_COLUMNS = [
     "Employee ID", "Name", "Department", "Designation", "Wage Type", "Salary",
-    "Basic", "HRA", "Allowance", "PF", "ESIC", "Ignore OT", "Ignore Less Hours",
+    "Basic", "HRA", "Allowance", "TDS", "PF", "ESIC", "Ignore OT", "Ignore Less Hours",
     "Ignore Monthly Bonus",
 ]
 
@@ -133,14 +137,14 @@ EMPLOYEE_MASTER_SAMPLE_ROWS = [
     {
         "Employee ID": "1", "Name": "John C Smith", "Department": "Accounts",
         "Designation": "Accounts Executive", "Wage Type": "Monthly", "Salary": "50000",
-        "Basic": "35000", "HRA": "10000", "Allowance": "5000",
+        "Basic": "35000", "HRA": "10000", "Allowance": "5000", "TDS": "2500",
         "PF": "Yes", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Ignore Monthly Bonus": "",
     },
     {
         "Employee ID": "2", "Name": "Elvis D Grey", "Department": "Mechanical Production",
         "Designation": "Helper", "Wage Type": "Daily", "Salary": "5000",
-        "Basic": "0", "HRA": "0", "Allowance": "0",
+        "Basic": "0", "HRA": "0", "Allowance": "0", "TDS": "",
         "PF": "No", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Ignore Monthly Bonus": "No",
     },
@@ -264,6 +268,18 @@ def apply_employee_master_import(rows, actor):
                 if flag != bool(getattr(employee, key)):
                     changes.append(f"{label} {'Yes' if getattr(employee, key) else 'No'} -> {'Yes' if flag else 'No'}")
                     setattr(employee, key, flag)
+            for key, label in MONTHLY_ONLY_AMOUNTS:
+                if label not in row:
+                    continue
+                try:
+                    amount = decimal_money(row.get(label) or 0)
+                except ValueError as exc:
+                    raise ValueError(f"Row {row_number}: {exc}") from exc
+                if amount < 0:
+                    raise ValueError(f"Row {row_number}: {label} cannot be negative.")
+                if amount != Decimal(getattr(employee, key) or 0):
+                    changes.append(f"{label} {Decimal(getattr(employee, key) or 0)} -> {amount}")
+                    setattr(employee, key, amount)
             for _key, label in DAILY_ONLY_FLAGS:
                 if clean(row.get(label)):
                     raise ValueError(
@@ -281,6 +297,14 @@ def apply_employee_master_import(rows, actor):
                     )
             for _key, label in COMPLIANCE_FLAGS:
                 if clean(row.get(label)):
+                    raise ValueError(
+                        f"Row {row_number}: {label} only applies to monthly wage employees. "
+                        f"Employee {employee_id} is {employee.salary_type or 'not set'}."
+                    )
+            for _key, label in MONTHLY_ONLY_AMOUNTS:
+                # An exported daily row carries a blank cell here, so only a real
+                # amount is an error.
+                if clean(row.get(label)) and decimal_money(row.get(label) or 0) != 0:
                     raise ValueError(
                         f"Row {row_number}: {label} only applies to monthly wage employees. "
                         f"Employee {employee_id} is {employee.salary_type or 'not set'}."
@@ -367,6 +391,7 @@ def save_master_employee(form, actor):
         "less_hours_ignored": bool(employee.less_hours_ignored),
         **{key: Decimal(getattr(employee, key) or 0) for key, _ in SALARY_COMPONENTS},
         **{key: bool(getattr(employee, key)) for key, _ in COMPLIANCE_FLAGS},
+        **{key: Decimal(getattr(employee, key) or 0) for key, _ in MONTHLY_ONLY_AMOUNTS},
         **{key: bool(getattr(employee, key)) for key, _ in DAILY_ONLY_FLAGS},
     }
 
@@ -389,6 +414,12 @@ def save_master_employee(form, actor):
         for key, label in COMPLIANCE_FLAGS:
             if controls_present or key in form:
                 setattr(employee, key, form.get(key) == "on")
+        for key, label in MONTHLY_ONLY_AMOUNTS:
+            if key in form:
+                amount = decimal_money(form.get(key) or 0)
+                if amount < 0:
+                    raise ValueError(f"{label} cannot be negative.")
+                setattr(employee, key, amount)
         # The attendance bonus is a daily wage rule, so a monthly record never carries
         # the opt-out, even if a stale form field posts one.
         for key, _ in DAILY_ONLY_FLAGS:
@@ -399,6 +430,8 @@ def save_master_employee(form, actor):
             setattr(employee, key, Decimal("0"))
         for key, _ in COMPLIANCE_FLAGS:
             setattr(employee, key, False)
+        for key, _ in MONTHLY_ONLY_AMOUNTS:
+            setattr(employee, key, Decimal("0"))
         for key, _ in DAILY_ONLY_FLAGS:
             if controls_present or key in form:
                 setattr(employee, key, form.get(key) == "on")
@@ -449,7 +482,7 @@ def save_master_employee(form, actor):
             changes.append(f"Ignore OT {'Yes' if old_values['ot_ignored'] else 'No'} -> {'Yes' if employee.ot_ignored else 'No'}")
         if old_values["less_hours_ignored"] != employee.less_hours_ignored:
             changes.append(f"Ignore Less Hours {'Yes' if old_values['less_hours_ignored'] else 'No'} -> {'Yes' if employee.less_hours_ignored else 'No'}")
-        for key, label in SALARY_COMPONENTS:
+        for key, label in SALARY_COMPONENTS + MONTHLY_ONLY_AMOUNTS:
             new_value = Decimal(getattr(employee, key) or 0)
             if old_values[key] != new_value:
                 changes.append(f"{label} {old_values[key]} -> {new_value}")
@@ -463,6 +496,7 @@ def save_master_employee(form, actor):
         f"Department {employee.department or 'Not Set'}; Designation {employee.designation or 'Not Set'}; "
         f"Ignore OT {'Yes' if employee.ot_ignored else 'No'}; Ignore Less Hours {'Yes' if employee.less_hours_ignored else 'No'}; "
         f"PF {'Yes' if employee.pf_enabled else 'No'}; ESIC {'Yes' if employee.esic_enabled else 'No'}; "
+        f"TDS {Decimal(employee.tds or 0)}; "
         f"Ignore Monthly Bonus {'Yes' if employee.bonus_ignored else 'No'}"
     )
     if changes:

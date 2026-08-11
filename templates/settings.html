@@ -21,6 +21,22 @@
       </table>
     </div>
     <div class="tool-panel mt-3">
+      <h2 class="section-title">PF &amp; ESIC Statutory Rates</h2>
+      <p class="text-muted">PF is governed by the EPF &amp; MP Act 1952 and ESI by the ESI Act 1948, both central statutes, so Gujarat uses the notified national rates. PF applies to <strong>Basic</strong> only, capped at the wage ceiling and pro-rated for loss of pay. ESI applies to the whole earned wage; overtime counts towards the contribution but does not decide coverage. Both are switched on per employee in Employee Master and apply to monthly wage employees only.</p>
+      <table class="table table-sm smart-table">
+        <thead><tr><th>Rule</th><th>Value</th><th>Effect</th></tr></thead>
+        <tbody>
+        {% for rule in statutory_rules %}
+        <tr>
+          <th>{{ rule.label }}</th>
+          <td><strong>{{ rule.value }}</strong></td>
+          <td class="text-muted">{{ rule.detail }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="tool-panel mt-3">
       <h2 class="section-title">Daily Wage Attendance Bonus</h2>
       <p class="text-muted">Daily wage employees are not offered leave. In its place they earn a monthly attendance bonus. Absence is measured against a full working day and includes late arrival and early leaving, so a day paid in full can still carry absence minutes. Week offs and holidays never count as absence.</p>
       <table class="table table-sm smart-table">

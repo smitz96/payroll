@@ -20,6 +20,8 @@ from attendance.reports import (
     build_loan_pdf,
     build_overtime_report_pdf,
     build_payroll_summary_pdf,
+    build_salary_register_pdf,
+    build_salary_register_xlsx,
     error_report_csv,
     less_hours_report_csv,
     overtime_report_csv,
@@ -72,11 +74,12 @@ def index():
     calculated = [result for result in results if result.final_salary is not None and result.calculation_status in {"Calculated", "Needs Review"}]
     missing_salary = attendance_missing_salary(selected_month) if selected_month else {}
     cards = [
-        {"title": "Final Salary Report", "detail": "One printable salary report for all employees.", "icon": "pdf", "href": "reports.final_report_pdf"},
+        {"title": "Salary Slips (Monthly)", "detail": "One salary slip per monthly wage employee. Daily wage employees do not receive a slip.", "icon": "pdf", "href": "reports.final_report_pdf"},
         {"title": "Attendance Summary for Monthly", "detail": "Attendance sheet per monthly wage employee, one to a page.", "icon": "attendance", "href": "reports.monthly_attendance_summary_pdf"},
         {"title": "Summary for Daily Wage Group", "detail": "Attendance sheet per daily wage employee. Carries no company branding.", "icon": "attendance", "href": "reports.daily_attendance_summary_pdf"},
         {"title": "Department Wise Attendance", "detail": "Attendance and leave by department, with each employee's calendar. No salary figures.", "icon": "users", "href": "reports.department_wise_pdf"},
         {"title": "Payroll Summary", "detail": "Employee-wise salary summary and deductions.", "icon": "salary", "href": "reports.payroll_summary_pdf"},
+        {"title": "Salary Sheet (PF & ESIC)", "detail": "Full payroll register with PF, ESIC and professional tax. Also downloadable as XLSX.", "icon": "salary", "href": "reports.salary_register_pdf", "xlsx": "reports.salary_register_xlsx"},
         {"title": "Detailed Attendance", "detail": "Daily working hours, status, shortage, and overtime.", "icon": "attendance", "href": "reports.attendance_detail_pdf"},
         {"title": "Overtime Report", "detail": "Only employees and dates with paid overtime.", "icon": "overtime", "href": "reports.overtime_pdf"},
         {"title": "Less Hours Report", "detail": "Shortage rows with less-hours deductions.", "icon": "less-hours", "href": "reports.less_hours_pdf"},
@@ -112,6 +115,22 @@ def payroll_summary(month):
 @login_required
 def payroll_summary_pdf(month):
     return pdf_response(build_payroll_summary_pdf(month), f"smartfill-payroll-summary-{month}.pdf")
+
+
+@bp.route("/<month>/salary-sheet.pdf")
+@login_required
+def salary_register_pdf(month):
+    return pdf_response(build_salary_register_pdf(month), f"smartfill-salary-sheet-{month}.pdf")
+
+
+@bp.route("/<month>/salary-sheet.xlsx")
+@login_required
+def salary_register_xlsx(month):
+    return Response(
+        build_salary_register_xlsx(month),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=smartfill-salary-sheet-{month}.xlsx"},
+    )
 
 
 @bp.route("/<month>/attendance-detail.csv")
@@ -165,7 +184,13 @@ def less_hours_pdf(month):
 @bp.route("/<month>/employee/<employee_id>.pdf")
 @login_required
 def employee_pdf(month, employee_id):
-    return pdf_response(build_employee_pdf(month, employee_id), f"smartfill-{month}-employee-{employee_id}.pdf")
+    # A daily wage employee gets their unbranded attendance summary, so the filename
+    # must not carry the company name either.
+    salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=employee_id).first()
+    daily = bool(salary and salary.normalized_salary_type == "DAILY")
+    filename = (f"attendance-summary-{month}-{employee_id}.pdf" if daily
+                else f"smartfill-salary-slip-{month}-{employee_id}.pdf")
+    return pdf_response(build_employee_pdf(month, employee_id), filename)
 
 
 @bp.route("/<month>/attendance-summary-monthly.pdf")
@@ -191,7 +216,7 @@ def department_wise_pdf(month):
 @bp.route("/<month>/final-report.pdf")
 @login_required
 def final_report_pdf(month):
-    return pdf_response(build_all_employees_pdf(month), f"smartfill-final-report-{month}.pdf")
+    return pdf_response(build_all_employees_pdf(month), f"smartfill-salary-slips-{month}.pdf")
 
 
 @bp.route("/loans/<int:loan_id>.pdf")

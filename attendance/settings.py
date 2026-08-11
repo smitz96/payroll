@@ -1,3 +1,9 @@
+# Printed on the salary slip under the logo.
+COMPANY_ADDRESS = (
+    "Survey No. 242/3, Panchratna Industrial Estate Lane, Near Ramol Cross Road, "
+    "Ramol, Ahmedabad, India 382445"
+)
+
 MONTHLY_RULES = {
     "FULL_DAY_MINUTES": 9 * 60,
     "FULL_DAY_REQUIRED_MINUTES": 8 * 60 + 50,

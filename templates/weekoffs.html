@@ -2,15 +2,20 @@
 {% block content %}
 <form method="post" id="weekoffForm">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="page-head">
   <div>
-    <h1 class="page-title">Week Off Selector</h1>
-    <p class="text-muted mb-0">Configure weekly offs per employee. Save changes before recalculating payroll.</p>
+    <h1 class="page-title">Week Offs</h1>
+    <p class="text-muted mb-0">Which weekdays are off, per employee. Recalculate the payroll month after saving.</p>
   </div>
-  <button class="btn btn-primary">Save</button>
 </div>
 
 <div class="tool-panel weekoff-panel">
+  {# 35 employees x 7 weekdays is a lot of rows to scroll; filtering by name or ID
+     is the difference between finding someone and hunting for them. #}
+  <div class="table-filter-bar">
+    <input class="form-control" id="weekoffSearch" type="search" placeholder="Search by name or employee ID" autocomplete="off" aria-label="Search employees">
+    <span class="table-filter-count" id="weekoffCount">{{ rows|length }} employee(s)</span>
+  </div>
   <div class="table-responsive weekoff-table-wrap">
     <table class="table table-sm smart-table weekoff-table sticky-id-name-table" style="--sticky-id-width: 120px; --sticky-name-width: 230px;">
       <thead>
@@ -62,8 +67,32 @@
     </table>
   </div>
 </div>
+<div class="sticky-actions">
+  <span class="sticky-actions-hint">Every employee on this page is saved together.</span>
+  <button class="btn btn-primary">Save week offs</button>
+</div>
 </form>
 <script>
+  const weekoffSearch = document.getElementById('weekoffSearch');
+  const weekoffCount = document.getElementById('weekoffCount');
+  if (weekoffSearch) {
+    const bodyRows = Array.from(document.querySelectorAll('.weekoff-table tbody tr'));
+    const haystack = bodyRows.map((row) => {
+      const cells = row.querySelectorAll('td');
+      return ((cells[0]?.textContent || '') + ' ' + (cells[1]?.textContent || '')).toLowerCase();
+    });
+    weekoffSearch.addEventListener('input', () => {
+      const term = weekoffSearch.value.trim().toLowerCase();
+      let shown = 0;
+      bodyRows.forEach((row, index) => {
+        const match = !term || haystack[index].includes(term);
+        row.hidden = !match;
+        if (match) shown += 1;
+      });
+      weekoffCount.textContent = shown + ' employee(s)' + (term ? ' of ' + bodyRows.length : '');
+    });
+  }
+
   document.querySelectorAll('[data-weekoff-picker]').forEach((picker) => {
     const toggle = picker.querySelector('.weekoff-picker-toggle');
     const summary = picker.querySelector('[data-weekoff-summary]');

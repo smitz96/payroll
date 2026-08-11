@@ -7,7 +7,7 @@ from flask_wtf.csrf import CSRFError
 from attendance import db
 from attendance.authentication import init_admin_user
 from attendance.employee_defaults import backfill_default_weekoffs
-from attendance.utils import format_ist_datetime, format_percent
+from attendance.utils import format_ist_datetime, format_percent, money_text
 from config import Config
 
 csrf = CSRFProtect()
@@ -89,6 +89,7 @@ def ensure_schema_columns():
             # Daily wage attendance bonus opt-out. Defaulting to 0 keeps every existing
             # daily employee in the bonus, which is how it worked before the flag.
             ("bonus_ignored", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("tds", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
         ):
             if column not in employee_columns:
                 db.session.execute(db.text(f"ALTER TABLE employee ADD COLUMN {column} {definition}"))
@@ -106,10 +107,23 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE payroll_result ADD COLUMN advance_deduction NUMERIC(12, 2) DEFAULT 0"))
         # Daily wage attendance bonus. Existing rows keep 0, which is correct: months
         # calculated before the bonus existed did not pay one.
+        # Statutory PF and ESI. Existing rows keep 0, which is correct: months
+        # calculated before these existed did not deduct them.
         for column, definition in (
             ("absence_minutes", "INTEGER DEFAULT 0"),
             ("attendance_bonus_percent", "NUMERIC(5, 2) DEFAULT 0"),
             ("attendance_bonus_amount", "NUMERIC(12, 2) DEFAULT 0"),
+            ("pf_wage", "NUMERIC(12, 2) DEFAULT 0"),
+            ("pf_employee", "NUMERIC(12, 2) DEFAULT 0"),
+            ("pf_employer", "NUMERIC(12, 2) DEFAULT 0"),
+            ("pf_pension", "NUMERIC(12, 2) DEFAULT 0"),
+            ("pf_edli", "NUMERIC(12, 2) DEFAULT 0"),
+            ("pf_admin", "NUMERIC(12, 2) DEFAULT 0"),
+            ("esi_wage", "NUMERIC(12, 2) DEFAULT 0"),
+            ("esi_employee", "NUMERIC(12, 2) DEFAULT 0"),
+            ("esi_employer", "NUMERIC(12, 2) DEFAULT 0"),
+            ("professional_tax", "NUMERIC(12, 2) DEFAULT 0"),
+            ("tds", "NUMERIC(12, 2) DEFAULT 0"),
         ):
             if column not in payroll_columns:
                 db.session.execute(db.text(f"ALTER TABLE payroll_result ADD COLUMN {column} {definition}"))
@@ -207,6 +221,7 @@ def create_app(test_config=None):
         app.config.update(test_config)
     app.jinja_env.filters["ist_datetime"] = format_ist_datetime
     app.jinja_env.filters["percent"] = format_percent
+    app.jinja_env.filters["money"] = money_text
     register_static_versioning(app)
     register_error_pages(app)
     Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)

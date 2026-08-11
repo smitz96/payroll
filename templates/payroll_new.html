@@ -1,10 +1,39 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 class="page-title">Payroll Month</h1>
-<form method="post" class="tool-panel">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <label class="form-label">Select Payroll Month</label>
-  <input class="form-control" type="month" name="month" value="{{ default_month }}" required>
-  <button class="btn btn-primary mt-3">Continue</button>
-</form>
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Open a payroll month</h1>
+    <p class="text-muted mb-0">Pick the month you are running payroll for. A month that does not exist yet is created.</p>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-5">
+    <form method="post" class="tool-panel">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <h2 class="section-title">Choose month</h2>
+      <label class="form-label" for="payrollMonth">Payroll month</label>
+      <input class="form-control" id="payrollMonth" type="month" name="month" value="{{ default_month }}" required>
+      <p class="text-muted mt-2 mb-3">Defaults to last month, which is the one usually being processed.</p>
+      <button class="btn btn-primary w-100">Open payroll month</button>
+    </form>
+  </div>
+  <div class="col-lg-7">
+    <div class="tool-panel">
+      <h2 class="section-title">Recent months</h2>
+      {% if recent_months %}
+      <div class="month-link-grid">
+        {% for item in recent_months %}
+        <a class="month-link" href="{{ url_for('payroll.month', month=item.month) }}">
+          <strong>{{ item.label }}</strong>
+          <span class="badge text-bg-{{ 'warning' if item.status == 'FINALIZED' else 'success' }}">{{ 'Finalized' if item.status == 'FINALIZED' else 'Draft' }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">No payroll month has been created yet. Choose a month on the left to start.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
 {% endblock %}

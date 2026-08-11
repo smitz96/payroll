@@ -66,6 +66,13 @@
         </div>
         <div class="breakup-total" data-breakup-total>Leave all three at 0 if the breakup is not captured yet.</div>
 
+        <h4 class="form-subhead">Tax deducted at source</h4>
+        <div class="breakup-grid">
+          <div><label class="form-label" for="detail_tds">TDS per month</label>
+            <input class="form-control" id="detail_tds" name="tds" value="{{ employee.tds or 0 }}" inputmode="decimal" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}></div>
+        </div>
+        <div class="status-detail">Entered by hand, not calculated. This amount is deducted every month and appears as TDS on the salary slip.</div>
+
         <h4 class="form-subhead">Compliance</h4>
         <div class="d-flex gap-3 flex-wrap">
           <label class="form-check">

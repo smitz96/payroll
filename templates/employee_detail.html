@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 class="page-title">{{ employee_id }} - {{ salary.name if salary else employee.name }}</h1>
+{# Navigation lives in the page head, away from the form's Save/Recalculate, so a
+   link that leaves the page is never mistaken for one that submits it. #}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">{{ employee_id }} - {{ salary.name if salary else employee.name }}</h1>
+    <p class="text-muted mb-0">{{ month_label }}{% if salary and salary.salary_type %} &middot; {{ salary.salary_type }} wage{% endif %}{% if employee and employee.designation %} &middot; {{ employee.designation }}{% endif %}</p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Back to payroll</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('reports.employee_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">Open PDF</a>
+  </div>
+</div>
 {% if is_finalized %}
 <div class="alert alert-warning mt-3">Payroll is finalized and locked. Unlock payroll from the month page before making changes.</div>
 {% endif %}
@@ -9,99 +20,133 @@
 {% endif %}
 {% set is_daily_wage = salary and salary.normalized_salary_type == "DAILY" %}
 {% if result %}
+{# Grouped by what a reader is looking for: the month and its day counts, then the
+   leave position, then hours, then money. PF and ESIC live in the Payroll
+   compliance panel below rather than being repeated here. #}
 <div class="summary-grid mb-4">
   <div class="metric"><span>Status</span><strong>{{ result.calculation_status }}</strong></div>
   <div class="metric"><span>Days in month</span><strong>{{ month_days }}</strong></div>
   <div class="metric"><span>Paid working days</span><strong>{{ result.paid_working_days }}</strong></div>
   <div class="metric"><span>Week Offs</span><strong>{{ result.week_offs }}</strong></div>
   <div class="metric"><span>Total paid days</span><strong>{{ total_paid_days }}</strong></div>
-  <div class="metric"><span>Less-hours minutes</span><strong>{{ result.less_hours_minutes }}</strong></div>
-  <div class="metric"><span>OT payable minutes</span><strong>{{ result.payable_ot_minutes }}</strong></div>
   {% if is_daily_wage %}
   <div class="metric"><span>Absence this month</span><strong>{{ bonus_absence_duration }}</strong></div>
-  <div class="metric"><span>Attendance bonus</span><strong>{% if bonus_ignored %}Excluded{% else %}{{ (result.attendance_bonus_percent or 0)|percent }}% / {{ result.attendance_bonus_amount or 0 }}{% endif %}</strong></div>
+  <div class="metric"><span>Attendance bonus</span><strong>{% if bonus_ignored %}Excluded{% else %}{{ (result.attendance_bonus_percent or 0)|percent }}% / {{ result.attendance_bonus_amount|money }}{% endif %}</strong></div>
   {% else %}
+  <div class="metric"><span>LOP days</span><strong>{{ result.lop_days }}</strong></div>
+  <div class="metric"><span>Leave used</span><strong>{{ result.leave_used }}</strong></div>
   <div class="metric"><span>Leave earned</span><strong>{{ result.leave_earned }}</strong></div>
-  <div class="metric"><span>Leave encashment</span><strong>{{ result.leave_encashment_days or 0 }} day(s) / {{ result.leave_encashment_amount or 0 }}</strong></div>
+  <div class="metric"><span>Leave carried forward</span><strong>{{ result.closing_leave }}</strong><small>Redeemable as leave: {{ redeemable_closing_leave }}</small></div>
+  <div class="metric"><span>Leave encashment</span><strong>{{ result.leave_encashment_days or 0 }} day(s)</strong><small>{{ result.leave_encashment_amount|money }}</small></div>
   {% endif %}
+  <div class="metric"><span>Less-hours minutes</span><strong>{{ result.less_hours_minutes }}</strong></div>
+  <div class="metric"><span>OT payable minutes</span><strong>{{ result.payable_ot_minutes }}</strong></div>
   {% if has_loan %}
-  <div class="metric"><span>Loan deduction</span><strong>{{ result.loan_deduction or 0 }}</strong></div>
-  <div class="metric"><span>Pending loan amount</span><strong>{{ result.loan_pending_amount or 0 }}</strong></div>
+  <div class="metric"><span>Loan deduction</span><strong>{{ result.loan_deduction|money }}</strong><small>Pending {{ result.loan_pending_amount|money }}</small></div>
   {% endif %}
   {% if payroll_advances or result.advance_deduction %}
-  <div class="metric"><span>Advance salary deduction</span><strong>{{ result.advance_deduction or 0 }}</strong></div>
+  <div class="metric"><span>Advance salary deduction</span><strong>{{ result.advance_deduction|money }}</strong></div>
   {% endif %}
-  <div class="metric"><span>Final payable salary</span><strong>{{ result.final_salary if result.final_salary is not none else "Not Calculated" }}</strong></div>
+  <div class="metric"><span>Final payable salary</span><strong>{{ result.final_salary|money if result.final_salary is not none else "Not Calculated" }}</strong></div>
+</div>
+{% endif %}
+{# Statutory position for the month. PF and ESIC are switched on per employee in
+   Employee Master and apply to monthly wage only; professional tax follows the
+   earned wage. Employee shares reduce take-home pay, employer shares do not. #}
+{% if result and not is_daily_wage %}
+{% set pf_on = employee and employee.pf_enabled %}
+{% set esic_on = employee and employee.esic_enabled %}
+<div class="tool-panel mb-4">
+  <h2 class="section-title">Payroll compliance</h2>
+  <div class="compliance-grid">
+    <div class="compliance-card">
+      <header><strong>Provident Fund</strong><span class="compliance-flag {{ 'is-on' if pf_on else 'is-off' }}">{{ "Applicable" if pf_on else "Not applicable" }}</span></header>
+      <dl>
+        <div><dt>Employee PF</dt><dd>{{ result.pf_employee|money }}</dd></div>
+        <div><dt>Employer PF</dt><dd>{{ result.pf_employer|money }}</dd></div>
+        <div><dt>Pension (EPS)</dt><dd>{{ result.pf_pension|money }}</dd></div>
+        <div><dt>Fund (EPF)</dt><dd>{{ ((result.pf_employer or 0) - (result.pf_pension or 0))|money }}</dd></div>
+        <div><dt>EDLI</dt><dd>{{ result.pf_edli|money }}</dd></div>
+        <div><dt>Admin charges</dt><dd>{{ result.pf_admin|money }}</dd></div>
+      </dl>
+      <p class="compliance-note">Calculated on a PF wage of {{ result.pf_wage|money }}.</p>
+    </div>
+    <div class="compliance-card">
+      <header><strong>ESIC</strong><span class="compliance-flag {{ 'is-on' if esic_on else 'is-off' }}">{{ "Applicable" if esic_on else "Not applicable" }}</span></header>
+      <dl>
+        <div><dt>Employee ESIC</dt><dd>{{ result.esi_employee|money }}</dd></div>
+        <div><dt>Employer ESIC</dt><dd>{{ result.esi_employer|money }}</dd></div>
+      </dl>
+      <p class="compliance-note">{% if esic_on %}Calculated on an ESI wage of {{ result.esi_wage|money }}.{% else %}ESIC covers employees earning up to {{ esi_ceiling }} a month.{% endif %}</p>
+    </div>
+    <div class="compliance-card">
+      <header><strong>Tax</strong><span class="compliance-flag {{ 'is-on' if (result.professional_tax or result.tds) else 'is-off' }}">{{ "Payable" if (result.professional_tax or result.tds) else "Not payable" }}</span></header>
+      <dl>
+        <div><dt>Professional tax</dt><dd>{{ result.professional_tax|money }}</dd></div>
+        <div><dt>TDS</dt><dd>{{ result.tds|money }}</dd></div>
+      </dl>
+      <p class="compliance-note">Professional tax is charged when the earned wage exceeds {{ pt_threshold }}. TDS is the fixed monthly amount set on the employee master.</p>
+    </div>
+    <div class="compliance-card is-total">
+      <header><strong>Totals</strong></header>
+      <dl>
+        <div><dt>Deducted from employee</dt><dd>{{ compliance_employee_total }}</dd></div>
+        <div><dt>Paid by company</dt><dd>{{ compliance_employer_total }}</dd></div>
+      </dl>
+      <p class="compliance-note">Only the employee side reduces the final payable salary.</p>
+    </div>
+  </div>
 </div>
 {% endif %}
 <form method="post" id="employeeDetailForm">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <div class="tool-panel mb-4">
-  <h2 class="section-title">Employee payroll adjustments</h2>
-  <div class="row g-2">
-    <div class="col-md-3">
-      <label class="form-label">Adjustment (+ / -)</label>
-      <input class="form-control" name="adjustment" value="{{ salary.adjustment if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+  <h2 class="section-title">Adjustments for this month</h2>
+  <div class="adjust-grid">
+    <div class="adjust-field">
+      <label class="form-label" for="adjustmentAmount">Adjustment</label>
+      <input class="form-control" id="adjustmentAmount" name="adjustment" value="{{ salary.adjustment if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+      <small>Positive adds to the salary, negative deducts from it.</small>
     </div>
-    <div class="col-md-3">
-      <div class="leave-encashment-box">
-        {% if is_daily_wage %}
-        <strong>Attendance bonus</strong>
-        {% if result %}
-        <div class="bonus-figure{{ ' is-excluded' if bonus_ignored }}">{% if bonus_ignored %}Excluded{% else %}{{ (result.attendance_bonus_percent or 0)|percent }}% &middot; {{ result.attendance_bonus_amount or 0 }}{% endif %}</div>
-        <div class="status-detail">Absence this month: <strong>{{ bonus_absence_duration }}</strong>. {{ bonus_explanation }}</div>
-        {% else %}
-        <div class="status-detail">Recalculate payroll to work out the attendance bonus.</div>
-        {% endif %}
-        <div class="status-detail">Daily wage employees do not use leave. Absence counts late arrival and early leaving.</div>
-        {% else %}
-        {% set employee_leave_encashment_checked = (global_leave_encashment and salary and not salary.leave_encashment_disabled) or (salary and salary.leave_encashment_enabled) %}
-        <label class="form-check">
-          <input class="form-check-input" type="checkbox" name="leave_encashment_enabled" id="leaveEncashmentEnabled" {% if employee_leave_encashment_checked %}checked{% endif %} {% if not salary or is_finalized %}disabled{% endif %}>
-          <span>{{ "Include in global leave encashment" if global_leave_encashment else "Enable leave encashment" }}</span>
-        </label>
-        <input class="form-control form-control-sm" name="leave_encashment_days" id="leaveEncashmentDays" value="{{ 'All available' if global_leave_encashment and employee_leave_encashment_checked else (salary.leave_encashment_days if salary else 0) }}" inputmode="decimal" placeholder="Encashment Days" {% if not salary or is_finalized or global_leave_encashment or not salary.leave_encashment_enabled %}disabled{% endif %}>
-        {% if result %}
-        <div class="status-detail">
-          {% if global_leave_encashment %}
-          Global encashment is on. This employee will encash all available leaves unless unchecked here.
-          {% endif %}
-          Available after calculation: {{ (result.closing_leave or 0) + (result.leave_encashment_days or 0) }} day(s). Calculated value: {{ result.leave_encashment_amount or 0 }}.
-        </div>
-        {% endif %}
-        {% endif %}
-      </div>
+    <div class="adjust-field">
+      <label class="form-label" for="manualLoan">Manual loan / other deduction</label>
+      <input class="form-control" id="manualLoan" name="loan" value="{{ salary.loan if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+      <small>Deducted on top of any active loan installment.</small>
     </div>
-    <div class="col-md-3">
-      <label class="form-label">Manual loan / other deduction</label>
-      <input class="form-control" name="loan" value="{{ salary.loan if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+    {% if not is_daily_wage %}
+    {% set employee_leave_encashment_checked = (global_leave_encashment and salary and not salary.leave_encashment_disabled) or (salary and salary.leave_encashment_enabled) %}
+    <div class="adjust-field">
+      <label class="form-check">
+        <input class="form-check-input" type="checkbox" name="leave_encashment_enabled" id="leaveEncashmentEnabled" {% if employee_leave_encashment_checked %}checked{% endif %} {% if not salary or is_finalized %}disabled{% endif %}>
+        <span>{{ "Include in global leave encashment" if global_leave_encashment else "Encash leave" }}</span>
+      </label>
+      <input class="form-control" name="leave_encashment_days" id="leaveEncashmentDays" value="{{ 'All available' if global_leave_encashment and employee_leave_encashment_checked else (salary.leave_encashment_days if salary else 0) }}" inputmode="decimal" placeholder="Days to encash" {% if not salary or is_finalized or global_leave_encashment or not salary.leave_encashment_enabled %}disabled{% endif %}>
+      <small>{% if global_leave_encashment %}Global encashment is on; untick to exclude this employee. {% endif %}{% if result %}{{ (result.closing_leave or 0) + (result.leave_encashment_days or 0) }} day(s) available, worth {{ result.leave_encashment_amount|money }}.{% else %}Enter the number of days to pay out.{% endif %}</small>
     </div>
-    <div class="col-md-3">
-      <div class="leave-encashment-box">
-        <label class="form-check">
-          <input class="form-check-input" type="checkbox" name="loan_installment_skip" {% if loan_skip and loan_skip.skip %}checked{% endif %} {% if is_finalized or not active_loans %}disabled{% endif %}>
-          <span>Skip loan installment</span>
-        </label>
-        <input class="form-control form-control-sm" name="loan_skip_notes" value="{{ loan_skip.notes if loan_skip else '' }}" placeholder="Skip notes" {% if is_finalized or not active_loans %}disabled{% endif %}>
-        <div class="status-detail">Active loan installment: {{ active_loan_installment }}{% if not active_loans %}. No active loan for this month.{% endif %}</div>
-      </div>
+    {% endif %}
+    <div class="adjust-field">
+      <label class="form-check">
+        <input class="form-check-input" type="checkbox" name="loan_installment_skip" {% if loan_skip and loan_skip.skip %}checked{% endif %} {% if is_finalized or not active_loans %}disabled{% endif %}>
+        <span>Skip loan installment</span>
+      </label>
+      <input class="form-control" name="loan_skip_notes" value="{{ loan_skip.notes if loan_skip else '' }}" placeholder="Reason for skipping" {% if is_finalized or not active_loans %}disabled{% endif %}>
+      <small>{% if active_loans %}Installment due this month: {{ active_loan_installment }}.{% else %}No active loan this month.{% endif %}</small>
     </div>
-    <div class="col-md-3">
-      <div class="leave-encashment-box">
-        <strong>Advance salary deduction</strong>
-        <div class="status-detail">{{ advance_deduction }}{% if not payroll_advances %}. No advance due this month.{% endif %}</div>
-      </div>
+    {% if payroll_advances or advance_deduction %}
+    <div class="adjust-field is-readonly">
+      <span class="form-label">Advance salary deduction</span>
+      <strong class="adjust-readonly-value">{{ advance_deduction }}</strong>
+      <small>Set from the advance schedule; not editable here.</small>
     </div>
-    <div class="col-md-12 adjustment-actions">
-      <a class="btn btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Back</a>
-      <a class="btn btn-outline-secondary" href="{{ url_for('reports.employee_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">Open PDF</a>
-      {% if not is_finalized %}
-      <button class="btn btn-outline-primary" name="action" value="save">Save changes</button>
-      <button class="btn btn-primary" name="action" value="recalculate">Recalculate payroll</button>
-      {% endif %}
+    {% endif %}
+    {% if is_daily_wage %}
+    <div class="adjust-field is-readonly">
+      <span class="form-label">Attendance bonus</span>
+      <strong class="adjust-readonly-value">{% if bonus_ignored %}Excluded{% elif result %}{{ (result.attendance_bonus_percent or 0)|percent }}% &middot; {{ result.attendance_bonus_amount|money }}{% else %}Not calculated{% endif %}</strong>
+      <small>{% if result %}{{ bonus_explanation }}{% else %}Recalculate to work out the bonus.{% endif %}</small>
     </div>
+    {% endif %}
   </div>
-  <p class="text-muted mb-0 mt-3">Adjustment may be positive or negative. {% if is_daily_wage %}Daily wage employees earn an attendance bonus instead of leave: 10% of the month's earned wage with no absence at all, 5% with absence up to {{ bonus_allowance_duration }}, and nothing beyond that.{% elif global_leave_encashment %}Global leave encashment uses all available leaves; uncheck the employee option to disable it for this employee.{% else %}Enter leave encashment in days.{% endif %} Active loan installments are deducted unless skipped for this employee and month.</p>
 </div>
 {# Month grid. Each cell keeps the same input names as the old table, so the POST
    handler is unchanged; only the presentation moved. #}
@@ -147,10 +192,13 @@
   </div>
   {% endfor %}
 </div>
+{# The page's only submit buttons. They used to appear here and again inside the
+   adjustments panel, which made four buttons for two actions. #}
 {% if not is_finalized %}
 <div class="sticky-actions">
-  <button class="btn btn-outline-primary" name="action" value="save">Save changes</button>
-  <button class="btn btn-primary" name="action" value="recalculate">Recalculate payroll</button>
+  <span class="sticky-actions-hint">Changes to adjustments and day overrides are saved together.</span>
+  <button class="btn btn-outline-primary" name="action" value="save">Save only</button>
+  <button class="btn btn-primary" name="action" value="recalculate">Save &amp; recalculate</button>
 </div>
 {% endif %}
 </form>

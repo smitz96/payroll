@@ -1,13 +1,14 @@
 import calendar
 from collections import defaultdict
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 
 from attendance import db
 from attendance.models import AttendanceOverride, AttendanceRecord, Employee, Holiday, PayrollMonth, PayrollResult, SalaryRecord
 from attendance.advances import advance_deduction_for_employee
 from attendance.loans import loan_installment_for_employee, loan_pending_after_month_for_employee
 from attendance.settings import DAILY_BONUS_RULES as BONUS_CFG
+from attendance.statutory import professional_tax, statutory_for_employee
 from attendance.settings import MONTHLY_RULES as CFG
 from attendance.utils import LEAVE_DAY_PRECISION, floor_to_interval, minutes_to_duration, money, truncate_leave_days
 from attendance.weekoffs import is_week_off_for_date
@@ -98,7 +99,8 @@ class MonthlyPayrollRule(PayrollRule):
         opening_applied = apply_leave_balance(classified_rows, opening_for_absences)
 
         interim_full = sum((Decimal("1") for _r, _o, row in classified_rows if row["status"] in FULL_DAY_PRESENT_STATUSES), Decimal("0"))
-        interim_half = sum((Decimal("1") for _r, _o, row in classified_rows if row["status"] == "Half Day Present"), Decimal("0"))
+        interim_half = sum((Decimal("1") for _r, _o, row in classified_rows
+                            if row["status"] in {"Half Day Present", HALF_DAY_WITH_LEAVE_STATUS}), Decimal("0"))
         interim_weekoffs = sum((1 for _r, _o, row in classified_rows if row["status"] in {"Week Off", "Week Off Worked"}), 0)
         interim_holidays = sum((1 for _r, _o, row in classified_rows if row["status"] == "Holiday"), 0)
         interim_leave_used = explicit_leave + opening_applied
@@ -111,7 +113,11 @@ class MonthlyPayrollRule(PayrollRule):
         leave_earned = calculate_monthly_leave_earned(
             eligible_leave_days, days_in_payroll_month(salary_record.payroll_month)
         ) + interim_comp_off
-        earned_applied = apply_leave_balance(classified_rows, leave_earned)
+        # Whatever the opening balance could not redeem joins the earned pool. Without
+        # this a fraction under half a day is stranded in each pass, so an opening of
+        # 0.4 and an earning of 0.4 would redeem nothing even though they make 0.8.
+        opening_remainder = max(Decimal("0"), opening_for_absences - opening_applied)
+        earned_applied = apply_leave_balance(classified_rows, leave_earned + opening_remainder)
 
         for rec, override, row in classified_rows:
             actual = rec.actual_minutes or 0
@@ -131,8 +137,13 @@ class MonthlyPayrollRule(PayrollRule):
                 lop_days += Decimal("0.5")
             elif row["status"] in FULL_DAY_PRESENT_STATUSES:
                 full_days += Decimal("1")
-            elif row["status"] == "Half Day Present":
+            elif row["status"] == HALF_DAY_WITH_LEAVE_STATUS:
                 half_days += Decimal("1")
+                leave_used += Decimal(str(row["leave_used"]))
+            elif row["status"] == "Half Day Present":
+                # No leave was available to cover the unworked half, so it is unpaid.
+                half_days += Decimal("1")
+                lop_days += Decimal("0.5")
             elif row["status"] == "Full Day LOP":
                 lop_days += Decimal("1")
             elif row["status"] == "Half Day LOP":
@@ -143,14 +154,17 @@ class MonthlyPayrollRule(PayrollRule):
             elif row["status"] in {"Punch Error", "Needs Review"}:
                 needs_review.append(f"{rec.date}: {row['status']}")
 
-            shortage = 0 if less_hours_ignored else calculate_monthly_shortage(actual)
+            off_site = worked_elsewhere(row)
+            shortage = 0 if (less_hours_ignored or off_site) else calculate_monthly_shortage(actual)
             shortage_amount = Decimal("0")
             rounded = row["rounded_minutes"]
             if shortage and row["status"] == "Full Day Present":
                 shortage_amount = quarter_rate * Decimal(shortage // CFG["ROUNDING_INTERVAL_MINUTES"])
                 less_minutes += shortage
                 less_deduction += shortage_amount
-            raw_ot, rounded_ot, ot_value = calculate_monthly_overtime(actual, quarter_rate)
+            raw_ot, rounded_ot, ot_value = (
+                (0, 0, Decimal("0")) if off_site else calculate_monthly_overtime(actual, quarter_rate)
+            )
             ot_minutes += raw_ot
             if ot_ignored:
                 rounded_ot = 0
@@ -212,7 +226,30 @@ class MonthlyPayrollRule(PayrollRule):
         leave_encashment = daily_rate * leave_encashment_days
         closing_leave = (closing_leave_before_encashment - leave_encashment_days).quantize(LEAVE_DAY_PRECISION)
         manual_deduction = abs(manual) if manual < 0 else Decimal("0")
-        total_deduction = lop_deduction + less_deduction + loan + advance + manual_deduction
+        # Statutory contributions are based on what the employee actually earns this
+        # month, so loss of pay and short hours reduce the wage they are computed on.
+        # PF follows basic alone; ESI follows the whole earned wage.
+        earned_ratio = (salary - lop_deduction - less_deduction) / salary if salary else Decimal("0")
+        earned_basic = max(Decimal("0"), Decimal(employee.basic_salary or 0) if employee else Decimal("0")) * earned_ratio
+        esi_eligibility_wage = salary - lop_deduction - less_deduction
+        pf, esi = statutory_for_employee(
+            employee,
+            earned_basic=earned_basic,
+            # Overtime is part of ESI wages but must not decide coverage, so the
+            # eligibility figure deliberately leaves it out.
+            esi_contribution_wage=esi_eligibility_wage + ot_amount,
+            esi_eligibility_wage=esi_eligibility_wage,
+        )
+        # Gujarat professional tax is charged on the wage actually earned, so a month
+        # short enough to drop below the slab threshold attracts none.
+        prof_tax = professional_tax(esi_eligibility_wage)
+        # TDS is not derived from anything here: it is the monthly amount entered on
+        # the employee master, deducted as-is.
+        tds = Decimal(employee.tds or 0) if employee else Decimal("0")
+        total_deduction = (
+            lop_deduction + less_deduction + loan + advance + manual_deduction
+            + pf["employee"] + esi["employee"] + prof_tax + tds
+        )
         total_addition = ot_amount + leave_encashment + (manual if manual > 0 else Decimal("0"))
         final_salary = salary - total_deduction + total_addition
         status = "Needs Review" if needs_review else "Calculated"
@@ -239,6 +276,17 @@ class MonthlyPayrollRule(PayrollRule):
             ot_minutes=ot_minutes,
             payable_ot_minutes=payable_ot,
             ot_amount=money(ot_amount),
+            pf_wage=money(pf["wage"]),
+            pf_employee=money(pf["employee"]),
+            pf_employer=money(pf["employer"]),
+            pf_pension=money(pf["pension"]),
+            pf_edli=money(pf["edli"]),
+            pf_admin=money(pf["admin"]),
+            esi_wage=money(esi["wage"]),
+            esi_employee=money(esi["employee"]),
+            esi_employer=money(esi["employer"]),
+            professional_tax=money(prof_tax),
+            tds=money(tds),
             lop_deduction=money(lop_deduction),
             manual_adjustment=manual,
             leave_encashment_days=leave_encashment_days,
@@ -297,18 +345,22 @@ class DailyPayrollRule(PayrollRule):
             elif row["status"] in FULL_DAY_PRESENT_STATUSES:
                 full_days += Decimal("1")
             elif row["status"] == "Half Day Present":
+                # Daily wage has no leave balance, so a half day is simply half paid.
                 half_days += Decimal("1")
             elif row["status"] in {"Punch Error", "Needs Review"}:
                 needs_review.append(f"{rec.date}: {row['status']}")
 
-            shortage = 0 if less_hours_ignored else calculate_monthly_shortage(actual)
+            off_site = worked_elsewhere(row)
+            shortage = 0 if (less_hours_ignored or off_site) else calculate_monthly_shortage(actual)
             shortage_amount = Decimal("0")
             rounded = row["rounded_minutes"]
             if shortage and row["status"] in {"Full Day Present", "Week Off Worked"}:
                 shortage_amount = quarter_rate * Decimal(shortage // CFG["ROUNDING_INTERVAL_MINUTES"])
                 less_minutes += shortage
                 less_deduction += shortage_amount
-            raw_ot, rounded_ot, ot_value = calculate_monthly_overtime(actual, quarter_rate)
+            raw_ot, rounded_ot, ot_value = (
+                (0, 0, Decimal("0")) if off_site else calculate_monthly_overtime(actual, quarter_rate)
+            )
             ot_minutes += raw_ot
             if ot_ignored:
                 rounded_ot = 0
@@ -500,6 +552,8 @@ ABSENT_STATUS = "Absent / Attendance Missing"
 WORKED_ELSEWHERE_STATUSES = ("Worked On-Site", "Work From Home")
 FULL_DAY_PRESENT_STATUSES = {"Full Day Present", *WORKED_ELSEWHERE_STATUSES}
 HALF_LEAVE_HALF_LOP_STATUS = "Half-Day Paid Leave / Half-Day LOP"
+# A half day worked, with the unworked half covered from the leave balance.
+HALF_DAY_WITH_LEAVE_STATUS = "Half Day Present / Half-Day Leave"
 EXPLICIT_LEAVE_STATUSES = {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave"}
 
 
@@ -517,6 +571,16 @@ BONUS_CREDIT_DAYS = {
     "Half Day LOP": Decimal("0.5"),
     HALF_LEAVE_HALF_LOP_STATUS: Decimal("0.5"),
 }
+
+
+def worked_elsewhere(row):
+    """True for a day recorded by override rather than by the punch machine.
+
+    Worked On-Site and Work From Home are set by hand precisely because there are no
+    punches, so the day has no measured duration. It counts as a full day, and
+    neither overtime nor short hours can be derived from it.
+    """
+    return row["status"] in WORKED_ELSEWHERE_STATUSES
 
 
 def has_any_punch(record):
@@ -593,6 +657,20 @@ def daily_bonus_explanation(absence_minutes, bonus_ignored=False):
     )
 
 
+def redeemable_leave(available):
+    """The part of a balance that can actually be taken as leave.
+
+    Leave is redeemed in half-day steps, so a balance is floored to the nearest 0.5
+    before it can offset an absence. A balance of 1.38 redeems 1 day and keeps 0.38;
+    1.92 redeems 1.5 and keeps 0.42. The remainder stays in the closing balance and
+    is available for encashment rather than being taken as time off.
+    """
+    available = Decimal(available or 0)
+    if available <= 0:
+        return Decimal("0")
+    return (available * 2).to_integral_value(rounding=ROUND_DOWN) / 2
+
+
 def apply_leave_balance(classified_rows, available):
     """Settle unexplained absences against `available` leave, oldest day first.
 
@@ -602,11 +680,23 @@ def apply_leave_balance(classified_rows, available):
 
     Returns the leave consumed.
     """
-    available = Decimal(available or 0)
+    available = redeemable_leave(available)
     used = Decimal("0")
     if available <= 0:
         return used
     for _record, _override, row in classified_rows:
+        # A half day worked leaves half a day unpaid. Half a leave covers it, so the
+        # day is paid in full, exactly as it would for a whole day's absence.
+        if row["status"] == "Half Day Present":
+            if available - used >= Decimal("0.5"):
+                row.update({
+                    "status": HALF_DAY_WITH_LEAVE_STATUS,
+                    "paid_day": Decimal("1"),
+                    "leave_used": Decimal("0.5"),
+                    "explanation": "Half day worked; the other half covered by available leave.",
+                })
+                used += Decimal("0.5")
+            continue
         if row["status"] != ABSENT_STATUS:
             continue
         remaining = available - used

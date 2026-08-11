@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% from "icons.html" import icon %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-3">
+<div class="page-head">
   <div>
     <h1 class="page-title">Attendance Manager</h1>
-    <p class="text-muted mb-0">{{ month_label }} attendance review before payroll calculation.</p>
+    <p class="text-muted mb-0">{{ month_label }} &middot; review punches, then submit to calculate payroll.</p>
   </div>
   <div class="d-flex gap-2 flex-wrap">
-    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Back to Payroll</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Back to payroll</a>
   </div>
 </div>
 
@@ -47,6 +47,7 @@
 <form method="post" enctype="multipart/form-data" class="tool-panel mb-4">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="action" value="import_attendance">
+  <h2 class="section-title">{{ "Re-import the punch sheet" if employee_rows else "Import the punch sheet" }}</h2>
   <div class="d-flex justify-content-between align-items-end gap-3 flex-wrap">
     <div class="flex-grow-1">
       <label class="form-label">Attendance CSV / XLSX</label>
@@ -59,7 +60,7 @@
         {% endif %}
       </div>
     </div>
-    <button class="btn btn-primary" {% if is_finalized %}disabled{% endif %}>{{ "Re-import attendance" if employee_rows else "Import attendance" }}</button>
+    <button class="btn {{ 'btn-outline-primary' if employee_rows else 'btn-primary' }}" {% if is_finalized %}disabled{% endif %}>{{ "Re-import" if employee_rows else "Import attendance" }}</button>
   </div>
 </form>
 
@@ -103,10 +104,6 @@
           </div>
         </div>
       </div>
-    </div>
-    <div class="module-card-actions">
-      <button class="btn btn-outline-primary" type="submit" data-attendance-action="save" {% if is_finalized %}disabled{% endif %}>Save draft</button>
-      <button class="btn btn-primary" type="submit" data-attendance-action="submit" {% if is_finalized %}disabled{% endif %}>Submit &amp; calculate payroll</button>
     </div>
   </div>
   <div class="attendance-manager-wrap">
@@ -183,6 +180,13 @@
       <button class="btn btn-outline-secondary btn-sm" type="button" id="attendanceNextPage">Next</button>
     </div>
   </div>
+  {% if not is_finalized %}
+  <div class="sticky-actions">
+    <span class="sticky-actions-hint">Punch edits across every page of the table are saved together.</span>
+    <button class="btn btn-outline-primary" type="submit" data-attendance-action="save">Save only</button>
+    <button class="btn btn-primary" type="submit" data-attendance-action="submit">Save &amp; calculate payroll</button>
+  </div>
+  {% endif %}
 </form>
 
 <dialog class="attendance-log-dialog" id="attendanceLogDialog">

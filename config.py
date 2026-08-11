@@ -18,7 +18,9 @@ class Config:
     UPLOAD_FOLDER = str((BASE_DIR / "uploads").resolve())
     APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT = int(os.getenv("APP_PORT", "3000"))
-    SESSION_INACTIVITY_TIMEOUT_SECONDS = int(os.getenv("SESSION_INACTIVITY_TIMEOUT_SECONDS", "300"))
+    # 15 minutes of inactivity. Payroll review involves long stretches of reading a
+    # month before the next click, and 5 minutes was logging people out mid-task.
+    SESSION_INACTIVITY_TIMEOUT_SECONDS = int(os.getenv("SESSION_INACTIVITY_TIMEOUT_SECONDS", "900"))
     WTF_CSRF_ENABLED = os.getenv("WTF_CSRF_ENABLED", "true").lower() != "false"
 
     # Session cookie hardening. SESSION_COOKIE_SECURE defaults to off because the

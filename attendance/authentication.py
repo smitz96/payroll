@@ -85,9 +85,8 @@ def authenticate(username, password):
 def active_session_is_current(user):
     if not user.active_session_token or not user.active_session_last_seen_at:
         return False
-    timeout_seconds = int(current_app.config.get("SESSION_INACTIVITY_TIMEOUT_SECONDS", 300))
     inactive_seconds = datetime.utcnow().timestamp() - user.active_session_last_seen_at.timestamp()
-    return inactive_seconds <= timeout_seconds
+    return inactive_seconds <= inactivity_timeout_seconds()
 
 
 def start_user_session(user, forced=False):
@@ -131,13 +130,29 @@ def mark_session_activity():
             db.session.commit()
 
 
+def inactivity_timeout_seconds():
+    return int(current_app.config.get("SESSION_INACTIVITY_TIMEOUT_SECONDS", 900))
+
+
+def inactivity_timeout_label():
+    """The timeout as it should read to a user, derived from the setting.
+
+    The wording used to hardcode "5 minutes", so changing the timeout would have left
+    the message telling people something untrue.
+    """
+    seconds = inactivity_timeout_seconds()
+    minutes, remainder = divmod(seconds, 60)
+    if remainder or minutes == 0:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+
 def session_is_expired():
     last_activity_at = session.get(LAST_ACTIVITY_SESSION_KEY)
     if not last_activity_at:
         return False
-    timeout_seconds = int(current_app.config.get("SESSION_INACTIVITY_TIMEOUT_SECONDS", 300))
     inactive_seconds = datetime.utcnow().timestamp() - float(last_activity_at)
-    return inactive_seconds > timeout_seconds
+    return inactive_seconds > inactivity_timeout_seconds()
 
 
 def login_required(view):
@@ -160,10 +175,10 @@ def login_required(view):
                 user.active_session_started_at = None
                 user.active_session_last_seen_at = None
                 db.session.add(user)
-            db.session.add(AuditLog(actor=username, action="User Auto Logout", detail="Session expired after 5 minutes of inactivity"))
+            db.session.add(AuditLog(actor=username, action="User Auto Logout", detail=f"Session expired after {inactivity_timeout_label()} of inactivity"))
             db.session.commit()
             session.clear()
-            flash("Your session expired after 5 minutes of inactivity. Please log in again.", "warning")
+            flash(f"Your session expired after {inactivity_timeout_label()} of inactivity. Please log in again.", "warning")
             return redirect(url_for("auth.login"))
         mark_session_activity()
         return view(*args, **kwargs)
