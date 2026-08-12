@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">{{ employee_id }} - {{ employee_name }}</h1>
+    <p class="text-muted mb-0">Salary slips issued{% if employee and employee.department %} &middot; {{ employee.department }}{% endif %}{% if employee and employee.designation %} &middot; {{ employee.designation }}{% endif %}</p>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a class="btn btn-outline-secondary" href="{{ url_for('salary_slips.index') }}">Back to salary slips</a>
+    {% if months %}
+    <a class="btn btn-primary" href="{{ url_for('salary_slips.download', employee_id=employee_id) }}" target="_blank" rel="noopener">Download all {{ months|length }} slips</a>
+    {% endif %}
+  </div>
+</div>
+
+{% if pending %}
+<div class="alert alert-info">Not yet issued: {{ pending|join(", ") }}. A slip is released once that month's monthly wage payroll is finalized.</div>
+{% endif %}
+
+{% if years %}
+{# One card per financial year, April to March, because that is the unit a return is
+   filed in. The month chips download a single slip. #}
+{% for year in years %}
+<div class="module-card mb-3">
+  <div class="module-card-header">
+    <h2 class="module-card-title">{{ year.label }} <span class="text-muted">{{ year.count }} slip(s)</span></h2>
+    <div class="module-card-actions">
+      <a class="btn btn-outline-primary" href="{{ url_for('salary_slips.download', employee_id=employee_id, fy=year.value) }}" target="_blank" rel="noopener">Download {{ year.label }}</a>
+    </div>
+  </div>
+  <div class="slip-month-grid">
+    {% for month in year.months %}
+    <a class="slip-month-chip" href="{{ url_for('reports.employee_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">{{ month_labels[month] }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="module-card">
+  <div class="empty-state">No salary slips have been issued to this employee yet. A slip is released once that month's monthly wage payroll is finalized.</div>
+</div>
+{% endif %}
+{% endblock %}

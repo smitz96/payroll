@@ -246,6 +246,7 @@ def create_app(test_config=None):
     from routes.master import bp as master_bp
     from routes.settings import bp as settings_bp
     from routes.reports import bp as reports_bp
+    from routes.salary_slips import bp as salary_slips_bp
     from routes.weekoffs import bp as weekoffs_bp
     from routes.logs import bp as logs_bp
     app.register_blueprint(auth_bp)
@@ -259,6 +260,7 @@ def create_app(test_config=None):
     app.register_blueprint(master_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(reports_bp)
+    app.register_blueprint(salary_slips_bp)
     app.register_blueprint(weekoffs_bp)
     app.register_blueprint(logs_bp)
     return app

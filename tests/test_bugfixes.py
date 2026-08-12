@@ -3688,3 +3688,91 @@ def test_employee_page_offers_the_slip_only_after_finalization(client, app):
     final = client.get("/payroll/2026-07/employee/5").data
     assert b"/reports/2026-07/employee/5.pdf" in final
     assert b"Slip after finalize" not in final
+
+
+# --- Salary slip history: a whole financial year in one file, for ITR filing ---
+
+def seed_slip_history(employee_id="5", months=(("2026-02", True), ("2026-03", False), ("2026-07", True))):
+    """One monthly wage employee paid across several months.
+
+    Each month is finalized or left as a draft per the flag, so the history can be
+    checked against what was actually issued.
+    """
+    db.session.add(Employee(id=employee_id, name="Month Worker", salary_type="Monthly",
+                            normalized_salary_type="MONTHLY", salary=Decimal("30000"),
+                            department="Design", designation="Design Manager"))
+    db.session.add(WeekOffRule(employee_id=employee_id, confirmed_at=datetime.utcnow()))
+    for month, finalized in months:
+        db.session.add(PayrollMonth(month=month, monthly_finalized_at=datetime.utcnow() if finalized else None,
+                                    status="FINALIZED" if finalized else "DRAFT"))
+        db.session.add(SalaryRecord(payroll_month=month, employee_id=employee_id, name="Month Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        year, month_number = (int(part) for part in month.split("-"))
+        for day in (1, 2):
+            when = date(year, month_number, day)
+            db.session.add(AttendanceRecord(payroll_month=month, employee_id=employee_id, employee_name="Month Worker",
+                                            date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                            last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                            actual_minutes=540, parse_status="OK"))
+    db.session.commit()
+    for month, _ in months:
+        calculate_payroll_month(month)
+
+
+def test_slip_history_downloads_every_finalized_month_oldest_first(client, app):
+    with app.app_context():
+        seed_slip_history()
+
+    login(client)
+    response = client.get("/salary-slips/5.pdf")
+    assert response.status_code == 200
+    assert response.mimetype == "application/pdf"
+    pages = PdfReader(BytesIO(response.data)).pages
+    # One slip to a page, April-to-March reading order, and the draft month is absent.
+    assert [page.extract_text().split("Pay Slip: ")[1].split("Days in")[0].strip() for page in pages] == [
+        "February 2026", "July 2026",
+    ]
+
+
+def test_slip_history_can_be_narrowed_to_one_financial_year(client, app):
+    with app.app_context():
+        seed_slip_history(months=(("2026-02", True), ("2026-07", True)))
+
+    login(client)
+    # India's tax year runs April to March: February 2026 belongs to FY 2025-26 and
+    # July 2026 to FY 2026-27, so the two months split across separate files.
+    previous = client.get("/salary-slips/5.pdf?fy=2025")
+    current = client.get("/salary-slips/5.pdf?fy=2026")
+    assert "fy-2025-26" in previous.headers["Content-Disposition"]
+    assert pdf_text(previous.data).count("Pay Slip") == 1
+    assert "February 2026" in pdf_text(previous.data)
+    assert "July 2026" in pdf_text(current.data)
+    assert "February 2026" not in pdf_text(current.data)
+
+
+def test_slip_history_lists_only_employees_who_were_issued_slips(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+    finalize_group(app, "2026-07", "MONTHLY")
+
+    login(client)
+    page = client.get("/salary-slips").data
+    assert b"Month Worker" in page
+    # Daily wage employees are never issued a salary slip.
+    assert b"Day Worker" not in page
+    assert b"/salary-slips/5" in page
+
+
+def test_slip_history_holds_back_a_month_that_is_still_a_draft(client, app):
+    with app.app_context():
+        seed_slip_history(months=(("2026-07", False),))
+
+    login(client)
+    # Nothing has been issued, so the employee is off the list entirely.
+    assert b"/salary-slips/5\"" not in client.get("/salary-slips").data
+    page = client.get("/salary-slips/5").data
+    assert b"No salary slips have been issued to this employee yet." in page
+    assert b"Not yet issued: July 2026" in page
+    blocked = client.get("/salary-slips/5.pdf")
+    assert blocked.status_code == 302
+    assert "/salary-slips/5" in blocked.headers["Location"]

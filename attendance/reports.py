@@ -16,10 +16,10 @@ from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, Simple
 
 from attendance import db
 from attendance.loans import loan_installment_for_loan, loan_paid_before_month, loan_pending_after_month, loan_remaining_before_month, loan_repayment_schedule
-from attendance.models import AttendanceRecord, Employee, Loan, PayrollResult, SalaryRecord
+from attendance.models import AttendanceRecord, Employee, Loan, PayrollMonth, PayrollResult, SalaryRecord
 from attendance.settings import COMPANY_ADDRESS
 from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
-from attendance.utils import format_percent, leave_days, minutes_to_duration, money
+from attendance.utils import format_percent, is_valid_payroll_month, leave_days, minutes_to_duration, money
 
 ONES = [
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -1685,6 +1685,101 @@ def build_attendance_summary_pdf(month, wage_group, employee_id=None):
             ParagraphStyle("Empty", parent=styles["Normal"], fontSize=11, textColor=FAINT),
         ))
     page_callback = _titled_page_callback(f"{title} - {display_month(month)}", variant=variant)
+    doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def slip_months_by_employee():
+    """Every employee's finalized slip months, keyed by employee id.
+
+    The whole-list version of `finalized_slip_months`, so the slip index page does
+    not run one query per employee.
+    """
+    finalized = {
+        row[0] for row in
+        db.session.query(PayrollMonth.month).filter(PayrollMonth.monthly_finalized_at.isnot(None)).all()
+    }
+    months = defaultdict(list)
+    for salary in SalaryRecord.query.filter_by(normalized_salary_type="MONTHLY").all():
+        if salary.payroll_month in finalized:
+            months[salary.employee_id].append(salary.payroll_month)
+    return {employee_id: sorted(values) for employee_id, values in months.items()}
+
+
+def finalized_slip_months(employee_id):
+    """Payroll months this employee was actually issued a salary slip for.
+
+    That is: they were on monthly wage that month *and* monthly payroll has been
+    finalized, so the figures on the slip are the ones that were paid. Draft months
+    are left out — the slip does not exist yet.
+    """
+    rows = (
+        db.session.query(SalaryRecord.payroll_month)
+        .join(PayrollMonth, PayrollMonth.month == SalaryRecord.payroll_month)
+        .filter(
+            SalaryRecord.employee_id == str(employee_id),
+            SalaryRecord.normalized_salary_type == "MONTHLY",
+            PayrollMonth.monthly_finalized_at.isnot(None),
+        )
+        .all()
+    )
+    return sorted({row[0] for row in rows})
+
+
+def pending_slip_months(employee_id):
+    """Months where this employee has monthly wage but payroll is still a draft.
+
+    Shown alongside the issued slips so a missing month reads as "not finalized yet"
+    rather than as data gone astray.
+    """
+    rows = (
+        db.session.query(SalaryRecord.payroll_month)
+        .join(PayrollMonth, PayrollMonth.month == SalaryRecord.payroll_month)
+        .filter(
+            SalaryRecord.employee_id == str(employee_id),
+            SalaryRecord.normalized_salary_type == "MONTHLY",
+            PayrollMonth.monthly_finalized_at.is_(None),
+        )
+        .all()
+    )
+    return sorted({row[0] for row in rows})
+
+
+def build_employee_slip_history_pdf(employee_id, months, title=None):
+    """One employee's salary slips across several months, oldest month first.
+
+    Filing a return works forward through the year, so the months read April to
+    March rather than newest first. Each slip keeps its own page.
+    """
+    months = [month for month in months if is_valid_payroll_month(month)]
+    salaries = {
+        salary.payroll_month: salary
+        for salary in SalaryRecord.query.filter_by(employee_id=str(employee_id)).all()
+        if salary.payroll_month in months
+    }
+    results = {
+        result.payroll_month: result
+        for result in PayrollResult.query.filter_by(employee_id=str(employee_id)).all()
+    }
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=8 * mm, rightMargin=8 * mm, topMargin=8 * mm, bottomMargin=10 * mm)
+    styles = getSampleStyleSheet()
+    available_width = A4[0] - doc.leftMargin - doc.rightMargin
+    story = []
+    for month in months:
+        salary = salaries.get(month)
+        if not salary:
+            continue
+        if story:
+            story.append(PageBreak())
+        story.extend(salary_slip_story(month, salary, results.get(month), styles, available_width))
+    if not story:
+        story.append(Paragraph(
+            "No finalized salary slips were found for this employee in the selected period.",
+            ParagraphStyle("Empty", parent=styles["Normal"], fontSize=11, textColor=FAINT),
+        ))
+    page_callback = _salary_slip_page_callback(title or "Salary Slips")
     doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
     buffer.seek(0)
     return buffer.getvalue()

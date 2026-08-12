@@ -326,6 +326,10 @@ html[data-theme="dark"] .theme-toggle-thumb { transform:translateX(18px); }
 .month-link-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:10px; }
 .month-link { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 14px; border:1px solid var(--smartfill-line); border-radius:var(--r-md); background:var(--ios-surface-2); color:var(--smartfill-ink); text-decoration:none; transition:transform .2s var(--ease-spring), box-shadow .2s var(--ease-spring); }
 .month-link:hover { transform:translateY(-2px); box-shadow:var(--ios-shadow-2); }
+.slip-month-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px; padding:4px 0 2px; }
+.slip-month-chip { display:flex; align-items:center; justify-content:center; padding:11px 12px; border:1px solid var(--smartfill-line); border-radius:var(--r-md); background:var(--ios-surface-2); color:var(--smartfill-ink); font-weight:560; text-decoration:none; transition:transform .2s var(--ease-spring), box-shadow .2s var(--ease-spring); }
+.slip-month-chip:hover { transform:translateY(-2px); box-shadow:var(--ios-shadow-2); color:var(--ios-blue-text); }
+.slip-year-chip { display:inline-block; margin:0 6px 4px 0; padding:3px 9px; border-radius:999px; background:color-mix(in srgb, var(--ios-blue) 12%, transparent); color:var(--ios-blue-text); font-size:.76rem; font-weight:620; white-space:nowrap; }
 @media (max-width: 640px) {
   .table-filter-bar { flex-direction:column; align-items:stretch; }
   .table-filter-bar .form-control { max-width:none; }

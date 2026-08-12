@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">Salary Slips</h1>
+    <p class="text-muted mb-0">Download an employee's salary slips for a full financial year, for income tax filing.</p>
+  </div>
+</div>
+
+<div class="module-card">
+  <div class="module-card-header">
+    <h2 class="module-card-title">Employees with issued slips <span class="text-muted">{{ rows|length }}</span></h2>
+    <div class="module-card-actions"><span class="text-muted">{{ total_slips }} slip(s) available</span></div>
+  </div>
+  {# Only finalized months appear. A draft month has no slip to hand over yet. #}
+  <div class="table-filter-bar">
+    <input class="form-control" id="slipSearch" type="search" placeholder="Search by name, ID or department" autocomplete="off" aria-label="Search employees">
+    <span class="table-filter-count" id="slipSearchCount">{{ rows|length }} employee(s)</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm smart-table" id="slipTable">
+      <thead><tr><th>Employee ID</th><th>Name</th><th>Department</th><th>Slips</th><th>Period covered</th><th>Financial years</th><th></th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.employee_id }}</td>
+          <td class="employee-cell"><strong>{{ row.name }}</strong></td>
+          <td>{{ row.department }}</td>
+          <td>{{ row.count }}</td>
+          <td>{{ row.first_label }}{% if row.count > 1 %} &ndash; {{ row.last_label }}{% endif %}</td>
+          <td>{% for year in row.years %}<span class="slip-year-chip">{{ year.label }}</span>{% endfor %}</td>
+          <td class="text-end"><a class="btn btn-outline-primary btn-sm" href="{{ url_for('salary_slips.employee', employee_id=row.employee_id) }}">Open</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-muted">No salary slips have been issued yet. Finalize a month's monthly wage payroll to release its slips.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const slipSearch = document.getElementById('slipSearch');
+  const slipSearchCount = document.getElementById('slipSearchCount');
+  if (slipSearch) {
+    const bodyRows = Array.from(document.querySelectorAll('#slipTable tbody tr'));
+    const haystack = bodyRows.map((row) => row.textContent.toLowerCase());
+    slipSearch.addEventListener('input', () => {
+      const term = slipSearch.value.trim().toLowerCase();
+      let shown = 0;
+      bodyRows.forEach((row, index) => {
+        const match = !term || haystack[index].includes(term);
+        row.hidden = !match;
+        if (match) shown += 1;
+      });
+      slipSearchCount.textContent = shown + ' employee(s)' + (term ? ' of ' + bodyRows.length : '');
+    });
+  }
+</script>
+{% endblock %}

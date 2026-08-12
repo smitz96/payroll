@@ -134,3 +134,27 @@ def ist_day_to_utc_bounds(day):
     start = datetime.combine(day, time.min, tzinfo=IST).astimezone(timezone.utc)
     end = datetime.combine(day, time.max, tzinfo=IST).astimezone(timezone.utc)
     return start.replace(tzinfo=None), end.replace(tzinfo=None)
+
+
+def financial_year_start(month):
+    """The April-starting financial year a payroll month falls in.
+
+    India's tax year runs April to March, so a slip for January 2026 belongs to
+    FY 2025-26. Returns the starting calendar year, or None for a bad month key.
+    """
+    if not is_valid_payroll_month(month):
+        return None
+    year, month_number = (int(part) for part in str(month).split("-"))
+    return year if month_number >= 4 else year - 1
+
+
+def financial_year_label(start_year):
+    """FY 2025-26 style label for an April-starting financial year."""
+    return f"FY {int(start_year)}-{str(int(start_year) + 1)[-2:]}"
+
+
+def financial_year_months(start_year):
+    """The twelve payroll month keys of a financial year, April first."""
+    start_year = int(start_year)
+    return [f"{start_year}-{number:02d}" for number in range(4, 13)] + \
+           [f"{start_year + 1}-{number:02d}" for number in range(1, 4)]
