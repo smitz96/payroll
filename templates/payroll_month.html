@@ -100,6 +100,16 @@
 {% if missing_salary %}
 <div class="alert alert-warning"><strong>Attendance employees missing wage data</strong><br>{% for id, name in missing_salary.items() %}{{ id }} - {{ name }}: no wage record for this month. Check the wage type and salary in Employee Master, then load wages again.<br>{% endfor %}</div>
 {% endif %}
+{% if left_out %}
+{# A person who has left is still owed for the months they worked, so anyone the run
+   will skip is named here with the reason. #}
+<div class="alert alert-warning">
+  <strong>{{ left_out|length }} employee(s) with wages this month are not included in payroll</strong><br>
+  {% for row in left_out %}
+  {{ row.employee.id }} - {{ row.name }}: {{ row.status|lower }}{% if row.left_on %}, last working day {{ row.left_on.strftime('%d-%m-%Y') }}{% else %}, no last working day recorded &mdash; set one on the employee to pay their final month{% endif %}.<br>
+  {% endfor %}
+</div>
+{% endif %}
 {% if mismatches %}
 <div class="alert alert-warning"><strong>Name mismatches</strong><br>{% for id, attendance_name, salary_name in mismatches %}{{ id }}: matched by Employee ID. Attendance: {{ attendance_name }}, Wage Master: {{ salary_name }}<br>{% endfor %}</div>
 {% endif %}

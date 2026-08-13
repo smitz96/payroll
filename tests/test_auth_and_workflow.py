@@ -324,14 +324,24 @@ def test_employee_master_locks_wage_type_and_requires_disable_confirmation(clien
         "disable_confirmation": "wrong",
     }, follow_redirects=True)
     assert b"disable this employee" in bad_disable.data
-    good_disable = client.post("/master", data={
+    # The last working day is required: it decides the final month they are paid for.
+    no_date = client.post("/master", data={
         "action": "disable",
         "employee_id": "5",
         "employment_status": "LEFT",
         "inactive_reason": "resigned",
         "disable_confirmation": "confirm",
     }, follow_redirects=True)
-    assert b"Employee marked as inactive" in good_disable.data
+    assert b"last working day" in no_date.data
+    good_disable = client.post("/master", data={
+        "action": "disable",
+        "employee_id": "5",
+        "employment_status": "LEFT",
+        "inactive_reason": "resigned",
+        "disable_confirmation": "confirm",
+        "left_on": "31-07-2026",
+    }, follow_redirects=True)
+    assert b"marked as left, last working day 31-07-2026" in good_disable.data
     with app.app_context():
         employee = db.session.get(Employee, "5")
         assert employee.normalized_salary_type == "MONTHLY"

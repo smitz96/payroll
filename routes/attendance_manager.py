@@ -187,8 +187,25 @@ def month(month):
             try:
                 rows = parse_register_upload(request.files.get("register_csv"))
                 applied, cleared, read = apply_register_import(rows, month, current_username())
-                flash(f"Attendance register imported. {applied} day status(es) applied, "
-                      f"{cleared} cleared, {read} row(s) read. Submit attendance to recalculate payroll.", "success")
+                message = (f"Attendance register imported. {applied} day status(es) applied, "
+                           f"{cleared} cleared, {read} row(s) read.")
+                if applied or cleared:
+                    # The register changes which days are payable, so any calculated
+                    # figures no longer follow from the attendance. Clear them and put
+                    # the month back to pending, exactly as editing punches does;
+                    # otherwise the payroll page keeps showing the old numbers and the
+                    # month could be finalized on them.
+                    stale = PayrollResult.query.filter_by(payroll_month=month).delete()
+                    payroll_month.attendance_submitted = False
+                    db.session.add(payroll_month)
+                    db.session.add(AuditLog(
+                        actor=current_username(),
+                        action="Attendance Register Applied",
+                        detail=f"{month}: {applied} applied, {cleared} cleared; {stale} payroll result(s) cleared for recalculation",
+                    ))
+                    db.session.commit()
+                    message += f" {stale} calculated result(s) cleared - submit attendance to recalculate payroll."
+                flash(message, "success")
             except Exception as exc:
                 db.session.rollback()
                 flash(str(exc), "danger")

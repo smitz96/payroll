@@ -1139,7 +1139,7 @@ def test_master_export_leads_with_sample_rows(client, app):
     login(client)
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
-    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus")
+    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus,Status,Last Working Day")
     assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
     assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
     # The sample IDs cannot be mistaken for an employee number, so a reader never
@@ -2102,9 +2102,10 @@ def test_bonus_flag_round_trips_through_export_and_import(client, app):
     export = client.get("/master/export.csv").data.decode()
     assert "Ignore Monthly Bonus" in export.splitlines()[0]
     rows = {line.split(",")[0]: line for line in export.splitlines()}
-    assert rows["6"].endswith("Yes")
+    # The bonus flag sits just before the status columns.
+    assert ",Yes,ACTIVE," in rows["6"]
     # Monthly employees leave the column blank, the same way daily leaves Basic blank.
-    assert rows["5"].endswith(",")
+    assert ",,ACTIVE," in rows["5"]
 
     # Re-importing an untouched export is a no-op, not an error.
     assert b"imported" in import_master(client, export.encode()).data
@@ -4145,3 +4146,182 @@ def test_accrual_is_not_credited_for_leave_that_was_withdrawn(app):
         expected = (paid / Decimal(30) * Decimal(2)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
         assert Decimal(result.leave_earned) == expected
         assert Decimal(result.lop_days) > 0
+
+
+# --- V0.08 audit ---
+
+def test_a_register_import_clears_the_figures_it_invalidates(client, app):
+    """Stale pay must not survive a change to which days are payable.
+
+    Editing punches clears the month's results; importing the register writes the
+    same day statuses, so it has to do the same. Otherwise the payroll page keeps
+    showing figures that no longer follow from the attendance, and the month can be
+    finalized on them.
+    """
+    with app.app_context():
+        seed_register_month()
+        calculate_payroll_month("2026-07")
+        month = db.session.get(PayrollMonth, "2026-07")
+        month.attendance_submitted = True
+        db.session.commit()
+        before = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(before.paid_working_days) == Decimal("1")
+
+    login(client)
+    csv_body = "Employee ID,Date,Register Status\n5,02-07-2026,Worked On-Site\n"
+    response = client.post("/attendance/2026-07", data={
+        "action": "import_register",
+        "register_csv": (BytesIO(csv_body.encode()), "register.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"calculated result(s) cleared" in response.data
+
+    with app.app_context():
+        assert PayrollResult.query.filter_by(payroll_month="2026-07").count() == 0
+        assert db.session.get(PayrollMonth, "2026-07").attendance_submitted is False
+        # Recalculating picks the day up, so nothing was lost by clearing it.
+        calculate_payroll_month("2026-07")
+        after = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(after.paid_working_days) == Decimal("2")
+
+
+def test_a_register_import_that_changes_nothing_leaves_the_figures_alone(client, app):
+    """A blank register must not throw away a calculated month for no reason."""
+    with app.app_context():
+        seed_register_month()
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    csv_body = "Employee ID,Date,Register Status\n5,02-07-2026,\n"
+    response = client.post("/attendance/2026-07", data={
+        "action": "import_register",
+        "register_csv": (BytesIO(csv_body.encode()), "register.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"calculated result(s) cleared" not in response.data
+    with app.app_context():
+        assert PayrollResult.query.filter_by(payroll_month="2026-07").count() == 1
+
+
+def test_a_leaver_is_still_paid_for_the_month_they_worked(client, app):
+    """Marking someone Left must not delete the pay they are owed for that month."""
+    with app.app_context():
+        seed_two_wage_groups()
+        calculate_payroll_month("2026-07")
+        assert PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").count() == 1
+
+    login(client)
+    client.post("/master", data={
+        "action": "disable", "employee_id": "5", "employment_status": "LEFT",
+        "inactive_reason": "resigned", "disable_confirmation": "confirm",
+        "left_on": "31-07-2026",
+    }, follow_redirects=True)
+
+    with app.app_context():
+        calculate_payroll_month("2026-07")
+        july = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").first()
+        assert july is not None, "the month they left in must still be paid"
+        assert Decimal(july.final_salary) > 0
+        # And they are gone from the month after, without anyone having to remember.
+        db.session.add(PayrollMonth(month="2026-08"))
+        db.session.add(SalaryRecord(payroll_month="2026-08", employee_id="5", name="Month Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("30000")))
+        when = date(2026, 8, 3)
+        db.session.add(AttendanceRecord(payroll_month="2026-08", employee_id="5", employee_name="Month Worker",
+                                        date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                        last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                        actual_minutes=540, parse_status="OK"))
+        db.session.commit()
+        calculate_payroll_month("2026-08")
+        assert PayrollResult.query.filter_by(payroll_month="2026-08", employee_id="5").count() == 0
+
+
+def test_an_employee_left_out_of_a_month_is_named_on_the_payroll_page(client, app):
+    """A person can never drop out of a run unnoticed."""
+    with app.app_context():
+        seed_two_wage_groups()
+        employee = db.session.get(Employee, "5")
+        employee.employment_status = "TERMINATED"   # no last working day, as on older data
+        db.session.commit()
+
+    login(client)
+    page = client.get("/payroll/2026-07").data
+    assert b"not included in payroll" in page
+    assert b"no last working day recorded" in page
+    assert b"Month Worker" in page
+
+
+def test_the_last_working_day_round_trips_through_the_master_export(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    client.post("/master", data={
+        "action": "disable", "employee_id": "5", "employment_status": "LEFT",
+        "inactive_reason": "resigned", "disable_confirmation": "confirm",
+        "left_on": "15-07-2026",
+    }, follow_redirects=True)
+    export = client.get("/master/export.csv").data
+    assert b"LEFT,15-07-2026" in export
+
+    response = import_master(client, export)
+    assert b"imported" in response.data
+    with app.app_context():
+        employee = db.session.get(Employee, "5")
+        assert employee.employment_status == "LEFT"
+        assert employee.left_on == date(2026, 7, 15)
+
+
+def test_marking_a_leaver_by_import_requires_the_last_working_day(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    csv_body = ("Employee ID,Name,Wage Type,Salary,Status,Last Working Day\n"
+                "5,Month Worker,Monthly,30000,LEFT,\n").encode()
+    response = import_master(client, csv_body)
+    assert b"Last Working Day is required" in response.data
+    with app.app_context():
+        assert db.session.get(Employee, "5").employment_status == "ACTIVE"
+
+
+def test_a_new_month_cannot_start_while_an_earlier_one_is_open(client, app):
+    """A month opens on the previous month's closing balance, so that month is settled first."""
+    with app.app_context():
+        seed_two_wage_groups()          # creates 2026-07, left as a draft
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    blocked = client.post("/payroll/new", data={"month": "2026-08"}, follow_redirects=True)
+    assert b"Finalize July 2026 before starting August 2026" in blocked.data
+    with app.app_context():
+        assert db.session.get(PayrollMonth, "2026-08") is None
+    # And the page says so before anyone picks a month.
+    assert b"Finish July 2026 first" in client.get("/payroll/new").data
+
+    finalize_group(app, "2026-07", "MONTHLY")
+    finalize_group(app, "2026-07", "DAILY")
+    allowed = client.post("/payroll/new", data={"month": "2026-08"}, follow_redirects=True)
+    assert b"before starting August 2026" not in allowed.data
+    with app.app_context():
+        assert db.session.get(PayrollMonth, "2026-08") is not None
+
+
+def test_the_first_month_in_the_system_starts_freely(client, app):
+    """There is no previous balance to settle, so nothing is in the way."""
+    login(client)
+    response = client.post("/payroll/new", data={"month": "2026-07"}, follow_redirects=True)
+    assert b"before starting July 2026" not in response.data
+    with app.app_context():
+        assert db.session.get(PayrollMonth, "2026-07") is not None
+
+
+def test_reopening_an_existing_month_is_never_blocked(client, app):
+    """The gate is about starting a new month, not about revisiting one."""
+    with app.app_context():
+        seed_two_wage_groups()
+        db.session.add(PayrollMonth(month="2026-08"))
+        db.session.commit()
+
+    login(client)
+    response = client.post("/payroll/new", data={"month": "2026-08"}, follow_redirects=True)
+    assert b"Finalize July 2026" not in response.data

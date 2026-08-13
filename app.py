@@ -51,6 +51,11 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN normalized_salary_type VARCHAR(80)"))
         if "salary" not in employee_columns:
             db.session.execute(db.text("ALTER TABLE employee ADD COLUMN salary NUMERIC(12, 2) NOT NULL DEFAULT 0"))
+        # Left blank for anyone already marked Left or Terminated: nobody recorded a
+        # last working day at the time, so payroll keeps leaving them out until one is
+        # entered, and the payroll month page says who is being left out.
+        if "left_on" not in employee_columns:
+            db.session.execute(db.text("ALTER TABLE employee ADD COLUMN left_on DATE"))
         # `ot_enabled` was inverted into `ot_ignored`, and `less_hours_exempt` renamed
         # to `less_hours_ignored`, so both columns now read the same way as the form.
         if "ot_ignored" not in employee_columns:

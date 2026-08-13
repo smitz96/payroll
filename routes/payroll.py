@@ -13,7 +13,7 @@ from attendance.calculator import attendance_missing_salary, calculate_employee_
 from attendance.advances import advance_deduction_for_employee, advances_for_payroll_month
 from attendance.holidays import holiday_dates_for_records
 from attendance.loans import active_loans_for_employee, employee_has_loan, loan_installment_for_employee, loan_skip_for_employee
-from attendance.master import employee_active_for_payroll_month, sync_salary_records_from_master
+from attendance.master import employee_active_for_payroll_month, employees_left_out_of_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv
 from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave, salary_days_for_month
@@ -28,6 +28,7 @@ from attendance.wage_groups import (
     finalize_group,
     group_summary,
     is_group_finalized,
+    months_open_before,
     normalize_group,
     unlock_group,
 )
@@ -517,6 +518,18 @@ def new():
         if not is_valid_payroll_month(month):
             flash("Select a valid payroll month in YYYY-MM format.", "danger")
             return redirect(url_for("payroll.new"))
+        # A new month opens on the previous month's closing leave balance, so that
+        # month has to be settled first. The very first month in the system has
+        # nothing behind it and starts freely.
+        open_before = months_open_before(month)
+        if open_before and not db.session.get(PayrollMonth, month):
+            flash(
+                f"Finalize {', '.join(display_month(item) for item in open_before)} before starting "
+                f"{display_month(month)}. A new month opens on the previous month's closing leave "
+                "balance, which can still change while that month is open.",
+                "danger",
+            )
+            return redirect(url_for("payroll.new"))
         ensure_month(month)
         db.session.add(AuditLog(actor=current_username(), action="Payroll Month Created", detail=month))
         db.session.commit()
@@ -524,9 +537,14 @@ def new():
     # Existing months are offered as links so a returning user does not have to
     # retype a month that is already open.
     months = PayrollMonth.query.order_by(PayrollMonth.month.desc()).limit(12).all()
+    # Say which months are in the way before the form is submitted, rather than
+    # letting someone pick a month and be turned away.
+    unsettled = [item.month for item in PayrollMonth.query.order_by(PayrollMonth.month).all()
+                 if item.status != "FINALIZED"]
     return render_template(
         "payroll_new.html",
         default_month=previous_calendar_month(),
+        unsettled_months=[{"month": item, "label": display_month(item)} for item in unsettled],
         recent_months=[{"month": item.month, "label": display_month(item.month),
                         "status": item.status} for item in months],
     )
@@ -679,6 +697,10 @@ def month(month):
     attendance_count = AttendanceRecord.query.filter_by(payroll_month=month).count()
     missing_salary = attendance_missing_salary(month)
     mismatches = name_mismatches(month)
+    # Someone who has left is still owed for the months they worked. Anyone with
+    # wages for this month that payroll will not include is named, so a person
+    # can never drop out of a run unnoticed.
+    left_out = employees_left_out_of_month(month)
     wage_types = sorted({s.normalized_salary_type or "MISSING" for s in salaries})
     wage_filter = normalize_group(request.args.get("wage")) if request.args.get("wage") else None
     groups = group_summary(month, payroll_month)
@@ -698,6 +720,7 @@ def month(month):
         results=results,
         attendance_count=attendance_count,
         missing_salary=missing_salary,
+        left_out=left_out,
         mismatches=mismatches,
         wage_types=wage_types,
         steps=steps,

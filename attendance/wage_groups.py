@@ -139,3 +139,17 @@ def group_summary(month, payroll_month):
             "finalized_at": group_finalized_at(payroll_month, group),
         })
     return summary
+
+
+def months_open_before(month):
+    """Earlier payroll months that have not been finalized, oldest first.
+
+    A month's opening leave balance is the previous month's closing figure, so
+    starting a new month while an earlier one is still being edited means the new
+    month is built on a number that can still move.
+    """
+    return [
+        item.month for item in
+        PayrollMonth.query.filter(PayrollMonth.month < month).order_by(PayrollMonth.month).all()
+        if item.status != "FINALIZED"
+    ]

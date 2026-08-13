@@ -4,7 +4,7 @@ from decimal import Decimal
 from attendance import db
 from attendance.employee_defaults import ensure_employee_defaults
 from attendance.models import AuditLog, Employee, SalaryRecord
-from attendance.utils import clean, decimal_money, normalize_salary_type
+from attendance.utils import clean, decimal_money, is_valid_payroll_month, normalize_salary_type, parse_csv_date
 
 ACTIVE_STATUS = "ACTIVE"
 # Only ACTIVE employees are included in payroll. INACTIVE is a reversible pause;
@@ -83,15 +83,43 @@ def active_master_employees():
 
 
 def employee_active_for_payroll_month(employee, payroll_month):
-    """Only ACTIVE employees take part in payroll.
+    """Whether this employee belongs in a given payroll month.
 
-    Marking someone Inactive, Left or Terminated removes them from every open
-    payroll month immediately, including one they have already been calculated in;
-    recalculate that month to drop their result.
+    Someone who has left is still owed for the months they worked, so the test is
+    against their last working day rather than against today: they take part in
+    every month up to and including the one they left in, and none after it.
+
+    With no last working day recorded there is nothing to compare, so they stay out
+    of every month - the payroll page names anyone left out this way, so it is a
+    prompt to enter the date rather than a silent omission.
     """
     if not employee:
         return True
-    return employee.employment_status == ACTIVE_STATUS
+    if employee.employment_status == ACTIVE_STATUS:
+        return True
+    left_on = getattr(employee, "left_on", None)
+    if not left_on or not is_valid_payroll_month(payroll_month):
+        return False
+    return payroll_month <= left_on.strftime("%Y-%m")
+
+
+def employees_left_out_of_month(payroll_month):
+    """Employees with wages for the month that payroll will not include.
+
+    Only those whose last working day is missing or earlier than the month, so the
+    list is a to-do rather than a roll of everyone who has ever left.
+    """
+    left_out = []
+    for salary in SalaryRecord.query.filter_by(payroll_month=payroll_month).all():
+        employee = db.session.get(Employee, salary.employee_id)
+        if employee and not employee_active_for_payroll_month(employee, payroll_month):
+            left_out.append({
+                "employee": employee,
+                "name": salary.name or employee.name,
+                "status": employee.employment_status,
+                "left_on": employee.left_on,
+            })
+    return sorted(left_out, key=lambda row: employee_sort_value(row["employee"]))
 
 
 def employee_master_export_rows():
@@ -120,6 +148,10 @@ def employee_master_export_rows():
             # The attendance bonus is a daily wage rule, so the column is blank for
             # monthly just as the breakup columns are blank for daily.
             "Ignore Monthly Bonus": ("Yes" if employee.bonus_ignored else "No") if daily else "",
+            "Status": employee.employment_status or ACTIVE_STATUS,
+            # Blank for anyone still working. For a leaver this is the date that
+            # decides their final payroll month, so it has to survive the round trip.
+            "Last Working Day": employee.left_on.strftime("%d-%m-%Y") if employee.left_on else "",
         })
     return list(EMPLOYEE_MASTER_SAMPLE_ROWS) + rows
 
@@ -127,7 +159,7 @@ def employee_master_export_rows():
 EMPLOYEE_MASTER_EXPORT_COLUMNS = [
     "Employee ID", "Name", "Department", "Designation", "Wage Type", "Salary",
     "Basic", "HRA", "Allowance", "TDS", "PF", "ESIC", "Ignore OT", "Ignore Less Hours",
-    "Ignore Monthly Bonus",
+    "Ignore Monthly Bonus", "Status", "Last Working Day",
 ]
 
 # Illustrative rows shipped at the top of the export so the expected shape of every
@@ -143,6 +175,7 @@ EMPLOYEE_MASTER_SAMPLE_ROWS = [
         "Basic": "35000", "HRA": "10000", "Allowance": "5000", "TDS": "2500",
         "PF": "Yes", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Ignore Monthly Bonus": "",
+    "Status": "ACTIVE", "Last Working Day": "",
     },
     {
         "Employee ID": "EXAMPLE-DAILY", "Name": "Example Daily Employee", "Department": "Mechanical Production",
@@ -150,6 +183,7 @@ EMPLOYEE_MASTER_SAMPLE_ROWS = [
         "Basic": "0", "HRA": "0", "Allowance": "0", "TDS": "",
         "PF": "No", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Ignore Monthly Bonus": "No",
+    "Status": "ACTIVE", "Last Working Day": "",
     },
 ]
 # Exports taken before the rename still carry the old rows, so they stay recognised
@@ -163,6 +197,85 @@ SAMPLE_ROW_KEYS = (
 def is_sample_row(row):
     """True for the illustrative rows the export adds, so import can skip them."""
     return (clean(row.get("Employee ID")), clean(row.get("Name"))) in SAMPLE_ROW_KEYS
+
+
+def disabled_row_conflicts(employee, row):
+    """Fields a disabled employee's import row tries to change, other than status.
+
+    An export of the master carries everyone, leavers included, so re-importing an
+    untouched file has to be a no-op rather than an error. Their status and last
+    working day stay editable - a wrong leaving date has to be correctable, and it
+    decides which payroll month they last belong to - but nothing else about someone
+    off the payroll can be edited until they are enabled again.
+    """
+    conflicts = []
+
+    def differs(column, current, parse=clean):
+        if column not in row:
+            return
+        value = clean(row.get(column))
+        if value and parse(value) != current:
+            conflicts.append(column)
+
+    differs("Department", employee.department or "")
+    differs("Designation", employee.designation or "")
+    if clean(row.get("Wage Type")) and normalize_salary_type(row.get("Wage Type")) != normalize_salary_type(employee.salary_type):
+        conflicts.append("Wage Type")
+    if clean(row.get("Salary")):
+        try:
+            if decimal_money(row.get("Salary")) != Decimal(employee.salary or 0):
+                conflicts.append("Salary")
+        except ValueError:
+            conflicts.append("Salary")
+    for key, label in SALARY_COMPONENTS + MONTHLY_ONLY_AMOUNTS:
+        column = next((name for name in COMPONENT_COLUMN_ALIASES.get(key, (label,)) if name in row), None)
+        if not column or not clean(row.get(column)):
+            continue
+        try:
+            if decimal_money(row.get(column)) != Decimal(getattr(employee, key) or 0):
+                conflicts.append(label)
+        except ValueError:
+            conflicts.append(label)
+    for key, label in COMPLIANCE_FLAGS + DAILY_ONLY_FLAGS + (("ot_ignored", "Ignore OT"), ("less_hours_ignored", "Ignore Less Hours")):
+        if label not in row or not clean(row.get(label)):
+            continue
+        try:
+            if parse_yes_no(row.get(label), label) != bool(getattr(employee, key)):
+                conflicts.append(label)
+        except ValueError:
+            conflicts.append(label)
+    return conflicts
+
+
+def apply_status_columns(employee, row, row_number, changes):
+    """Read the Status and Last Working Day columns, if the file carries them.
+
+    The two travel together: a leaver's final payroll month is decided by the date,
+    so a status without one is rejected rather than half-applied.
+    """
+    if "Status" not in row or not clean(row.get("Status")):
+        return
+    requested = clean(row.get("Status")).upper()
+    if requested not in EMPLOYMENT_STATUS_KEYS:
+        raise ValueError(f"Row {row_number}: Status must be one of "
+                         + ", ".join(key for key, _label in EMPLOYMENT_STATUSES) + ".")
+    last_day = clean(row.get("Last Working Day"))
+    if requested in DISABLED_STATUSES and not last_day:
+        raise ValueError(f"Row {row_number}: Last Working Day is required to mark "
+                         f"employee {employee.id} as {requested.lower()}.")
+    parsed_day = None
+    if last_day and requested != ACTIVE_STATUS:
+        try:
+            parsed_day = parse_csv_date(last_day)
+        except ValueError as exc:
+            raise ValueError(f"Row {row_number}: Last Working Day: {exc}") from exc
+    if requested != (employee.employment_status or ACTIVE_STATUS):
+        changes.append(f"Status {employee.employment_status or ACTIVE_STATUS} -> {requested}")
+        employee.employment_status = requested
+        employee.inactive_at = None if requested == ACTIVE_STATUS else datetime.utcnow()
+    if parsed_day != employee.left_on:
+        changes.append(f"Last Working Day {employee.left_on or 'Not Set'} -> {parsed_day or 'Not Set'}")
+        employee.left_on = parsed_day
 
 
 def apply_employee_master_import(rows, actor):
@@ -201,7 +314,23 @@ def apply_employee_master_import(rows, actor):
             db.session.flush()
             created_ids.append(f"{employee_id} - {imported_name}")
         elif employee.employment_status in DISABLED_STATUSES:
-            raise ValueError(f"Row {row_number}: Disabled employee {employee_id} cannot be edited.")
+            conflicts = disabled_row_conflicts(employee, row)
+            if conflicts:
+                raise ValueError(
+                    f"Row {row_number}: Disabled employee {employee_id} cannot be edited "
+                    f"({', '.join(conflicts)}). Set them back to Active first."
+                )
+            status_changes = []
+            apply_status_columns(employee, row, row_number, status_changes)
+            if status_changes:
+                db.session.add(employee)
+                db.session.add(AuditLog(
+                    actor=actor,
+                    action="Employee Master Bulk Updated",
+                    detail=f"{employee.id} - {employee.name}; " + " | ".join(status_changes),
+                ))
+                changed.append(employee)
+            continue
 
         existing_type = normalize_salary_type(employee.salary_type)
         if existing_type and normalized_type and existing_type != normalized_type:
@@ -328,6 +457,8 @@ def apply_employee_master_import(rows, actor):
                 if flag != bool(getattr(employee, key)):
                     changes.append(f"{label} {'Yes' if getattr(employee, key) else 'No'} -> {'Yes' if flag else 'No'}")
                     setattr(employee, key, flag)
+
+        apply_status_columns(employee, row, row_number, changes)
 
         for field, label in (("ot_ignored", "Ignore OT"), ("less_hours_ignored", "Ignore Less Hours")):
             if label not in row:
@@ -470,6 +601,7 @@ def save_master_employee(form, actor):
     new_status = requested_status or (ACTIVE_STATUS if created else old_status)
     employee.employment_status = new_status
     if new_status == ACTIVE_STATUS:
+        employee.left_on = None
         employee.inactive_at = None
         employee.inactive_reason = None
     elif new_status != old_status:
@@ -519,7 +651,7 @@ def save_master_employee(form, actor):
     return employee
 
 
-def disable_master_employee(employee_id, status, reason, confirmation, actor):
+def disable_master_employee(employee_id, status, reason, confirmation, actor, left_on=None):
     status = clean(status).upper()
     if status not in DISABLED_STATUSES:
         raise ValueError("Select Left or Terminated.")
@@ -528,11 +660,25 @@ def disable_master_employee(employee_id, status, reason, confirmation, actor):
     employee = db.session.get(Employee, employee_id)
     if not employee:
         raise ValueError("Employee was not found.")
+    # The last working day decides the final month they are paid for, so it is
+    # required rather than optional: without it they drop out of payroll entirely.
+    if not clean(left_on):
+        raise ValueError("Enter the employee's last working day. It decides the last month they are paid for.")
+    try:
+        last_day = parse_csv_date(left_on)
+    except ValueError as exc:
+        raise ValueError(f"Last working day: {exc}") from exc
     employee.employment_status = status
+    employee.left_on = last_day
     employee.inactive_at = datetime.utcnow()
     employee.inactive_reason = clean(reason)
     db.session.add(employee)
-    db.session.add(AuditLog(actor=actor, action="Employee Master Disabled", detail=f"{employee.id} - {employee.name}; Status {status}; {employee.inactive_reason or 'No reason'}"))
+    db.session.add(AuditLog(
+        actor=actor,
+        action="Employee Master Disabled",
+        detail=(f"{employee.id} - {employee.name}; Status {status}; "
+                f"Last working day {last_day.strftime('%d-%m-%Y')}; {employee.inactive_reason or 'No reason'}"),
+    ))
     return employee
 
 
@@ -547,6 +693,7 @@ def enable_master_employee(employee_id, confirmation, actor):
     old_status = employee.employment_status
     old_reason = employee.inactive_reason
     employee.employment_status = ACTIVE_STATUS
+    employee.left_on = None
     employee.inactive_at = None
     employee.inactive_reason = None
     db.session.add(employee)

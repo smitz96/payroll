@@ -46,6 +46,10 @@ class Employee(db.Model):
     # Daily wage only: excludes the employee from the monthly attendance bonus.
     bonus_ignored = db.Column(db.Boolean, default=False, nullable=False)
     employment_status = db.Column(db.String(32), default="ACTIVE", nullable=False)
+    # The employee's last working day. `inactive_at` records when someone pressed the
+    # button; this records the day the employment actually ended, which is what
+    # decides the last payroll month they belong in.
+    left_on = db.Column(db.Date)
     inactive_at = db.Column(db.DateTime)
     inactive_reason = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

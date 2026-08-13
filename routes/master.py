@@ -17,6 +17,7 @@ from attendance.master import (
     save_master_employee,
 )
 from attendance.models import Employee
+from attendance.utils import display_month
 
 bp = Blueprint("master", __name__, url_prefix="/master")
 
@@ -52,14 +53,17 @@ def index():
         action = request.form.get("action", "save")
         try:
             if action == "disable":
-                disable_master_employee(
+                employee = disable_master_employee(
                     request.form.get("employee_id", "").strip(),
                     request.form.get("employment_status", "").strip(),
                     request.form.get("inactive_reason", "").strip(),
                     request.form.get("disable_confirmation", "").strip(),
                     current_username(),
+                    left_on=request.form.get("left_on", "").strip(),
                 )
-                flash("Employee marked as inactive.", "success")
+                flash(f"{employee.name} marked as {employee.employment_status.lower()}, last working day "
+                      f"{employee.left_on.strftime('%d-%m-%Y')}. Payroll up to "
+                      f"{display_month(employee.left_on.strftime('%Y-%m'))} still includes them.", "success")
             elif action == "enable":
                 enable_master_employee(
                     request.form.get("employee_id", "").strip(),

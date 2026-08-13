@@ -47,7 +47,12 @@
         <td>{{ "Yes" if employee.ot_ignored else "No" }}</td>
         <td>{{ "Yes" if employee.less_hours_ignored else "No" }}</td>
         <td>{{ ("Yes" if employee.bonus_ignored else "No") if employee.normalized_salary_type == "DAILY" else "—" }}</td>
-        <td><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></td>
+        <td>
+          <span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span>
+          {% if employee.employment_status != 'ACTIVE' %}
+          <div class="status-note">{% if employee.left_on %}Last day {{ employee.left_on.strftime('%d-%m-%Y') }}{% else %}No last working day recorded{% endif %}</div>
+          {% endif %}
+        </td>
         <td>
           {# Marking someone left is rare and irreversible-ish, so it reads as a quiet
              link rather than a red button repeated down every row. #}
@@ -309,6 +314,11 @@
       <option value="LEFT">Left</option>
       <option value="TERMINATED">Terminated</option>
     </select>
+    {# The last working day decides the final month this person is paid for, so it is
+       asked for here rather than inferred from the day the button was pressed. #}
+    <label class="form-label" for="leftOnInput">Last working day</label>
+    <input class="form-control mb-1" id="leftOnInput" name="left_on" type="date" required>
+    <small class="text-muted d-block mb-3">Payroll includes them up to and including this month, and not after it.</small>
     <label class="form-label">Reason</label>
     <input class="form-control mb-3" name="inactive_reason" placeholder="Optional">
     <label class="form-label" for="disableConfirmationInput">Type confirm to continue</label>

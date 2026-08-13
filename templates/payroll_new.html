@@ -15,6 +15,15 @@
       <label class="form-label" for="payrollMonth">Payroll month</label>
       <input class="form-control" id="payrollMonth" type="month" name="month" value="{{ default_month }}" required>
       <p class="text-muted mt-2 mb-3">Defaults to last month, which is the one usually being processed.</p>
+      {% if unsettled_months %}
+      {# A month opens on the previous month's closing leave balance, so an earlier
+         month still being edited has to be settled before a later one starts. #}
+      <div class="alert alert-warning">
+        <strong>Finish {{ unsettled_months|map(attribute='label')|join(', ') }} first.</strong>
+        A new month opens on the previous month's closing leave balance, which can still change while
+        that month is open. Reopening an existing month below is unaffected.
+      </div>
+      {% endif %}
       <button class="btn btn-primary w-100">Open payroll month</button>
     </form>
   </div>
