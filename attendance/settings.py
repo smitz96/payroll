@@ -38,7 +38,7 @@ MONTHLY_RULE_LABELS = {
     "SALARY_CALCULATION_DAYS": ("Salary days per month", "Monthly salary is divided by this for the daily LOP rate. Set to 0 to divide by the actual days in each month."),
     "SALARY_HOURS_PER_DAY": ("Salary hours per day", "Hourly rate is the daily rate / this."),
     "OVERTIME_MULTIPLIER": ("Overtime multiplier", "Overtime is paid at this multiple of the ordinary hourly rate."),
-    "LEAVE_EARNED_PER_MONTH": ("Leave earned per full month", "Pro-rated by paid days and truncated to one decimal."),
+    "LEAVE_EARNED_PER_MONTH": ("Leave earned per full month", "Pro-rated by the days that end up paid, and truncated rather than rounded so the accrual never overshoots."),
     "MAX_SESSION_MINUTES": ("Maximum overnight session", "An In/Out pair that crosses midnight and runs longer than this is flagged as a punch error instead of being paid. Long same-day shifts are unaffected."),
 }
 

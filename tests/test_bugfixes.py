@@ -2,7 +2,7 @@
 import pathlib
 import re
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from io import BytesIO
 
 from pypdf import PdfReader
@@ -1464,10 +1464,12 @@ def test_absences_consume_leave_then_fall_to_lop(app):
         # ... and the fourth by half, with the other half unpaid.
         assert by_date["2026-07-22"]["attendance_status"] == "Half-Day Paid Leave / Half-Day LOP"
 
-        # Two decimals keep the accrual a single decimal used to truncate away.
-        assert Decimal(result.leave_earned) == Decimal("1.87")
+        # The accrual is pro-rated by the days that ended up paid - 30.5 of 31, since
+        # half of 22 July went unpaid - rather than by the count before the leave it
+        # granted was spent. Two decimals keep what a single decimal truncated away.
+        assert Decimal(result.leave_earned) == Decimal("1.96")
         assert Decimal(result.leave_used) == Decimal("3.5")
-        assert Decimal(result.closing_leave) == Decimal("0.37")
+        assert Decimal(result.closing_leave) == Decimal("0.46")
         assert Decimal(result.lop_days) == Decimal("0.5")
 
 
@@ -4108,3 +4110,38 @@ def test_a_manual_unpaid_leave_override_is_never_covered_by_leave(app):
         by_date = {row["date"]: row["attendance_status"] for row in result.detail_json}
         assert by_date["2026-07-02"] == "Unpaid Leave / LOP"
         assert Decimal(result.leave_used) == Decimal("0")
+
+
+def test_leave_accrual_matches_the_documented_formula(app):
+    """Accrual is 2 days x paid days / days in month, on the FINAL paid-day count.
+
+    Settling it in one pass computed the figure from a paid-day count that predated
+    the leave it granted, so it read low for anyone who spent leave and high for
+    anyone whose leave was later withdrawn for want of a balance.
+    """
+    with app.app_context():
+        seed_leave_month(opening=Decimal("2"))
+        add_july_attendance({3, 10, 14, 22})
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+
+        paid = (Decimal(result.paid_working_days) + Decimal(result.week_offs)
+                + Decimal(result.paid_leaves) + Decimal(result.holidays or 0))
+        expected = (paid / Decimal(31) * Decimal(2)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        assert Decimal(result.leave_earned) == expected
+        # And the accrual is settled, not a snapshot: recalculating changes nothing.
+        calculate_payroll_month("2026-07")
+        again = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(again.leave_earned) == Decimal(result.leave_earned)
+        assert Decimal(again.leave_used) == Decimal(result.leave_used)
+
+
+def test_accrual_is_not_credited_for_leave_that_was_withdrawn(app):
+    """A sandwich day with no balance behind it is loss of pay, so it earns nothing."""
+    with app.app_context():
+        by_date, result = seed_boundary_month("2026-11", 2026, 11, absent_days={7, 9})
+        paid = (Decimal(result.paid_working_days) + Decimal(result.week_offs)
+                + Decimal(result.paid_leaves) + Decimal(result.holidays or 0))
+        expected = (paid / Decimal(30) * Decimal(2)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+        assert Decimal(result.leave_earned) == expected
+        assert Decimal(result.lop_days) > 0

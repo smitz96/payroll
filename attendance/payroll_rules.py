@@ -76,54 +76,75 @@ class MonthlyPayrollRule(PayrollRule):
         ot_ignored = bool(employee and employee.ot_ignored)
         less_hours_ignored = bool(employee and employee.less_hours_ignored)
 
-        classified_rows = []
-        for rec in sorted(attendance_records, key=lambda item: item.date):
-            override = overrides.get(rec.date)
-            row = classify_monthly_attendance(rec, holidays, override, rec.employee_id)
-            classified_rows.append((rec, override, row))
-        apply_sandwich_leave_policy(classified_rows)
-
-        # Leave is settled in two passes, because the leave earned this month depends
-        # on how many days end up paid, which in turn depends on the opening balance.
-        #   1. Explicit leave (overrides, sandwich days) draws on the opening balance.
-        #   2. Whatever opening balance is left covers unexplained absences.
-        #   3. Earned leave is computed from the resulting paid-day count.
-        #   4. That earned leave covers the remaining absences.
-        # Anything still absent afterwards is loss of pay.
-        explicit_leave = sum(
-            (Decimal(str(row["leave_used"])) for _rec, _ov, row in classified_rows
-             if row["status"] in EXPLICIT_LEAVE_STATUSES),
-            Decimal("0"),
-        )
         opening_balance = Decimal(opening_leave or 0)
-        opening_for_absences = max(Decimal("0"), opening_balance - explicit_leave)
-        opening_applied = apply_leave_balance(classified_rows, opening_for_absences)
+        days_in_month = days_in_payroll_month(salary_record.payroll_month)
 
-        interim_full = sum((Decimal("1") for _r, _o, row in classified_rows if row["status"] in FULL_DAY_PRESENT_STATUSES), Decimal("0"))
-        interim_half = sum((Decimal("1") for _r, _o, row in classified_rows
-                            if row["status"] in {"Half Day Present", HALF_DAY_WITH_LEAVE_STATUS}), Decimal("0"))
-        interim_weekoffs = sum((1 for _r, _o, row in classified_rows if row["status"] in {"Week Off", "Week Off Worked"}), 0)
-        interim_holidays = sum((1 for _r, _o, row in classified_rows if row["status"] == "Holiday"), 0)
-        interim_leave_used = explicit_leave + opening_applied
-        interim_comp_off = sum((Decimal("1") for _r, _o, row in classified_rows if row["status"] == "Week Off Worked"), Decimal("0"))
+        def classify_month():
+            """A fresh reading of the month, before any leave has been spent."""
+            rows = []
+            for rec in sorted(attendance_records, key=lambda item: item.date):
+                override = overrides.get(rec.date)
+                rows.append((rec, override, classify_monthly_attendance(rec, holidays, override, rec.employee_id)))
+            apply_sandwich_leave_policy(rows)
+            return rows
 
-        eligible_leave_days = (
-            interim_full + (interim_half * Decimal("0.5"))
-            + Decimal(interim_weekoffs) + Decimal(interim_holidays) + interim_leave_used
-        )
-        leave_earned = calculate_monthly_leave_earned(
-            eligible_leave_days, days_in_payroll_month(salary_record.payroll_month)
-        ) + interim_comp_off
-        # Whatever the opening balance could not redeem joins the earned pool. Without
-        # this a fraction under half a day is stranded in each pass, so an opening of
-        # 0.4 and an earning of 0.4 would redeem nothing even though they make 0.8.
-        opening_remainder = max(Decimal("0"), opening_for_absences - opening_applied)
-        earned_applied = apply_leave_balance(classified_rows, leave_earned + opening_remainder)
-        # Explicit leave was booked before the balance was known, so more leave can be
-        # on the days than the employee holds. Withdraw the unbacked days here rather
-        # than only netting them off the total, so the days, the totals and the leave
-        # ledger cannot disagree.
-        downgrade_unbacked_leave(classified_rows, opening_balance + leave_earned)
+        def settle_leave(earned):
+            """Spend the opening balance and `earned` days of accrual across the month.
+
+            Explicit leave (overrides and sandwich week offs) is booked first because
+            it is already on the day; whatever the opening balance cannot redeem joins
+            the earned pool, so a fraction under half a day is not stranded in each
+            pass. Anything the two together cannot cover is loss of pay.
+            """
+            rows = classify_month()
+            explicit = sum(
+                (Decimal(str(row["leave_used"])) for _rec, _ov, row in rows
+                 if row["status"] in EXPLICIT_LEAVE_STATUSES),
+                Decimal("0"),
+            )
+            for_absences = max(Decimal("0"), opening_balance - explicit)
+            applied = apply_leave_balance(rows, for_absences)
+            apply_leave_balance(rows, earned + max(Decimal("0"), for_absences - applied))
+            # Explicit leave is booked before the balance is known, so a month can
+            # demand more leave than the employee holds. Withdraw the unbacked days
+            # here rather than only netting them off the total, so the days, the
+            # totals and the leave ledger cannot disagree.
+            downgrade_unbacked_leave(rows, opening_balance + earned)
+            return rows
+
+        def accrual_for(rows):
+            """Leave earned from the days that ended up paid, plus any comp off.
+
+            Counted exactly as the month's totals are, so the basis is the same
+            figure the payslip shows as total paid days. A half day worked with the
+            other half taken as leave contributes 0.5 here and 0.5 through
+            `leave_used`; adding its paid_day of 1 as well would count it twice.
+            """
+            full = sum((Decimal("1") for _r, _o, row in rows
+                        if row["status"] in FULL_DAY_PRESENT_STATUSES), Decimal("0"))
+            half = sum((Decimal("0.5") for _r, _o, row in rows
+                        if row["status"] in {"Half Day Present", HALF_DAY_WITH_LEAVE_STATUS}), Decimal("0"))
+            not_working = sum((Decimal("1") for _r, _o, row in rows
+                               if row["status"] in {"Week Off", "Week Off Worked", "Holiday"}), Decimal("0"))
+            taken = sum((Decimal(str(row["leave_used"])) for _r, _o, row in rows), Decimal("0"))
+            comp_off = sum((Decimal("1") for _r, _o, row in rows if row["status"] == "Week Off Worked"), Decimal("0"))
+            return calculate_monthly_leave_earned(full + half + not_working + taken, days_in_month) + comp_off
+
+        # The accrual is pro-rated by the days that end up paid, but how many days end
+        # up paid depends on how much leave there was to spend, which is the accrual
+        # itself. Settling it in one pass left the figure computed from a paid-day
+        # count that predated the leave it granted, so it read low for anyone who used
+        # leave and high for anyone whose leave was later withdrawn. Iterate instead:
+        # spending more leave can only raise the paid-day count, which can only raise
+        # the accrual, so the figure climbs and settles rather than oscillating.
+        leave_earned = Decimal("0")
+        classified_rows = settle_leave(leave_earned)
+        for _pass in range(LEAVE_ACCRUAL_MAX_PASSES):
+            recomputed = accrual_for(classified_rows)
+            if recomputed == leave_earned:
+                break
+            leave_earned = recomputed
+            classified_rows = settle_leave(leave_earned)
 
         for rec, override, row in classified_rows:
             actual = rec.actual_minutes or 0
@@ -571,6 +592,10 @@ EXPLICIT_LEAVE_STATUSES = {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave"
 # the employee did turn up, so available leave covers it rather than letting them lose
 # a day's pay while carrying a balance. Only the automatic classification lands here:
 # a manual "Unpaid Leave / LOP" override keeps its own status and is left alone.
+# How many times the accrual may be re-settled before it is taken as final. Paid
+# days move in half-day steps and the accrual is capped at a full month's rate, so a
+# month settles in two or three passes; the cap is a backstop, not a working limit.
+LEAVE_ACCRUAL_MAX_PASSES = 6
 SHORT_DAY_LOP_STATUS = "Full Day LOP"
 LEAVE_COVERABLE_STATUSES = {ABSENT_STATUS, SHORT_DAY_LOP_STATUS}
 
