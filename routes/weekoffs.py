@@ -32,6 +32,12 @@ def index():
         confirmed = 0
         details = []
         for employee in employees:
+            # An employee the form did not carry is left exactly as they are. Reading
+            # a missing checkbox as "working" would quietly turn their week offs into
+            # unpaid absences, which is thousands of rupees a month, and the
+            # attendance save already works this way.
+            if f"{employee.id}_present" not in request.form:
+                continue
             rule = get_or_create_weekoff_rule(employee.id)
             employee_changes = []
             for field, label in WEEKDAY_FIELDS:

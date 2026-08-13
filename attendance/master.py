@@ -247,11 +247,15 @@ def disabled_row_conflicts(employee, row):
     return conflicts
 
 
-def apply_status_columns(employee, row, row_number, changes):
+def apply_status_columns(employee, row, row_number, changes, require_date=True):
     """Read the Status and Last Working Day columns, if the file carries them.
 
-    The two travel together: a leaver's final payroll month is decided by the date,
-    so a status without one is rejected rather than half-applied.
+    A last working day is required to take someone who is on the payroll off it,
+    because it decides their final payroll month. It is not required to load a
+    record that arrives already closed - onboarding a file of historical staff, or
+    re-importing an export written before this column existed - since there is no
+    payroll month at stake in either case. Such a record stays out of payroll until
+    a date is entered, and the payroll page says so.
     """
     if "Status" not in row or not clean(row.get("Status")):
         return
@@ -260,7 +264,12 @@ def apply_status_columns(employee, row, row_number, changes):
         raise ValueError(f"Row {row_number}: Status must be one of "
                          + ", ".join(key for key, _label in EMPLOYMENT_STATUSES) + ".")
     last_day = clean(row.get("Last Working Day"))
-    if requested in DISABLED_STATUSES and not last_day:
+    current = employee.employment_status or ACTIVE_STATUS
+    # The date is required to *make* someone a leaver, because it decides their final
+    # payroll month. It is not demanded of a row that changes nothing: an export of
+    # data from before this column existed carries the old status with a blank date,
+    # and re-importing an untouched file has to stay a no-op.
+    if require_date and requested in DISABLED_STATUSES and not last_day and requested != current:
         raise ValueError(f"Row {row_number}: Last Working Day is required to mark "
                          f"employee {employee.id} as {requested.lower()}.")
     parsed_day = None
@@ -269,10 +278,13 @@ def apply_status_columns(employee, row, row_number, changes):
             parsed_day = parse_csv_date(last_day)
         except ValueError as exc:
             raise ValueError(f"Row {row_number}: Last Working Day: {exc}") from exc
-    if requested != (employee.employment_status or ACTIVE_STATUS):
-        changes.append(f"Status {employee.employment_status or ACTIVE_STATUS} -> {requested}")
+    if requested != current:
+        changes.append(f"Status {current} -> {requested}")
         employee.employment_status = requested
         employee.inactive_at = None if requested == ACTIVE_STATUS else datetime.utcnow()
+    if not last_day and requested != ACTIVE_STATUS:
+        # No date offered and none demanded, so whatever is on file stands.
+        return
     if parsed_day != employee.left_on:
         changes.append(f"Last Working Day {employee.left_on or 'Not Set'} -> {parsed_day or 'Not Set'}")
         employee.left_on = parsed_day
@@ -458,7 +470,7 @@ def apply_employee_master_import(rows, actor):
                     changes.append(f"{label} {'Yes' if getattr(employee, key) else 'No'} -> {'Yes' if flag else 'No'}")
                     setattr(employee, key, flag)
 
-        apply_status_columns(employee, row, row_number, changes)
+        apply_status_columns(employee, row, row_number, changes, require_date=not is_new)
 
         for field, label in (("ot_ignored", "Ignore OT"), ("less_hours_ignored", "Ignore Less Hours")):
             if label not in row:

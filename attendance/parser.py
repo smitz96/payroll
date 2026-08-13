@@ -94,7 +94,15 @@ def _first_sheet_path(zf):
     target = relation_targets.get(rel_id)
     if not target:
         raise ValueError("Attendance XLSX sheet relationship is missing")
-    return "xl/" + target.lstrip("/")
+    # A relationship target is either relative to the workbook part
+    # ("worksheets/sheet1.xml") or absolute from the package root
+    # ("/xl/worksheets/sheet1.xml"). Both are legal and both are written in practice -
+    # punch machines tend to write the first, Excel and most libraries the second - so
+    # a file that has been opened and re-saved has to keep working.
+    path = target[1:] if target.startswith("/") else "xl/" + target
+    if path not in zf.namelist():
+        raise ValueError(f"Attendance XLSX is missing its worksheet ({target})")
+    return path
 
 
 def _xlsx_cell_value(cell, shared_strings):

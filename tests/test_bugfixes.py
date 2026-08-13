@@ -4325,3 +4325,63 @@ def test_reopening_an_existing_month_is_never_blocked(client, app):
     login(client)
     response = client.post("/payroll/new", data={"month": "2026-08"}, follow_redirects=True)
     assert b"Finalize July 2026" not in response.data
+
+
+def test_a_master_export_carrying_a_leaver_can_be_imported_back(client, app):
+    """The export is the backup path, so it has to survive a round trip.
+
+    Anyone marked as having left before the last working day existed carries a blank
+    date, and demanding one on the way back in rejected the whole file.
+    """
+    with app.app_context():
+        seed_two_wage_groups()
+        employee = db.session.get(Employee, "5")
+        employee.employment_status = "TERMINATED"     # no date, as on data from before
+        db.session.commit()
+
+    login(client)
+    export = client.get("/master/export.csv").data
+    assert b"TERMINATED," in export
+    response = import_master(client, export)
+    assert b"Last Working Day is required" not in response.data
+    assert b"imported" in response.data
+    with app.app_context():
+        assert Employee.query.count() == 2
+        assert db.session.get(Employee, "5").employment_status == "TERMINATED"
+
+
+def test_a_punch_report_saved_by_a_spreadsheet_tool_still_imports(client, app):
+    """Both legal ways of naming the worksheet have to work.
+
+    A punch machine writes the sheet path relative to the workbook; Excel and most
+    libraries write it absolute from the package root. A file that has been opened
+    and re-saved used to fail with a raw archive error.
+    """
+    from openpyxl import Workbook
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.commit()
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Daily Punch Report"])
+    sheet.append(["Employee ID", "Employee Name", "Department", "Designation", "01-07-2026\nWednesday"])
+    sheet.append(["5", "Worker", "Design", "Manager", "09:30 AM\n06:30 PM"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    # openpyxl writes Target="/xl/worksheets/sheet1.xml", the absolute form.
+    from zipfile import ZipFile
+    with ZipFile(BytesIO(buffer.getvalue())) as archive:
+        assert b'Target="/xl/worksheets/sheet1.xml"' in archive.read("xl/_rels/workbook.xml.rels")
+
+    login(client)
+    response = client.post("/attendance/2026-07", data={
+        "action": "import_attendance",
+        "attendance_csv": (BytesIO(buffer.getvalue()), "punch.xlsx"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"Imported attendance: 1 rows" in response.data
+    with app.app_context():
+        assert AttendanceRecord.query.filter_by(payroll_month="2026-07", employee_id="5").count() == 1

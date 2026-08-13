@@ -34,7 +34,9 @@
       <tbody>
         {% for row in rows %}
         <tr>
-          <td>{{ row.employee.id }}</td>
+          {# Marks this employee as carried by the form. A row that is not submitted
+             is left alone rather than being read as "works every day". #}
+          <td><input type="hidden" name="{{ row.employee.id }}_present" value="1">{{ row.employee.id }}</td>
           <td>{{ row.employee.name }}</td>
           {% for field, label in weekdays %}
           <td>

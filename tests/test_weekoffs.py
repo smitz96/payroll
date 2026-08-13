@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from attendance import db
 from attendance.employee_defaults import backfill_default_weekoffs
@@ -41,6 +41,7 @@ def test_weekoff_page_saves_and_audits(client, app):
         db.session.commit()
     client.post("/login", data={"username": "admin", "password": "12345"})
     response = client.post("/weekoffs", data={
+        "5_present": "1",
         "5_monday": "WORKING",
         "5_tuesday": "WORKING",
         "5_wednesday": "WORKING",
@@ -78,3 +79,27 @@ def test_backfill_default_weekoffs_assigns_sunday_to_existing_employees(app):
         assert is_week_off_for_date("8", date(2026, 7, 5)) is True
         assert is_week_off_for_date("8", date(2026, 7, 6)) is False
         assert AuditLog.query.filter_by(action="Default Week Off Backfilled").count() == 1
+
+
+def test_an_employee_the_form_did_not_carry_keeps_their_week_off(client, app):
+    """A partial save must not read a missing row as "works every day".
+
+    Week offs decide which days are paid, so silently turning someone's Sunday into
+    an unpaid absence is thousands of rupees a month.
+    """
+    with app.app_context():
+        db.session.add(Employee(id="5", name="Saved Worker"))
+        db.session.add(Employee(id="6", name="Untouched Worker"))
+        db.session.add(WeekOffRule(employee_id="6", sunday="WEEK_OFF_ALL", confirmed_at=datetime.utcnow()))
+        db.session.commit()
+
+    client.post("/login", data={"username": "admin", "password": "12345"})
+    response = client.post("/weekoffs", data={
+        "5_present": "1",
+        "5_sunday": "WEEK_OFF_ALL",
+    }, follow_redirects=True)
+    assert b"Week off settings saved" in response.data
+    with app.app_context():
+        assert WeekOffRule.query.filter_by(employee_id="5").one().sunday == "WEEK_OFF_ALL"
+        # Employee 6 was not in the form at all and must be exactly as they were.
+        assert WeekOffRule.query.filter_by(employee_id="6").one().sunday == "WEEK_OFF_ALL"
