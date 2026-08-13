@@ -567,6 +567,12 @@ HALF_LEAVE_HALF_LOP_STATUS = "Half-Day Paid Leave / Half-Day LOP"
 # A half day worked, with the unworked half covered from the leave balance.
 HALF_DAY_WITH_LEAVE_STATUS = "Half Day Present / Half-Day Leave"
 EXPLICIT_LEAVE_STATUSES = {"Paid Leave", "Half-Day Paid Leave", "Sandwich Leave"}
+# A day worked for less than the half-day minimum. It is not payable on its own, but
+# the employee did turn up, so available leave covers it rather than letting them lose
+# a day's pay while carrying a balance. Only the automatic classification lands here:
+# a manual "Unpaid Leave / LOP" override keeps its own status and is left alone.
+SHORT_DAY_LOP_STATUS = "Full Day LOP"
+LEAVE_COVERABLE_STATUSES = {ABSENT_STATUS, SHORT_DAY_LOP_STATUS}
 
 
 # Days that are not scheduled working days, so they can never create absence for the
@@ -724,15 +730,17 @@ def apply_leave_balance(classified_rows, available):
                 })
                 used += Decimal("0.5")
             continue
-        if row["status"] != ABSENT_STATUS:
+        if row["status"] not in LEAVE_COVERABLE_STATUSES:
             continue
+        short_day = row["status"] == SHORT_DAY_LOP_STATUS
         remaining = available - used
         if remaining >= Decimal("1"):
             row.update({
                 "status": "Paid Leave",
                 "paid_day": Decimal("0"),
                 "leave_used": Decimal("1"),
-                "explanation": "Absent day covered by available leave balance.",
+                "explanation": ("Worked under the half-day minimum; the day is covered by available leave balance."
+                                if short_day else "Absent day covered by available leave balance."),
             })
             used += Decimal("1")
         elif remaining >= Decimal("0.5"):

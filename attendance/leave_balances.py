@@ -120,10 +120,15 @@ def leave_balance_rows():
 # Same idea as the employee master export: lead with illustrative rows so the file
 # documents itself, and skip them on import.
 LEAVE_BALANCE_SAMPLE_ROWS = [
-    {"Employee ID": "1", "Employee Name": "John C Smith", "Current Leave Balance": "12.5"},
-    {"Employee ID": "2", "Employee Name": "Elvis D Grey", "Current Leave Balance": "0"},
+    {"Employee ID": "EXAMPLE-MONTHLY", "Employee Name": "Example Monthly Employee", "Current Leave Balance": "12.5"},
+    {"Employee ID": "EXAMPLE-DAILY", "Employee Name": "Example Daily Employee", "Current Leave Balance": "0"},
 ]
-LEAVE_BALANCE_SAMPLE_KEYS = {(row["Employee ID"], row["Employee Name"]) for row in LEAVE_BALANCE_SAMPLE_ROWS}
+# Older exports carry the previous sample rows; keep skipping those too.
+LEGACY_LEAVE_BALANCE_SAMPLE_KEYS = {("1", "John C Smith"), ("2", "Elvis D Grey")}
+LEAVE_BALANCE_SAMPLE_KEYS = (
+    {(row["Employee ID"], row["Employee Name"]) for row in LEAVE_BALANCE_SAMPLE_ROWS}
+    | LEGACY_LEAVE_BALANCE_SAMPLE_KEYS
+)
 
 
 def is_leave_balance_sample_row(row):

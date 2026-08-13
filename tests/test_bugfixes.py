@@ -1140,8 +1140,11 @@ def test_master_export_leads_with_sample_rows(client, app):
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
     assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus")
-    assert lines[1].startswith("1,John C Smith,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
-    assert lines[2].startswith("2,Elvis D Grey,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
+    assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
+    assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
+    # The sample IDs cannot be mistaken for an employee number, so a reader never
+    # reads the file as holding two rows for the same person.
+    assert not any(line.split(",")[0].isdigit() for line in lines[1:3])
     # The sample breakup demonstrates the rule it documents.
     assert Decimal("35000") + Decimal("10000") + Decimal("5000") == Decimal("50000")
     # Real data follows the samples.
@@ -1150,7 +1153,7 @@ def test_master_export_leads_with_sample_rows(client, app):
 
 
 def test_exported_master_reimports_without_touching_sample_ids(client, app):
-    """The samples reuse IDs 1 and 2, so import must skip them, not apply them."""
+    """The illustrative rows must be skipped on the way back in, not applied."""
     with app.app_context():
         db.session.add(Employee(id="1", name="Manish C Hirani", salary_type="Monthly",
                                 normalized_salary_type="MONTHLY", salary=Decimal("68200")))
@@ -1160,7 +1163,7 @@ def test_exported_master_reimports_without_touching_sample_ids(client, app):
 
     login(client)
     exported = client.get("/master/export.csv").data
-    assert b"John C Smith" in exported
+    assert b"Example Monthly Employee" in exported
 
     response = client.post("/master/import", data={
         "employee_master_csv": (BytesIO(exported), "employee_master.csv"),
@@ -1203,16 +1206,17 @@ def test_leave_balance_export_and_reimport_skip_samples(client, app):
     login(client)
     exported = client.get("/leave-balances/export.csv").data
     lines = [line for line in exported.decode().splitlines() if line.strip()]
-    assert lines[1].startswith("1,John C Smith,12.5")
-    assert lines[2].startswith("2,Elvis D Grey,0")
+    assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,12.5")
+    assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,0")
 
     response = client.post("/leave-balances/import", data={
         "leave_balance_csv": (BytesIO(exported), "leave_balances.csv"),
     }, content_type="multipart/form-data", follow_redirects=True)
     assert b"not found" not in response.data
     with app.app_context():
-        # Employee 2 is only a sample and must not have been created or touched.
-        assert db.session.get(Employee, "2") is None
+        # The illustrative rows must not become employees.
+        assert db.session.get(Employee, "EXAMPLE-DAILY") is None
+        assert db.session.get(Employee, "EXAMPLE-MONTHLY") is None
 
 
 # --- Dashboard analytics ---
@@ -4024,3 +4028,83 @@ def test_leave_top_up_does_not_conjure_a_balance_that_is_not_there(app):
             "2026-11", 2026, 11, absent_days=set(range(2, 28)), opening=Decimal("0.5"))
         assert Decimal(result.lop_days) > 0
         assert Decimal(result.leave_used) <= Decimal(result.opening_leave) + Decimal(result.leave_earned)
+
+
+def test_an_older_export_still_reimports_after_the_sample_rows_were_renamed(client, app):
+    """Files exported before the rename carry the old rows and must still round-trip."""
+    with app.app_context():
+        db.session.add(Employee(id="1", name="Manish C Hirani", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("68200")))
+        db.session.commit()
+
+    login(client)
+    legacy = (b"Employee ID,Name,Department,Designation,Wage Type,Salary\n"
+              b"1,John C Smith,Accounts,Accounts Executive,Monthly,50000\n"
+              b"2,Elvis D Grey,Mechanical Production,Helper,Daily,5000\n"
+              b"1,Manish C Hirani,Design,Design Manager,Monthly,68200\n")
+    response = client.post("/master/import", data={
+        "employee_master_csv": (BytesIO(legacy), "employee_master.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"already named" not in response.data
+    with app.app_context():
+        # The old sample rows are skipped, so employee 1 keeps their real name.
+        assert db.session.get(Employee, "1").name == "Manish C Hirani"
+
+
+def test_leave_covers_a_day_worked_below_the_half_day_minimum(app):
+    """Turning up for an hour should not cost a day's pay when leave is in hand."""
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Short Day", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("31000")))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(PayrollResult(payroll_month="2026-06", employee_id="5", payroll_rule_type="MONTHLY",
+                                     calculation_status="Calculated", closing_leave=Decimal("2"),
+                                     final_salary=Decimal("31000")))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Short Day",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("31000")))
+        for day, minutes in ((1, 540), (2, 75)):
+            when = date(2026, 7, day)
+            db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Short Day",
+                                            date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                            last_punch="10:45 AM" if minutes == 75 else "06:30 PM",
+                                            raw_working_hours="1h 15m" if minutes == 75 else "9h 00m",
+                                            actual_minutes=minutes, parse_status="OK"))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row for row in result.detail_json}
+        assert by_date["2026-07-02"]["attendance_status"] == "Paid Leave"
+        assert "under the half-day minimum" in by_date["2026-07-02"]["explanation"]
+        assert Decimal(result.lop_days) == Decimal("0")
+        assert Decimal(result.leave_used) == Decimal("1")
+
+
+def test_a_manual_unpaid_leave_override_is_never_covered_by_leave(app):
+    """An explicit instruction to dock the day must stand, balance or no balance."""
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Docked", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("31000")))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(PayrollResult(payroll_month="2026-06", employee_id="5", payroll_rule_type="MONTHLY",
+                                     calculation_status="Calculated", closing_leave=Decimal("5"),
+                                     final_salary=Decimal("31000")))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Docked",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("31000")))
+        for day in (1, 2):
+            when = date(2026, 7, day)
+            db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Docked",
+                                            date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                            last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                            actual_minutes=540, parse_status="OK"))
+        db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="5", date=date(2026, 7, 2),
+                                          manual_status="Unpaid Leave / LOP"))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        by_date = {row["date"]: row["attendance_status"] for row in result.detail_json}
+        assert by_date["2026-07-02"] == "Unpaid Leave / LOP"
+        assert Decimal(result.leave_used) == Decimal("0")

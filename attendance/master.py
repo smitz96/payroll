@@ -133,23 +133,31 @@ EMPLOYEE_MASTER_EXPORT_COLUMNS = [
 # Illustrative rows shipped at the top of the export so the expected shape of every
 # column is obvious without opening the docs. They are not database records: the
 # import skips any row matching one of them, so an exported file round-trips safely.
+# The IDs are deliberately unlike a real employee number. They used to be 1 and 2,
+# which collide with real employees, and a file showing "1" twice reads as a
+# duplicate record rather than as a worked example.
 EMPLOYEE_MASTER_SAMPLE_ROWS = [
     {
-        "Employee ID": "1", "Name": "John C Smith", "Department": "Accounts",
+        "Employee ID": "EXAMPLE-MONTHLY", "Name": "Example Monthly Employee", "Department": "Accounts",
         "Designation": "Accounts Executive", "Wage Type": "Monthly", "Salary": "50000",
         "Basic": "35000", "HRA": "10000", "Allowance": "5000", "TDS": "2500",
         "PF": "Yes", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Ignore Monthly Bonus": "",
     },
     {
-        "Employee ID": "2", "Name": "Elvis D Grey", "Department": "Mechanical Production",
+        "Employee ID": "EXAMPLE-DAILY", "Name": "Example Daily Employee", "Department": "Mechanical Production",
         "Designation": "Helper", "Wage Type": "Daily", "Salary": "5000",
         "Basic": "0", "HRA": "0", "Allowance": "0", "TDS": "",
         "PF": "No", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Ignore Monthly Bonus": "No",
     },
 ]
-SAMPLE_ROW_KEYS = {(row["Employee ID"], row["Name"]) for row in EMPLOYEE_MASTER_SAMPLE_ROWS}
+# Exports taken before the rename still carry the old rows, so they stay recognised
+# and skipped; otherwise re-importing an older file would fail on the name check.
+LEGACY_SAMPLE_ROW_KEYS = {("1", "John C Smith"), ("2", "Elvis D Grey")}
+SAMPLE_ROW_KEYS = (
+    {(row["Employee ID"], row["Name"]) for row in EMPLOYEE_MASTER_SAMPLE_ROWS} | LEGACY_SAMPLE_ROW_KEYS
+)
 
 
 def is_sample_row(row):
