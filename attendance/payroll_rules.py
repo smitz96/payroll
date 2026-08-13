@@ -419,13 +419,9 @@ class DailyPayrollRule(PayrollRule):
         loan_pending = loan_pending_after_month_for_employee(salary_record.employee_id, salary_record.payroll_month)
         advance = advance_deduction_for_employee(salary_record.employee_id, salary_record.payroll_month)
         manual_deduction = abs(manual) if manual < 0 else Decimal("0")
-        # Professional tax is levied on the earner, not on how they are paid, so a
-        # daily wage employee over the slab owes it just as a monthly one does. The
-        # basis is the wage earned for the month including the attendance bonus,
-        # which is part of their monthly wage, but excluding overtime — the same
-        # exclusion the monthly rule makes.
-        prof_tax = professional_tax(gross_salary - less_deduction + attendance_bonus)
-        total_deduction = less_deduction + loan + advance + manual_deduction + prof_tax
+        # Professional tax is not deducted from daily wage employees. It stays a
+        # monthly wage deduction, as it is on the manual wage sheet.
+        total_deduction = less_deduction + loan + advance + manual_deduction
         total_addition = ot_amount + attendance_bonus + (manual if manual > 0 else Decimal("0"))
         final_salary = gross_salary - total_deduction + total_addition
         status = "Needs Review" if needs_review else "Calculated"
@@ -456,7 +452,6 @@ class DailyPayrollRule(PayrollRule):
             attendance_bonus_percent=bonus_percent,
             attendance_bonus_amount=money(attendance_bonus),
             lop_deduction=Decimal("0"),
-            professional_tax=money(prof_tax),
             manual_adjustment=manual,
             leave_encashment_days=Decimal("0"),
             leave_encashment_amount=Decimal("0"),

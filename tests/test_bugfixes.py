@@ -2793,17 +2793,12 @@ def test_uncovered_contributions_read_as_zero_not_a_bare_digit(client, app):
     assert "Not applicable" in page
 
 
-def test_daily_wage_compliance_covers_professional_tax_but_not_pf_or_esic(client, app):
-    """PT is levied on the earner; PF and ESIC stay monthly-only."""
+def test_daily_wage_has_no_compliance_panel(client, app):
     with app.app_context():
         seed_two_wage_groups()
 
     login(client)
-    daily = client.get("/payroll/2026-07/employee/6").data
-    assert b"Payroll compliance" in daily
-    assert b"Professional tax" in daily
-    assert b"Provident Fund" not in daily
-    assert b"Employee ESIC" not in daily
+    assert b"Payroll compliance" not in client.get("/payroll/2026-07/employee/6").data
     assert b"Payroll compliance" in client.get("/payroll/2026-07/employee/5").data
 
 
@@ -3870,26 +3865,20 @@ def test_esi_coverage_follows_the_wage_rate_not_a_short_month(app):
         assert Decimal(result.esi_employer) == Decimal("0")
 
 
-def test_professional_tax_is_charged_to_daily_wage_employees(app):
+def test_professional_tax_is_not_deducted_from_daily_wage_employees(app):
+    """PT stays a monthly wage deduction, as it is on the manual wage sheet."""
     with app.app_context():
         seed_two_wage_groups()
-        # 1,000 a day over two days plus the attendance bonus clears the 12,000 slab.
+        # Well clear of the 12,000 slab, so only the wage type keeps PT away.
         daily = SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="6").one()
         daily.salary = Decimal("7000")
         db.session.commit()
         calculate_payroll_month("2026-07")
         result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
-        assert Decimal(result.professional_tax) == Decimal("200")
-        # And it actually comes out of the pay, not just the display.
-        assert Decimal(result.total_deduction) >= Decimal("200")
-
-
-def test_professional_tax_is_not_charged_below_the_slab(app):
-    with app.app_context():
-        seed_two_wage_groups()
-        calculate_payroll_month("2026-07")
-        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
-        assert Decimal(result.professional_tax) == Decimal("0")
+        assert Decimal(result.professional_tax or 0) == Decimal("0")
+        # The monthly employee in the same month is unaffected by the exemption.
+        monthly = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(monthly.professional_tax) == Decimal("200")
 
 
 # --- The handwritten register applied in bulk ---

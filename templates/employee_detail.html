@@ -104,29 +104,6 @@
   </div>
 </div>
 {% endif %}
-{# Professional tax is levied on the earner, not on how they are paid, so a daily
-   wage employee over the slab owes it too. PF and ESIC remain monthly-only. #}
-{% if result and is_daily_wage %}
-<div class="tool-panel mb-4">
-  <h2 class="section-title">Payroll compliance</h2>
-  <div class="compliance-grid">
-    <div class="compliance-card">
-      <header><strong>Tax</strong><span class="compliance-flag {{ 'is-on' if result.professional_tax else 'is-off' }}">{{ "Payable" if result.professional_tax else "Not payable" }}</span></header>
-      <dl>
-        <div><dt>Professional tax</dt><dd>{{ result.professional_tax|money }}</dd></div>
-      </dl>
-      <p class="compliance-note">Charged when the wage earned for the month, including the attendance bonus, exceeds {{ pt_threshold }}. PF and ESIC apply to monthly wage employees only.</p>
-    </div>
-    <div class="compliance-card is-total">
-      <header><strong>Totals</strong></header>
-      <dl>
-        <div><dt>Deducted from employee</dt><dd>{{ result.professional_tax|money }}</dd></div>
-      </dl>
-      <p class="compliance-note">Deducted from the final payable salary.</p>
-    </div>
-  </div>
-</div>
-{% endif %}
 <form method="post" id="employeeDetailForm">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <div class="tool-panel mb-4">
