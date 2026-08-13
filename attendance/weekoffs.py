@@ -22,14 +22,17 @@ WEEKDAY_DISPLAY_FIELDS = [
     ("saturday", "Saturday"),
 ]
 
+# The occurrence codes count that weekday within the month, not the date: WEEK_OFF_2
+# on Saturday is the second Saturday. The labels used to read "2nd day of the month",
+# which is a different thing entirely.
 WEEK_OFF_OPTIONS = [
     ("WORKING", "Normal Shift"),
-    ("WEEK_OFF_ALL", "Week Off"),
-    ("WEEK_OFF_1", "Week Off on 1st day of the month"),
-    ("WEEK_OFF_2", "Week Off on 2nd day of the month"),
-    ("WEEK_OFF_3", "Week Off on 3rd day of the month"),
-    ("WEEK_OFF_4", "Week Off on 4th day of the month"),
-    ("WEEK_OFF_5", "Week Off on 5th day of the month"),
+    ("WEEK_OFF_ALL", "Week Off every week"),
+    ("WEEK_OFF_1", "Week Off on the 1st of this weekday"),
+    ("WEEK_OFF_2", "Week Off on the 2nd of this weekday"),
+    ("WEEK_OFF_3", "Week Off on the 3rd of this weekday"),
+    ("WEEK_OFF_4", "Week Off on the 4th of this weekday"),
+    ("WEEK_OFF_5", "Week Off on the 5th of this weekday"),
 ]
 
 OPTION_LABELS = dict(WEEK_OFF_OPTIONS)
@@ -116,3 +119,57 @@ def describe_week_off(employee_id, day):
         code = getattr(rule, WEEKDAY_FIELDS[day.weekday()][0])
     labels = [OPTION_LABELS.get(item, "Normal Shift") for item in selected_weekoff_codes(code)]
     return ", ".join(labels)
+
+
+def weekoff_pattern_text(rule):
+    """A rule as one readable field, for the employee master file.
+
+    "Saturday=2,4; Sunday=All" reads as the second and fourth Saturday of the month
+    plus every Sunday. Days that are worked are left out, so a plain Sunday week off
+    is simply "Sunday=All" and an employee who works every day is blank.
+    """
+    if not rule:
+        return ""
+    parts = []
+    for field, label in WEEKDAY_FIELDS:
+        codes = selected_weekoff_codes(getattr(rule, field, None))
+        if "WEEK_OFF_ALL" in codes:
+            parts.append(f"{label}=All")
+            continue
+        occurrences = sorted(
+            int(code.rsplit("_", 1)[1]) for code in codes
+            if code.startswith("WEEK_OFF_") and code.rsplit("_", 1)[1].isdigit()
+        )
+        if occurrences:
+            parts.append(f"{label}=" + ",".join(str(number) for number in occurrences))
+    return "; ".join(parts)
+
+
+def parse_weekoff_pattern(text, label="Week Off Pattern"):
+    """The inverse of `weekoff_pattern_text`, as {field: stored code}.
+
+    Every weekday is returned, so a day left out of the text is explicitly working -
+    that is what makes an import able to remove a week off as well as add one.
+    """
+    fields = {field: "WORKING" for field, _label in WEEKDAY_FIELDS}
+    by_name = {name.lower(): field for field, name in WEEKDAY_FIELDS}
+    for chunk in str(text or "").split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        day, separator, codes = chunk.partition("=")
+        field = by_name.get(day.strip().lower())
+        if not field or not separator:
+            raise ValueError(f'{label}: "{chunk}" is not a weekday and a value, such as "Sunday=All".')
+        codes = codes.strip()
+        if codes.lower() in {"all", "week_off_all"}:
+            fields[field] = "WEEK_OFF_ALL"
+            continue
+        occurrences = []
+        for number in codes.split(","):
+            number = number.strip()
+            if not number.isdigit() or not 1 <= int(number) <= 5:
+                raise ValueError(f'{label}: "{codes}" must be All, or occurrences 1 to 5 such as "2,4".')
+            occurrences.append(f"WEEK_OFF_{int(number)}")
+        fields[field] = normalize_weekoff_codes(occurrences)
+    return fields

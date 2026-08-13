@@ -6,7 +6,14 @@ from attendance.models import AuditLog, Employee, LeaveLedger, WeekOffRule
 
 
 def default_sunday_weekoff_rule(employee_id):
-    return WeekOffRule(employee_id=employee_id, sunday="WEEK_OFF_ALL", confirmed_at=datetime.utcnow())
+    """Sunday off, awaiting confirmation.
+
+    Deliberately not stamped as confirmed: the app asks for week offs to be checked
+    before the first payroll, and a rule the system wrote is exactly the one that
+    needs checking. Stamping it here answered that question on the reviewer's behalf,
+    so nobody was ever asked and an employee on another day was never noticed.
+    """
+    return WeekOffRule(employee_id=employee_id, sunday="WEEK_OFF_ALL")
 
 
 def ensure_employee_defaults(employee_id):

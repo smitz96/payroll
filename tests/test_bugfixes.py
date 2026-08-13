@@ -1139,7 +1139,7 @@ def test_master_export_leads_with_sample_rows(client, app):
     login(client)
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
-    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus,Status,Last Working Day")
+    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus,Week Off Pattern,Status,Last Working Day")
     assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
     assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
     # The sample IDs cannot be mistaken for an employee number, so a reader never
@@ -2102,10 +2102,10 @@ def test_bonus_flag_round_trips_through_export_and_import(client, app):
     export = client.get("/master/export.csv").data.decode()
     assert "Ignore Monthly Bonus" in export.splitlines()[0]
     rows = {line.split(",")[0]: line for line in export.splitlines()}
-    # The bonus flag sits just before the status columns.
-    assert ",Yes,ACTIVE," in rows["6"]
+    # The bonus flag sits just before the week off pattern and the status columns.
+    assert ",Yes,," in rows["6"] and rows["6"].endswith("ACTIVE,")
     # Monthly employees leave the column blank, the same way daily leaves Basic blank.
-    assert ",,ACTIVE," in rows["5"]
+    assert ",No,,,ACTIVE," in rows["5"] or ",,,ACTIVE," in rows["5"]
 
     # Re-importing an untouched export is a no-op, not an error.
     assert b"imported" in import_master(client, export.encode()).data
@@ -4385,3 +4385,93 @@ def test_a_punch_report_saved_by_a_spreadsheet_tool_still_imports(client, app):
     assert b"Imported attendance: 1 rows" in response.data
     with app.app_context():
         assert AttendanceRecord.query.filter_by(payroll_month="2026-07", employee_id="5").count() == 1
+
+
+def test_a_new_employees_week_off_waits_to_be_confirmed(client, app):
+    """The app asks for week offs to be checked, so the system must not answer for it."""
+    login(client)
+    csv_body = ("Employee ID,Name,Wage Type,Salary\n"
+                "5,Month Worker,Monthly,30000\n"
+                "6,Day Worker,Daily,600\n").encode()
+    assert b"imported" in import_master(client, csv_body).data
+    with app.app_context():
+        rules = WeekOffRule.query.all()
+        assert len(rules) == 2 and all(rule.confirmed_at is None for rule in rules)
+        assert all(rule.sunday == "WEEK_OFF_ALL" for rule in rules)
+
+    page = client.get("/weekoffs").data.decode()
+    assert '5_present' in page, "each row must mark itself as carried by the form"
+    client.post("/weekoffs", data={"5_present": "1", "5_sunday": "WEEK_OFF_ALL"}, follow_redirects=True)
+    with app.app_context():
+        assert WeekOffRule.query.filter_by(employee_id="5").one().confirmed_at is not None
+        # The one nobody looked at is still waiting.
+        assert WeekOffRule.query.filter_by(employee_id="6").one().confirmed_at is None
+
+
+def test_the_week_off_pattern_round_trips_through_the_master_export(client, app):
+    """A rebuild from the export has to restore who works which days."""
+    with app.app_context():
+        seed_two_wage_groups()
+        rule = WeekOffRule.query.filter_by(employee_id="5").one()
+        rule.saturday = "WEEK_OFF_2,WEEK_OFF_4"
+        rule.sunday = "WEEK_OFF_ALL"
+        db.session.commit()
+
+    login(client)
+    export = client.get("/master/export.csv").data
+    assert b"Saturday=2,4; Sunday=All" in export
+
+    with app.app_context():
+        # Wipe the pattern, as a restore into an empty system would find it.
+        rule = WeekOffRule.query.filter_by(employee_id="5").one()
+        rule.saturday = rule.sunday = "WORKING"
+        db.session.commit()
+
+    assert b"imported" in import_master(client, export).data
+    with app.app_context():
+        rule = WeekOffRule.query.filter_by(employee_id="5").one()
+        assert rule.saturday == "WEEK_OFF_2,WEEK_OFF_4"
+        assert rule.sunday == "WEEK_OFF_ALL"
+        # A pattern someone put in the file is a decision, so it counts as confirmed.
+        assert rule.confirmed_at is not None
+
+
+def test_a_nonsense_week_off_pattern_is_rejected_by_line(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    csv_body = ("Employee ID,Name,Wage Type,Salary,Week Off Pattern\n"
+                "5,Month Worker,Monthly,30000,Funday=All\n").encode()
+    response = import_master(client, csv_body)
+    assert b"Row 2: Week Off Pattern" in response.data
+    with app.app_context():
+        assert WeekOffRule.query.filter_by(employee_id="5").one().sunday == "WEEK_OFF_ALL"
+
+
+def test_manual_day_overrides_travel_in_the_register_export(client, app):
+    """The register file is how a day status survives a rebuild."""
+    with app.app_context():
+        seed_register_month()
+        db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="5",
+                                          date=date(2026, 7, 2), manual_status="Worked On-Site",
+                                          notes="Customer site"))
+        db.session.commit()
+
+    login(client)
+    export = client.get("/attendance/2026-07/register.csv").data
+    assert b"Worked On-Site,Customer site" in export
+
+    with app.app_context():
+        AttendanceOverride.query.delete()
+        db.session.commit()
+
+    response = client.post("/attendance/2026-07", data={
+        "action": "import_register",
+        "register_csv": (BytesIO(export), "register.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"day status(es) applied" in response.data
+    with app.app_context():
+        restored = AttendanceOverride.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert restored.manual_status == "Worked On-Site"
+        assert restored.notes == "Customer site"

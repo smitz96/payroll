@@ -10,12 +10,12 @@ from werkzeug.security import check_password_hash
 from attendance import db
 from attendance.authentication import change_password, login_required
 from attendance.models import AuditLog, User
-from attendance.settings import daily_bonus_rule_rows, monthly_rule_rows
+from attendance.settings import daily_bonus_rule_rows, leave_rule_rows, monthly_rule_rows
 from attendance.statutory import statutory_rule_rows
 from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
-APP_VERSION = "V0.08"
+APP_VERSION = "V0.09"
 RESET_CONFIRMATION_TEXT = "permanently delete"
 
 
@@ -94,6 +94,7 @@ def index():
     return render_template(
         "settings.html",
         monthly_rules=monthly_rule_rows(),
+        leave_rules=leave_rule_rows(),
         daily_bonus_rules=daily_bonus_rule_rows(),
         statutory_rules=statutory_rule_rows(),
         about=about,

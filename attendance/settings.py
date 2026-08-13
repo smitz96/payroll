@@ -31,7 +31,7 @@ MONTHLY_RULES = {
 MONTHLY_RULE_LABELS = {
     "FULL_DAY_MINUTES": ("Full working day", "Target hours used to size the short-hours deduction."),
     "FULL_DAY_REQUIRED_MINUTES": ("Full-day grace threshold", "At or above this, the day is paid full with no short-hours deduction."),
-    "HALF_DAY_MINIMUM_MINUTES": ("Half-day minimum", "Below this, a worked day is not payable (full-day LOP for monthly wage)."),
+    "HALF_DAY_MINIMUM_MINUTES": ("Half-day minimum", "Below this a worked day earns no pay of its own. For monthly wage it is covered by available leave, and is loss of pay only if there is none."),
     "LESS_HOURS_RULE_MINIMUM_MINUTES": ("Short-hours floor", "Between this and the grace threshold, the day is paid full with a short-hours deduction."),
     "OVERTIME_START_MINUTES": ("Overtime starts after", "Overtime accrues only beyond this daily duration."),
     "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Short hours are rounded up to this interval; overtime is floored to it. A 48-minute shortfall is charged as 60; 29 minutes of overtime is paid as 15."),
@@ -101,3 +101,39 @@ def daily_bonus_rule_rows():
         display = f"{value // 60}h {value % 60:02d}m" if key in MINUTE_RULE_KEYS else f"{value}% of earned wage"
         rows.append({"key": key, "label": label, "value": display, "detail": detail})
     return rows
+
+
+# Leave policy, written out because none of it is a number on a dial: it is decided
+# by how the calculation settles a month, and the Settings page is where anyone
+# checking payroll goes looking for it.
+LEAVE_RULES = [
+    ("Earned each month", f"{MONTHLY_RULES['LEAVE_EARNED_PER_MONTH']} days",
+     "Pro-rated by the days that end up paid, so a month with loss of pay earns less. "
+     "Truncated rather than rounded, so the accrual never overshoots."),
+    ("Taken in", "Half-day steps",
+     "A balance is floored to the nearest half day before it can cover anything: 1.38 days "
+     "covers 1 day and keeps 0.38, and 1.92 covers 1.5."),
+    ("Covers", "Absence, and short days",
+     "An absent day, the unworked half of a half day, and a day worked under the half-day "
+     "minimum. Oldest day first. A day set to Unpaid Leave by hand is never covered."),
+    ("Week off between unpaid days", "Charged to leave",
+     "The sandwich rule: a week off with an unpaid day on either side is charged to leave. "
+     "With no balance behind it the day is loss of pay, and it is shown that way."),
+    ("Beyond the balance", "Loss of pay",
+     "Deducted at one day of salary, where a day is the month's salary divided by the days "
+     "in that month."),
+    ("Carried forward", "In full",
+     "Whatever is left is the next month's opening balance, once the month is finalized. "
+     "A month cannot be started until the month before it is."),
+    ("Encashed", "By employee, or the whole month",
+     "Encashment is paid at the same daily rate and is capped at the balance left after the "
+     "month's leave has been taken."),
+    ("Daily wage", "No leave",
+     "Daily wage employees are paid for the days they work and earn the monthly attendance "
+     "bonus below in place of leave."),
+]
+
+
+def leave_rule_rows():
+    """Settings-page rows for the leave policy."""
+    return [{"label": label, "value": value, "detail": detail} for label, value, detail in LEAVE_RULES]

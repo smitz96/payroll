@@ -3,8 +3,9 @@ from decimal import Decimal
 
 from attendance import db
 from attendance.employee_defaults import ensure_employee_defaults
-from attendance.models import AuditLog, Employee, SalaryRecord
+from attendance.models import AuditLog, Employee, SalaryRecord, WeekOffRule
 from attendance.utils import clean, decimal_money, is_valid_payroll_month, normalize_salary_type, parse_csv_date
+from attendance.weekoffs import WEEKDAY_FIELDS, get_or_create_weekoff_rule, parse_weekoff_pattern, weekoff_pattern_text
 
 ACTIVE_STATUS = "ACTIVE"
 # Only ACTIVE employees are included in payroll. INACTIVE is a reversible pause;
@@ -124,6 +125,9 @@ def employees_left_out_of_month(payroll_month):
 
 def employee_master_export_rows():
     rows = []
+    # One query rather than one per employee: the pattern is part of what makes the
+    # file a complete record of an employee, so every row carries it.
+    rules = {rule.employee_id: rule for rule in WeekOffRule.query.all()}
     for employee in sorted(Employee.query.all(), key=employee_sort_value):
         wage_group = normalize_salary_type(employee.salary_type)
         monthly = wage_group == "MONTHLY"
@@ -148,6 +152,7 @@ def employee_master_export_rows():
             # The attendance bonus is a daily wage rule, so the column is blank for
             # monthly just as the breakup columns are blank for daily.
             "Ignore Monthly Bonus": ("Yes" if employee.bonus_ignored else "No") if daily else "",
+            "Week Off Pattern": weekoff_pattern_text(rules.get(employee.id)),
             "Status": employee.employment_status or ACTIVE_STATUS,
             # Blank for anyone still working. For a leaver this is the date that
             # decides their final payroll month, so it has to survive the round trip.
@@ -159,7 +164,7 @@ def employee_master_export_rows():
 EMPLOYEE_MASTER_EXPORT_COLUMNS = [
     "Employee ID", "Name", "Department", "Designation", "Wage Type", "Salary",
     "Basic", "HRA", "Allowance", "TDS", "PF", "ESIC", "Ignore OT", "Ignore Less Hours",
-    "Ignore Monthly Bonus", "Status", "Last Working Day",
+    "Ignore Monthly Bonus", "Week Off Pattern", "Status", "Last Working Day",
 ]
 
 # Illustrative rows shipped at the top of the export so the expected shape of every
@@ -218,6 +223,10 @@ def disabled_row_conflicts(employee, row):
             conflicts.append(column)
 
     differs("Department", employee.department or "")
+    if clean(row.get("Week Off Pattern")):
+        rule = WeekOffRule.query.filter_by(employee_id=employee.id).first()
+        if weekoff_pattern_text(rule) != clean(row.get("Week Off Pattern")):
+            conflicts.append("Week Off Pattern")
     differs("Designation", employee.designation or "")
     if clean(row.get("Wage Type")) and normalize_salary_type(row.get("Wage Type")) != normalize_salary_type(employee.salary_type):
         conflicts.append("Wage Type")
@@ -245,6 +254,32 @@ def disabled_row_conflicts(employee, row):
         except ValueError:
             conflicts.append(label)
     return conflicts
+
+
+def apply_weekoff_pattern(employee, row, row_number, changes):
+    """Read the Week Off Pattern column, if the file carries one.
+
+    A blank cell leaves the stored pattern alone, so a file written before this
+    column existed still round-trips. Anything else replaces the whole pattern,
+    which is what lets an import take a week off away as well as give one.
+    """
+    if "Week Off Pattern" not in row:
+        return
+    text = clean(row.get("Week Off Pattern"))
+    if not text:
+        return
+    fields = parse_weekoff_pattern(text, label=f"Row {row_number}: Week Off Pattern")
+    rule = get_or_create_weekoff_rule(employee.id)
+    before = weekoff_pattern_text(rule)
+    for field, value in fields.items():
+        setattr(rule, field, value)
+    after = weekoff_pattern_text(rule)
+    if before != after:
+        changes.append(f"Week Off Pattern {before or 'None'} -> {after or 'None'}")
+        # A pattern someone typed into the file is a decision, so it counts as
+        # confirmed; a rule the system invented does not.
+        rule.confirmed_at = rule.confirmed_at or datetime.utcnow()
+        db.session.add(rule)
 
 
 def apply_status_columns(employee, row, row_number, changes, require_date=True):
@@ -470,6 +505,7 @@ def apply_employee_master_import(rows, actor):
                     changes.append(f"{label} {'Yes' if getattr(employee, key) else 'No'} -> {'Yes' if flag else 'No'}")
                     setattr(employee, key, flag)
 
+        apply_weekoff_pattern(employee, row, row_number, changes)
         apply_status_columns(employee, row, row_number, changes, require_date=not is_new)
 
         for field, label in (("ot_ignored", "Ignore OT"), ("less_hours_ignored", "Ignore Less Hours")):

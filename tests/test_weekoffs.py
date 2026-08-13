@@ -75,7 +75,8 @@ def test_backfill_default_weekoffs_assigns_sunday_to_existing_employees(app):
         rule = WeekOffRule.query.filter_by(employee_id="8").one()
         assert rule.sunday == "WEEK_OFF_ALL"
         assert rule.monday == "WORKING"
-        assert rule.confirmed_at is not None
+        # Backfilled rules await confirmation, so the review item can still fire.
+        assert rule.confirmed_at is None
         assert is_week_off_for_date("8", date(2026, 7, 5)) is True
         assert is_week_off_for_date("8", date(2026, 7, 6)) is False
         assert AuditLog.query.filter_by(action="Default Week Off Backfilled").count() == 1
