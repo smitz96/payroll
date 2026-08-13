@@ -317,7 +317,15 @@ def import_attendance_csv(path, month, actor="admin"):
     rows = attendance_rows_from_upload(path)
     missing = [name for name in ATTENDANCE_REQUIRED if name not in (rows[0].keys() if rows else [])]
     if missing:
-        raise ValueError("Attendance CSV missing columns: " + ", ".join(missing))
+        # The two formats are not interchangeable: .xlsx is read as the daily punch
+        # grid (dates across the top), while .csv must be one row per employee-day.
+        # Saying so here is the difference between "my file was rejected" and "the
+        # upload did nothing", which is how a grid saved as CSV reads otherwise.
+        hint = ("The daily punch report grid must be uploaded as .xlsx. A .csv file has to be "
+                "one row per employee per day."
+                if Path(path).suffix.lower() != ".xlsx" else
+                "The .xlsx must be the daily punch report, with dates across the top row.")
+        raise ValueError(f"Attendance file is missing column(s): {', '.join(missing)}. {hint}")
     unknown = unknown_attendance_employees(rows)
     if unknown:
         raise UnknownEmployeesError(unknown)

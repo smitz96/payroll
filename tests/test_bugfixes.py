@@ -3995,3 +3995,32 @@ def test_a_blank_register_status_leaves_the_day_alone_and_auto_clears_it(client,
     assert b"1 cleared" in response.data
     with app.app_context():
         assert AttendanceOverride.query.count() == 0
+
+
+def test_a_half_covered_absence_is_topped_up_by_the_leave_earned_this_month(app):
+    """Leave in hand must not sit unused while the employee loses pay.
+
+    The opening balance runs out mid-day, leaving the absence half covered. Nothing
+    used to look at that day again, so half a day went unpaid even though the month's
+    own accrual could have covered it.
+    """
+    with app.app_context():
+        by_date, result = seed_boundary_month("2026-11", 2026, 11, absent_days={9}, opening=Decimal("0.5"))
+
+        assert by_date["2026-11-09"] == "Paid Leave"
+        assert Decimal(result.lop_days) == Decimal("0")
+        assert Decimal(result.leave_used) == Decimal("1")
+        # The second half came out of this month's accrual, not out of thin air.
+        assert Decimal(result.closing_leave) == (
+            Decimal(result.opening_leave) + Decimal(result.leave_earned) - Decimal(result.leave_used))
+
+
+def test_leave_top_up_does_not_conjure_a_balance_that_is_not_there(app):
+    """With nothing accrued to spare, the half day stays unpaid."""
+    with app.app_context():
+        # Absent nearly the whole month: the accrual is tiny because it is earned on
+        # paid days, so there is nothing to finish covering the split day with.
+        by_date, result = seed_boundary_month(
+            "2026-11", 2026, 11, absent_days=set(range(2, 28)), opening=Decimal("0.5"))
+        assert Decimal(result.lop_days) > 0
+        assert Decimal(result.leave_used) <= Decimal(result.opening_leave) + Decimal(result.leave_earned)

@@ -50,8 +50,11 @@
   <h2 class="section-title">{{ "Re-import the punch sheet" if employee_rows else "Import the punch sheet" }}</h2>
   <div class="d-flex justify-content-between align-items-end gap-3 flex-wrap">
     <div class="flex-grow-1">
-      <label class="form-label">Attendance CSV / XLSX</label>
-      <input class="form-control" type="file" name="attendance_csv" accept=".csv,.xlsx" required {% if is_finalized %}disabled{% endif %}>
+      <label class="form-label" for="attendanceUpload">Daily punch report (.xlsx) or day-wise sheet (.csv)</label>
+      <input class="form-control" id="attendanceUpload" type="file" name="attendance_csv" accept=".csv,.xlsx" required {% if is_finalized %}disabled{% endif %}>
+      {# The two formats are read differently, and a grid saved as .csv is rejected,
+         so the difference is stated here rather than left to the error message. #}
+      <small class="text-muted">The .xlsx is the punch machine's grid, with dates across the top. A .csv must be one row per employee per day.</small>
       <div class="status-detail mt-2">
         {% if employee_rows %}
         Re-import clears existing attendance review changes and fetches the newly uploaded file.

@@ -709,6 +709,21 @@ def apply_leave_balance(classified_rows, available):
                 })
                 used += Decimal("0.5")
             continue
+        if row["status"] == HALF_LEAVE_HALF_LOP_STATUS:
+            # A day an earlier pass could only half-cover, because the opening balance
+            # ran out mid-day. The leave earned this month can finish the job: without
+            # this the employee loses half a day's pay while a full day of leave sits
+            # unused, since no later pass ever looks at a day again once it is split.
+            if available - used >= Decimal("0.5"):
+                row.update({
+                    "status": "Paid Leave",
+                    "paid_day": Decimal("0"),
+                    "leave_used": Decimal("1"),
+                    "half_lop": False,
+                    "explanation": "Absent day covered by available leave balance.",
+                })
+                used += Decimal("0.5")
+            continue
         if row["status"] != ABSENT_STATUS:
             continue
         remaining = available - used
