@@ -89,21 +89,29 @@ def leave_balance_rows():
                 f"{display_month(open_result.payroll_month)} payroll is not finalized. "
                 f"Its leave is not counted yet ({pending_change:+} day(s) pending)."
             )
+        # The movement columns come from the last finalized month, but before a single
+        # month is finalized that leaves the whole page reading 0.0, which looks like
+        # missing data rather than a balance that has not moved yet. Fall back to the
+        # draft month's own figures and mark the row as pending.
+        movement = result or open_result
         rows.append({
             "pending_change": pending_change,
             "pending_month": open_result.payroll_month if open_result else None,
+            "movement_is_draft": result is None and open_result is not None,
             "employee": employee,
             "salary": salary,
             "last_result": result,
-            "opening_leave": format_leave(result.opening_leave) if result else Decimal("0.0"),
-            "leave_earned": format_leave(result.leave_earned) if result else Decimal("0.0"),
-            "leave_used": format_leave(result.leave_used) if result else Decimal("0.0"),
-            "leave_encashed": format_leave(getattr(result, "leave_encashment_days", 0)) if result else Decimal("0.0"),
+            "opening_leave": format_leave(movement.opening_leave) if movement else Decimal("0.0"),
+            "leave_earned": format_leave(movement.leave_earned) if movement else Decimal("0.0"),
+            "leave_used": format_leave(movement.leave_used) if movement else Decimal("0.0"),
+            "leave_encashed": format_leave(getattr(movement, "leave_encashment_days", 0)) if movement else Decimal("0.0"),
             "previous_closing_leave": format_leave(result.closing_leave) if result else None,
             "current_balance": current,
-            "last_payroll_month": result.payroll_month if result else None,
-            "salary_type": salary.salary_type if salary else "",
-            "normalized_salary_type": salary.normalized_salary_type if salary else "",
+            "last_payroll_month": (result or movement).payroll_month if (result or movement) else None,
+            # The wage type lives on the employee master; the salary record only
+            # carries it for months that have been uploaded, so it is the fallback.
+            "salary_type": (employee.salary_type or (salary.salary_type if salary else "")) or "",
+            "normalized_salary_type": (employee.normalized_salary_type or (salary.normalized_salary_type if salary else "")) or "",
             "notes": " ".join(notes),
         })
     return rows

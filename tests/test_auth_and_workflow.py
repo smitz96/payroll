@@ -1056,17 +1056,17 @@ def test_employee_detail_common_save_recalculates_adjustment_and_loan(client, ap
         assert salary.loan == Decimal("500.00")
         assert salary.leave_encashment_enabled is True
         assert salary.leave_encashment_days == Decimal("3.0")
-        assert salary.leave_encashment_amount == Decimal("3000.00")
+        assert salary.leave_encashment_amount == Decimal("2903.23")
         assert result.manual_adjustment == Decimal("100.00")
         assert result.leave_encashment_days == Decimal("3.0")
-        assert result.leave_encashment_amount == Decimal("3000.00")
+        assert result.leave_encashment_amount == Decimal("2903.23")
         # 3.00 of the 3.06 available were encashed, so the accrual remainder carries.
         assert result.closing_leave == Decimal("0.06")
         assert result.loan_deduction == Decimal("500.00")
-        assert result.final_salary == Decimal("32400.00")
+        assert result.final_salary == Decimal("32303.23")
         audit = AuditLog.query.filter_by(action="Employee Payroll Data Changed").one()
         assert "Adjustment: 0.00 -> 100.00" in audit.detail
-        assert "Leave Encashment: Disabled 0 day(s) / 0.00 -> Enabled 3.00 day(s) / 3000.00" in audit.detail
+        assert "Leave Encashment: Disabled 0 day(s) / 0.00 -> Enabled 3.00 day(s) / 2903.23" in audit.detail
         assert "Loan: 0.00 -> 500.00" in audit.detail
 
 
@@ -1361,9 +1361,9 @@ def test_global_leave_encashment_encashes_all_available_leaves(client, app):
         result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
         # Global encashment takes the whole balance, accrual remainder included.
         assert result.leave_encashment_days == Decimal("3.06")
-        assert result.leave_encashment_amount == Decimal("3060.00")
+        assert result.leave_encashment_amount == Decimal("2961.29")
         assert result.closing_leave == Decimal("0.00")
-        assert result.final_salary == Decimal("32860.00")
+        assert result.final_salary == Decimal("32761.29")
 
 
 def test_global_leave_encashment_can_be_disabled_per_employee(client, app):

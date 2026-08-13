@@ -16,7 +16,7 @@ from attendance.loans import active_loans_for_employee, employee_has_loan, loan_
 from attendance.master import employee_active_for_payroll_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv
-from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave
+from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave, salary_days_for_month
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
 from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
 from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
@@ -263,7 +263,7 @@ def save_employee_detail_changes(month, employee_id):
                     raise ValueError("No leaves available for encashment.")
                 raise ValueError(f"Only {available_leave} leave(s) available for encashment.")
         salary.leave_encashment_days = leave_encashment_days if salary.leave_encashment_enabled and not global_leave_encashment else 0
-        salary.leave_encashment_amount = money((Decimal(salary.salary or 0) / Decimal(CFG["SALARY_CALCULATION_DAYS"])) * salary.leave_encashment_days) if salary.leave_encashment_enabled and not global_leave_encashment else 0
+        salary.leave_encashment_amount = money((Decimal(salary.salary or 0) / Decimal(salary_days_for_month(month))) * salary.leave_encashment_days) if salary.leave_encashment_enabled and not global_leave_encashment else 0
         if salary.adjustment != old_adjustment:
             change_details.append(f"Adjustment: {audit_money(old_adjustment)} -> {audit_money(salary.adjustment)}")
         if salary.loan != old_loan:

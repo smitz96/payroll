@@ -56,7 +56,10 @@
           </td>
           <td>{{ row.salary_type or "N/A" }}</td>
           <td><span class="badge {{ 'text-bg-success' if employee.employment_status == 'ACTIVE' else 'text-bg-secondary' }}">{{ employee.employment_status }}</span></td>
-          <td>{{ row.last_payroll_month or "N/A" }}</td>
+          <td>{{ row.last_payroll_month or "N/A" }}{% if row.movement_is_draft %} <span class="badge text-bg-warning">Draft</span>{% endif %}</td>
+          {# Before any month is finalized these come from the draft month, so the
+             columns show the real movement rather than a page full of zeros. The
+             Draft badge above says the figures can still change. #}
           <td>{{ row.opening_leave }}</td>
           <td>{{ row.leave_earned }}</td>
           <td>{{ row.leave_used }}</td>

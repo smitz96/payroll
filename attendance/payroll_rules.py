@@ -10,7 +10,7 @@ from attendance.loans import loan_installment_for_employee, loan_pending_after_m
 from attendance.settings import DAILY_BONUS_RULES as BONUS_CFG
 from attendance.statutory import professional_tax, statutory_for_employee
 from attendance.settings import MONTHLY_RULES as CFG
-from attendance.utils import LEAVE_DAY_PRECISION, floor_to_interval, minutes_to_duration, money, truncate_leave_days
+from attendance.utils import LEAVE_DAY_PRECISION, ceil_to_interval, floor_to_interval, minutes_to_duration, money, truncate_leave_days
 from attendance.weekoffs import is_week_off_for_date
 
 
@@ -53,9 +53,10 @@ class MonthlyPayrollRule(PayrollRule):
         holidays = holidays or set()
         overrides = overrides or {}
         salary = Decimal(salary_record.salary)
-        hourly_rate = salary / Decimal(CFG["SALARY_CALCULATION_DAYS"] * CFG["SALARY_HOURS_PER_DAY"])
+        salary_days = Decimal(salary_days_for_month(salary_record.payroll_month))
+        daily_rate = salary / salary_days
+        hourly_rate = daily_rate / Decimal(CFG["SALARY_HOURS_PER_DAY"])
         quarter_rate = hourly_rate / Decimal(4)
-        daily_rate = salary / Decimal(CFG["SALARY_CALCULATION_DAYS"])
         full_days = Decimal("0")
         half_days = Decimal("0")
         week_offs = 0
@@ -118,6 +119,11 @@ class MonthlyPayrollRule(PayrollRule):
         # 0.4 and an earning of 0.4 would redeem nothing even though they make 0.8.
         opening_remainder = max(Decimal("0"), opening_for_absences - opening_applied)
         earned_applied = apply_leave_balance(classified_rows, leave_earned + opening_remainder)
+        # Explicit leave was booked before the balance was known, so more leave can be
+        # on the days than the employee holds. Withdraw the unbacked days here rather
+        # than only netting them off the total, so the days, the totals and the leave
+        # ledger cannot disagree.
+        downgrade_unbacked_leave(classified_rows, opening_balance + leave_earned)
 
         for rec, override, row in classified_rows:
             actual = rec.actual_minutes or 0
@@ -229,20 +235,24 @@ class MonthlyPayrollRule(PayrollRule):
         # Statutory contributions are based on what the employee actually earns this
         # month, so loss of pay and short hours reduce the wage they are computed on.
         # PF follows basic alone; ESI follows the whole earned wage.
-        earned_ratio = (salary - lop_deduction - less_deduction) / salary if salary else Decimal("0")
+        earned_wage = salary - lop_deduction - less_deduction
+        earned_ratio = earned_wage / salary if salary else Decimal("0")
         earned_basic = max(Decimal("0"), Decimal(employee.basic_salary or 0) if employee else Decimal("0")) * earned_ratio
-        esi_eligibility_wage = salary - lop_deduction - less_deduction
         pf, esi = statutory_for_employee(
             employee,
             earned_basic=earned_basic,
             # Overtime is part of ESI wages but must not decide coverage, so the
             # eligibility figure deliberately leaves it out.
-            esi_contribution_wage=esi_eligibility_wage + ot_amount,
-            esi_eligibility_wage=esi_eligibility_wage,
+            esi_contribution_wage=earned_wage + ot_amount,
+            # Coverage is a property of the wage rate and is fixed for the
+            # contribution period. Testing the ceiling against what was earned would
+            # enrol an employee above the ceiling for any month they took enough
+            # unpaid leave, and drop them again the month after.
+            esi_eligibility_wage=salary,
         )
         # Gujarat professional tax is charged on the wage actually earned, so a month
         # short enough to drop below the slab threshold attracts none.
-        prof_tax = professional_tax(esi_eligibility_wage)
+        prof_tax = professional_tax(earned_wage)
         # TDS is not derived from anything here: it is the monthly amount entered on
         # the employee master, deducted as-is.
         tds = Decimal(employee.tds or 0) if employee else Decimal("0")
@@ -409,7 +419,13 @@ class DailyPayrollRule(PayrollRule):
         loan_pending = loan_pending_after_month_for_employee(salary_record.employee_id, salary_record.payroll_month)
         advance = advance_deduction_for_employee(salary_record.employee_id, salary_record.payroll_month)
         manual_deduction = abs(manual) if manual < 0 else Decimal("0")
-        total_deduction = less_deduction + loan + advance + manual_deduction
+        # Professional tax is levied on the earner, not on how they are paid, so a
+        # daily wage employee over the slab owes it just as a monthly one does. The
+        # basis is the wage earned for the month including the attendance bonus,
+        # which is part of their monthly wage, but excluding overtime — the same
+        # exclusion the monthly rule makes.
+        prof_tax = professional_tax(gross_salary - less_deduction + attendance_bonus)
+        total_deduction = less_deduction + loan + advance + manual_deduction + prof_tax
         total_addition = ot_amount + attendance_bonus + (manual if manual > 0 else Decimal("0"))
         final_salary = gross_salary - total_deduction + total_addition
         status = "Needs Review" if needs_review else "Calculated"
@@ -440,6 +456,7 @@ class DailyPayrollRule(PayrollRule):
             attendance_bonus_percent=bonus_percent,
             attendance_bonus_amount=money(attendance_bonus),
             lop_deduction=Decimal("0"),
+            professional_tax=money(prof_tax),
             manual_adjustment=manual,
             leave_encashment_days=Decimal("0"),
             leave_encashment_amount=Decimal("0"),
@@ -722,6 +739,77 @@ def apply_leave_balance(classified_rows, available):
     return used
 
 
+def downgrade_unbacked_leave(classified_rows, available):
+    """Turn leave days with no balance behind them into loss of pay.
+
+    Sandwich week offs and manual leave overrides are booked before the balance is
+    known, so a month can demand more leave than the employee has. Those days were
+    already charged as loss of pay in the totals, but the day still read "Paid
+    Leave" and the full figure was written to the leave ledger, so the ledger did
+    not balance and the detail page contradicted the paid-day count. Downgrading the
+    day itself keeps every view telling the same story.
+
+    Leave is consumed oldest day first, so the days that lose are the latest ones.
+    The budget is the redeemable balance: leave is taken in half-day steps, so a
+    balance of 0.67 covers half a day and the remaining 0.17 carries forward.
+    """
+    budget = redeemable_leave(available)
+    booked = sum((Decimal(str(row["leave_used"])) for _rec, _ov, row in classified_rows), Decimal("0"))
+    excess = booked - budget
+    if excess <= 0:
+        return Decimal("0")
+    downgraded = Decimal("0")
+    for _rec, _override, row in reversed(classified_rows):
+        if excess <= 0:
+            break
+        used = Decimal(str(row["leave_used"]))
+        if used <= 0:
+            continue
+        status = row["status"]
+        if used > excess:
+            # A whole day's leave with only half a day of excess: keep half of it.
+            row.update({
+                "status": HALF_LEAVE_HALF_LOP_STATUS,
+                "paid_day": Decimal("0"),
+                "leave_used": Decimal("0.5"),
+                "half_lop": True,
+                "explanation": "Half of this leave day had no leave balance behind it, so that half is loss of pay.",
+            })
+            downgraded += used - Decimal("0.5")
+            excess -= used - Decimal("0.5")
+            continue
+        if status == HALF_DAY_WITH_LEAVE_STATUS:
+            # Half the day was worked; only the leave half is withdrawn.
+            row.update({
+                "status": "Half Day Present",
+                "paid_day": Decimal("0.5"),
+                "leave_used": Decimal("0"),
+                "explanation": "Half day worked; no leave balance was available for the other half, so it is loss of pay.",
+            })
+        elif status == HALF_LEAVE_HALF_LOP_STATUS or used == Decimal("0.5"):
+            row.update({
+                "status": "Half Day LOP" if status != HALF_LEAVE_HALF_LOP_STATUS else "Full Day LOP",
+                "paid_day": Decimal("0"),
+                "leave_used": Decimal("0"),
+                "half_lop": False,
+                "explanation": "No leave balance was available to cover this day, so it is loss of pay.",
+            })
+        else:
+            row.update({
+                "status": "Full Day LOP",
+                "paid_day": Decimal("0"),
+                "leave_used": Decimal("0"),
+                "explanation": (
+                    "Sandwich leave with no leave balance behind it, so the day is loss of pay."
+                    if status == "Sandwich Leave"
+                    else "No leave balance was available to cover this day, so it is loss of pay."
+                ),
+            })
+        downgraded += used
+        excess -= used
+    return downgraded
+
+
 def apply_sandwich_leave_policy(classified_rows):
     leave_like_statuses = {
         "Paid Leave",
@@ -763,10 +851,15 @@ def apply_sandwich_leave_policy(classified_rows):
 
 
 def calculate_monthly_shortage(actual_minutes):
+    """Minutes short of a full day, rounded *up* to the rounding interval.
+
+    Short hours round up and overtime rounds down: 48 minutes short is charged as
+    60, while 29 minutes over is paid as 15. The two are deliberately asymmetric.
+    """
     if actual_minutes is None or actual_minutes < CFG["LESS_HOURS_RULE_MINIMUM_MINUTES"] or actual_minutes >= CFG["FULL_DAY_REQUIRED_MINUTES"]:
         return 0
-    rounded = floor_to_interval(actual_minutes, CFG["ROUNDING_INTERVAL_MINUTES"])
-    return max(0, CFG["FULL_DAY_MINUTES"] - rounded)
+    shortfall = CFG["FULL_DAY_MINUTES"] - int(actual_minutes)
+    return max(0, ceil_to_interval(shortfall, CFG["ROUNDING_INTERVAL_MINUTES"]))
 
 
 def calculate_monthly_overtime(actual_minutes, quarter_rate=Decimal("0")):
@@ -774,13 +867,24 @@ def calculate_monthly_overtime(actual_minutes, quarter_rate=Decimal("0")):
         return 0, 0, Decimal("0")
     raw = actual_minutes - CFG["OVERTIME_START_MINUTES"]
     rounded = floor_to_interval(raw, CFG["ROUNDING_INTERVAL_MINUTES"])
-    amount = quarter_rate * Decimal(rounded // CFG["ROUNDING_INTERVAL_MINUTES"])
+    amount = (quarter_rate * Decimal(rounded // CFG["ROUNDING_INTERVAL_MINUTES"])
+              * Decimal(CFG["OVERTIME_MULTIPLIER"]))
     return raw, rounded, amount
 
 
 def days_in_payroll_month(payroll_month):
     year, month = [int(part) for part in payroll_month.split("-", 1)]
     return calendar.monthrange(year, month)[1]
+
+
+def salary_days_for_month(payroll_month):
+    """Days a monthly salary is spread over.
+
+    The manual salary sheet pro-rates on the real length of the month, so a day in
+    February is worth more than a day in July. SALARY_CALCULATION_DAYS overrides
+    that with a fixed figure when it is set to something other than 0.
+    """
+    return CFG["SALARY_CALCULATION_DAYS"] or days_in_payroll_month(payroll_month)
 
 
 def calculate_monthly_leave_earned(eligible_leave_days, days_in_month):

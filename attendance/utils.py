@@ -55,6 +55,10 @@ def floor_to_interval(minutes, interval=15):
     return (int(minutes) // interval) * interval
 
 
+def ceil_to_interval(minutes, interval=15):
+    return -((-int(minutes)) // interval) * interval
+
+
 MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 

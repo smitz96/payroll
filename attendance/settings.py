@@ -11,8 +11,14 @@ MONTHLY_RULES = {
     "LESS_HOURS_RULE_MINIMUM_MINUTES": 6 * 60,
     "OVERTIME_START_MINUTES": 9 * 60 + 15,
     "ROUNDING_INTERVAL_MINUTES": 15,
-    "SALARY_CALCULATION_DAYS": 30,
+    # 0 means "use the actual number of days in the payroll month", which is what the
+    # manual salary sheet does. A fixed number can still be set here, but no single
+    # figure is right for both a 28-day and a 31-day month.
+    "SALARY_CALCULATION_DAYS": 0,
     "SALARY_HOURS_PER_DAY": 9,
+    # Overtime is paid at this multiple of the ordinary hourly rate. Statutory
+    # overtime in India is payable at twice ordinary wages.
+    "OVERTIME_MULTIPLIER": 2,
     "LEAVE_EARNED_PER_MONTH": 2,
     # A single In/Out pair longer than this is treated as a punch error rather than
     # paid time. Sized to clear a genuine overnight shift (typically 8-12h) while
@@ -28,9 +34,10 @@ MONTHLY_RULE_LABELS = {
     "HALF_DAY_MINIMUM_MINUTES": ("Half-day minimum", "Below this, a worked day is not payable (full-day LOP for monthly wage)."),
     "LESS_HOURS_RULE_MINIMUM_MINUTES": ("Short-hours floor", "Between this and the grace threshold, the day is paid full with a short-hours deduction."),
     "OVERTIME_START_MINUTES": ("Overtime starts after", "Overtime accrues only beyond this daily duration."),
-    "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Short hours and overtime are floored to this interval."),
-    "SALARY_CALCULATION_DAYS": ("Salary days per month", "Monthly salary is divided by this for the daily LOP rate."),
-    "SALARY_HOURS_PER_DAY": ("Salary hours per day", "Hourly rate is monthly salary / (salary days x this)."),
+    "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Short hours are rounded up to this interval; overtime is floored to it. A 48-minute shortfall is charged as 60; 29 minutes of overtime is paid as 15."),
+    "SALARY_CALCULATION_DAYS": ("Salary days per month", "Monthly salary is divided by this for the daily LOP rate. Set to 0 to divide by the actual days in each month."),
+    "SALARY_HOURS_PER_DAY": ("Salary hours per day", "Hourly rate is the daily rate / this."),
+    "OVERTIME_MULTIPLIER": ("Overtime multiplier", "Overtime is paid at this multiple of the ordinary hourly rate."),
     "LEAVE_EARNED_PER_MONTH": ("Leave earned per full month", "Pro-rated by paid days and truncated to one decimal."),
     "MAX_SESSION_MINUTES": ("Maximum overnight session", "An In/Out pair that crosses midnight and runs longer than this is flagged as a punch error instead of being paid. Long same-day shifts are unaffected."),
 }
@@ -73,7 +80,9 @@ def monthly_rule_rows():
         elif key == "ROUNDING_INTERVAL_MINUTES":
             display = f"{value} minutes"
         elif key == "SALARY_CALCULATION_DAYS":
-            display = f"{value} days"
+            display = "Days in the month" if not value else f"{value} days"
+        elif key == "OVERTIME_MULTIPLIER":
+            display = f"{value}x ordinary rate"
         elif key == "SALARY_HOURS_PER_DAY":
             display = f"{value} hours"
         elif key == "LEAVE_EARNED_PER_MONTH":

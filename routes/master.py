@@ -95,10 +95,18 @@ def export_csv():
 def import_csv():
     try:
         rows = parse_csv_upload(request.files.get("employee_master_csv"), MASTER_IMPORT_REQUIRED_COLUMNS)
-        changed, created = apply_employee_master_import(rows, current_username())
+        changed, created, skipped = apply_employee_master_import(rows, current_username())
         db.session.commit()
         updated = len(changed) - len(created)
-        flash(f"Employee master imported. {len(created)} employee(s) added, {updated} updated.", "success")
+        unchanged = len(rows) - skipped - len(changed)
+        # Every line in the file is accounted for, so the count can be reconciled
+        # against the list and the export without the reader having to guess.
+        detail = f"{len(created)} employee(s) added, {updated} updated"
+        if unchanged > 0:
+            detail += f", {unchanged} unchanged"
+        if skipped:
+            detail += f", {skipped} sample row(s) skipped"
+        flash(f"Employee master imported. {detail}. {len(rows)} row(s) read.", "success")
     except Exception as exc:
         db.session.rollback()
         flash(str(exc), "danger")

@@ -160,10 +160,14 @@ def is_sample_row(row):
 def apply_employee_master_import(rows, actor):
     changed = []
     created_ids = []
+    skipped_samples = 0
     for row_number, row in enumerate(rows, start=2):
         # The export leads with illustrative rows; ignore them on the way back in so
-        # an untouched export can be re-imported without error.
+        # an untouched export can be re-imported without error. They are counted so
+        # the import message adds up to the number of lines in the file, which is
+        # otherwise two short of what the reader can see.
         if is_sample_row(row):
+            skipped_samples += 1
             continue
         employee_id = clean(row.get("Employee ID"))
         if not employee_id:
@@ -348,7 +352,7 @@ def apply_employee_master_import(rows, actor):
             ),
         ))
     db.session.flush()
-    return changed, created_ids
+    return changed, created_ids, skipped_samples
 
 
 def save_master_employee(form, actor):

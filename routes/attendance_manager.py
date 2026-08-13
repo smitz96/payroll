@@ -1,6 +1,8 @@
+import csv
+from io import StringIO
 from pathlib import Path
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.utils import secure_filename
 
 from attendance import db
@@ -8,6 +10,7 @@ from attendance.authentication import current_username, login_required
 from attendance.calculator import calculate_payroll_month
 from attendance.models import AttendanceRecord, AuditLog, PayrollMonth, PayrollResult, SalaryRecord
 from attendance.parser import UnknownEmployeesError, implausible_session_minutes, import_attendance_csv, parse_punch_times, working_minutes_from_punches
+from attendance.register import MISSING_PUNCH_SCOPE, REGISTER_REQUIRED_COLUMNS, apply_register_import, register_csv, register_statuses
 from attendance.utils import display_month, is_valid_payroll_month, minutes_to_duration
 from attendance.weekoffs import is_week_off_for_date
 
@@ -123,6 +126,31 @@ def index():
     return redirect(url_for("payroll.new"))
 
 
+def parse_register_upload(file_storage):
+    if not file_storage or not file_storage.filename:
+        raise ValueError("Select a register CSV to import.")
+    reader = csv.DictReader(StringIO(file_storage.read().decode("utf-8-sig")))
+    missing = sorted(REGISTER_REQUIRED_COLUMNS - set(reader.fieldnames or []))
+    if missing:
+        raise ValueError("Register CSV missing column(s): " + ", ".join(missing))
+    return list(reader)
+
+
+@bp.route("/<month>/register.csv")
+@login_required
+def register_export(month):
+    """The month as a register sheet. `scope=missing` narrows it to no-punch days."""
+    if not is_valid_payroll_month(month):
+        abort(404)
+    scope = MISSING_PUNCH_SCOPE if request.args.get("scope") == MISSING_PUNCH_SCOPE else None
+    suffix = "-missing" if scope else ""
+    return Response(
+        register_csv(month, scope),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=smartfill-attendance-register-{month}{suffix}.csv"},
+    )
+
+
 @bp.route("/<month>", methods=["GET", "POST"])
 @login_required
 def month(month):
@@ -151,6 +179,18 @@ def month(month):
                 # direct route to add them instead of just naming them in a flash.
                 session["unknown_attendance_employees"] = exc.missing
             except Exception as exc:
+                flash(str(exc), "danger")
+            return redirect(url_for("attendance_manager.month", month=month))
+        if action == "import_register":
+            # The register is the handwritten record of who was actually working, so
+            # it lands as the same day-status overrides the employee page writes.
+            try:
+                rows = parse_register_upload(request.files.get("register_csv"))
+                applied, cleared, read = apply_register_import(rows, month, current_username())
+                flash(f"Attendance register imported. {applied} day status(es) applied, "
+                      f"{cleared} cleared, {read} row(s) read. Submit attendance to recalculate payroll.", "success")
+            except Exception as exc:
+                db.session.rollback()
                 flash(str(exc), "danger")
             return redirect(url_for("attendance_manager.month", month=month))
         records = AttendanceRecord.query.filter_by(payroll_month=month).all()
@@ -201,6 +241,7 @@ def month(month):
         month=month,
         month_label=display_month(month),
         payroll_month=payroll_month,
+        register_statuses=register_statuses(),
         dates=dates,
         employee_rows=employee_rows,
         odd_count=odd_count,

@@ -64,6 +64,32 @@
   </div>
 </form>
 
+{% if employee_rows %}
+{# The handwritten register is the record of who was actually working when the punch
+   machine could not see them. Correcting a couple of hundred no-punch days one at a
+   time is not workable, so the whole month goes out and comes back as day statuses. #}
+<div class="tool-panel mb-4">
+  <h2 class="section-title">Attendance register</h2>
+  <p class="text-muted">Download the month, fill in the <strong>Register Status</strong> column from the handwritten register, and upload it back. Blank leaves a day as the punches read it; <strong>Auto</strong> removes a status set earlier.</p>
+  <div class="d-flex justify-content-between align-items-end gap-3 flex-wrap">
+    <div class="d-flex gap-2 flex-wrap">
+      <a class="btn btn-outline-secondary" href="{{ url_for('attendance_manager.register_export', month=month, scope='missing') }}">Download no-punch days{% if missing_count %} ({{ missing_count }}){% endif %}</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('attendance_manager.register_export', month=month) }}">Download all days</a>
+    </div>
+    <form method="post" enctype="multipart/form-data" class="d-flex align-items-end gap-2 flex-wrap flex-grow-1">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="import_register">
+      <div class="flex-grow-1">
+        <label class="form-label" for="registerCsv">Filled register CSV</label>
+        <input class="form-control" id="registerCsv" type="file" name="register_csv" accept=".csv,text/csv" required {% if is_finalized %}disabled{% endif %}>
+      </div>
+      <button class="btn btn-outline-primary" {% if is_finalized %}disabled{% endif %}>Import register</button>
+    </form>
+  </div>
+  <div class="status-detail mt-2">Accepted statuses: {{ register_statuses|join(", ") }}. A row with anything else is reported by line number and nothing in the file is applied.</div>
+</div>
+{% endif %}
+
 <form method="post" id="attendanceManagerForm" class="module-card attendance-manager-card">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="action" id="attendanceAction" value="save">
@@ -182,7 +208,7 @@
   </div>
   {% if not is_finalized %}
   <div class="sticky-actions">
-    <span class="sticky-actions-hint">Punch edits across every page of the table are saved together.</span>
+    <span class="sticky-actions-hint">Saves the punch edits on this page. Rows on other pages are left as they are, so save before you change page.</span>
     <button class="btn btn-outline-primary" type="submit" data-attendance-action="save">Save only</button>
     <button class="btn btn-primary" type="submit" data-attendance-action="submit">Save &amp; calculate payroll</button>
   </div>

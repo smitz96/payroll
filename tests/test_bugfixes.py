@@ -2201,8 +2201,10 @@ def seed_boundary_month(month, year, month_number, absent_days, opening=Decimal(
                                 salary_type="Monthly", normalized_salary_type="MONTHLY",
                                 salary=Decimal("30000")))
     if opening:
-        db.session.add(LeaveLedger(employee_id="5", date=date(year, month_number, 1),
-                                   payroll_month=month, transaction_type="OPENING", amount=opening))
+        previous = f"{year - 1}-12" if month_number == 1 else f"{year}-{month_number - 1:02d}"
+        db.session.add(PayrollResult(payroll_month=previous, employee_id="5", payroll_rule_type="MONTHLY",
+                                     calculation_status="Calculated", closing_leave=opening,
+                                     final_salary=Decimal("30000")))
     for day in range(1, cal.monthrange(year, month_number)[1] + 1):
         when = date(year, month_number, day)
         if when.weekday() == 6 or day in absent_days:
@@ -2242,9 +2244,35 @@ def test_sandwich_still_applies_to_week_offs_inside_the_month(app):
     """The boundary rule must not disable the policy for ordinary mid-month weeks."""
     with app.app_context():
         # 8 Nov 2026 is a Sunday; absent on the Saturday before and Monday after.
-        by_date, result = seed_boundary_month("2026-11", 2026, 11, absent_days={7, 9})
+        # The opening balance covers all three days, so the sandwich day is charged
+        # to leave rather than being withdrawn for want of a balance.
+        by_date, result = seed_boundary_month("2026-11", 2026, 11, absent_days={7, 9}, opening=Decimal("3"))
         assert by_date["2026-11-08"] == "Sandwich Leave"
         assert Decimal(result.leave_used) > 0
+
+
+def test_sandwich_leave_with_no_balance_behind_it_is_shown_as_loss_of_pay(app):
+    """Leave the employee does not hold must not read as leave on any screen.
+
+    The day was always charged as loss of pay in the totals, but it used to keep the
+    "Sandwich Leave" label and the full figure went to the leave ledger, so the
+    ledger did not balance and the detail page contradicted the paid-day count.
+    """
+    with app.app_context():
+        by_date, result = seed_boundary_month("2026-11", 2026, 11, absent_days={7, 9})
+
+        # The balance stretches to 1.5 days, so 7 Nov is covered in full and 8 Nov
+        # only halfway; 9 Nov has nothing behind it at all.
+        assert by_date["2026-11-09"] == "Full Day LOP"
+        assert by_date["2026-11-08"] == "Half-Day Paid Leave / Half-Day LOP"
+        # Leave used never exceeds what was available, and what is left carries over.
+        available = Decimal(result.opening_leave) + Decimal(result.leave_earned)
+        assert Decimal(result.leave_used) <= available
+        assert Decimal(result.closing_leave) == available - Decimal(result.leave_used)
+        # The paid-day identity holds: nothing is counted as paid that was not paid.
+        assert (Decimal(result.paid_working_days) + Decimal(result.week_offs)
+                + Decimal(result.paid_leaves)) == total_paid_days(result)
+        assert Decimal(result.leave_used) == Decimal(result.paid_leaves)
 
 
 # --- Final salary report split into per-wage-group attendance summaries ---
@@ -2765,12 +2793,17 @@ def test_uncovered_contributions_read_as_zero_not_a_bare_digit(client, app):
     assert "Not applicable" in page
 
 
-def test_daily_wage_has_no_compliance_panel(client, app):
+def test_daily_wage_compliance_covers_professional_tax_but_not_pf_or_esic(client, app):
+    """PT is levied on the earner; PF and ESIC stay monthly-only."""
     with app.app_context():
         seed_two_wage_groups()
 
     login(client)
-    assert b"Payroll compliance" not in client.get("/payroll/2026-07/employee/6").data
+    daily = client.get("/payroll/2026-07/employee/6").data
+    assert b"Payroll compliance" in daily
+    assert b"Professional tax" in daily
+    assert b"Provident Fund" not in daily
+    assert b"Employee ESIC" not in daily
     assert b"Payroll compliance" in client.get("/payroll/2026-07/employee/5").data
 
 
@@ -3776,3 +3809,200 @@ def test_slip_history_holds_back_a_month_that_is_still_a_draft(client, app):
     blocked = client.get("/salary-slips/5.pdf")
     assert blocked.status_code == 302
     assert "/salary-slips/5" in blocked.headers["Location"]
+
+
+# --- July 2026 calculation audit ---
+
+def test_short_hours_round_up_while_overtime_rounds_down(app):
+    """The two are deliberately asymmetric: 48 minutes short costs 60, 29 over pays 15."""
+    from attendance.payroll_rules import calculate_monthly_overtime, calculate_monthly_shortage
+    # 8h12 is 48 minutes short of the 9h day.
+    assert calculate_monthly_shortage(8 * 60 + 12) == 60
+    # 8h47 is inside the 8h50 grace threshold by 3 minutes, but the band starts below
+    # it, so 13 minutes short is charged as a full 15.
+    assert calculate_monthly_shortage(8 * 60 + 47) == 15
+    # A day at or above the grace threshold is charged nothing at all.
+    assert calculate_monthly_shortage(8 * 60 + 50) == 0
+    # 9h44 is 29 minutes past the 9h15 trigger and pays for 15.
+    assert calculate_monthly_overtime(9 * 60 + 44)[1] == 15
+
+
+def test_overtime_is_paid_at_double_the_ordinary_rate(app):
+    from attendance.payroll_rules import calculate_monthly_overtime
+    from attendance.settings import MONTHLY_RULES
+    assert MONTHLY_RULES["OVERTIME_MULTIPLIER"] == 2
+    # A quarter-hour rate of 100 pays 200 for each 15 minutes of overtime.
+    _raw, rounded, amount = calculate_monthly_overtime(9 * 60 + 30, Decimal("100"))
+    assert rounded == 15
+    assert amount == Decimal("200")
+
+
+def test_a_day_is_worth_the_month_divided_by_its_own_length(app):
+    """The manual sheet pro-rates on calendar days, so July and February differ."""
+    from attendance.payroll_rules import salary_days_for_month
+    assert salary_days_for_month("2026-07") == 31
+    assert salary_days_for_month("2026-02") == 28
+    assert salary_days_for_month("2026-04") == 30
+
+
+def test_esi_coverage_follows_the_wage_rate_not_a_short_month(app):
+    """Unpaid leave must not enrol an employee who is above the ceiling."""
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="7", name="Above Ceiling", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("25000"),
+                                basic_salary=Decimal("16250"), hra=Decimal("8750"),
+                                esic_enabled=True))
+        db.session.add(WeekOffRule(employee_id="7", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="7", name="Above Ceiling",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("25000")))
+        # A single working day: the month's earned wage lands far below the ceiling.
+        when = date(2026, 7, 1)
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="7", employee_name="Above Ceiling",
+                                        date=when, day=when.strftime("%A"), first_punch="09:30 AM",
+                                        last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                        actual_minutes=540, parse_status="OK"))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="7").one()
+        assert Decimal(result.esi_employee) == Decimal("0")
+        assert Decimal(result.esi_employer) == Decimal("0")
+
+
+def test_professional_tax_is_charged_to_daily_wage_employees(app):
+    with app.app_context():
+        seed_two_wage_groups()
+        # 1,000 a day over two days plus the attendance bonus clears the 12,000 slab.
+        daily = SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        daily.salary = Decimal("7000")
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        assert Decimal(result.professional_tax) == Decimal("200")
+        # And it actually comes out of the pay, not just the display.
+        assert Decimal(result.total_deduction) >= Decimal("200")
+
+
+def test_professional_tax_is_not_charged_below_the_slab(app):
+    with app.app_context():
+        seed_two_wage_groups()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        assert Decimal(result.professional_tax) == Decimal("0")
+
+
+# --- The handwritten register applied in bulk ---
+
+def seed_register_month(month="2026-07"):
+    """One monthly employee with a punched day and a no-punch working day."""
+    db.session.add(PayrollMonth(month=month))
+    db.session.add(Employee(id="5", name="Field Staff", salary_type="Monthly",
+                            normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+    db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+    db.session.add(SalaryRecord(payroll_month=month, employee_id="5", name="Field Staff",
+                                salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                salary=Decimal("30000")))
+    db.session.add(AttendanceRecord(payroll_month=month, employee_id="5", employee_name="Field Staff",
+                                    date=date(2026, 7, 1), day="Wednesday", first_punch="09:30 AM",
+                                    last_punch="06:30 PM", raw_working_hours="9h 00m",
+                                    actual_minutes=540, parse_status="OK"))
+    db.session.add(AttendanceRecord(payroll_month=month, employee_id="5", employee_name="Field Staff",
+                                    date=date(2026, 7, 2), day="Thursday", parse_status="NEEDS_REVIEW",
+                                    warning="Missing punch and working hours"))
+    db.session.commit()
+
+
+def test_register_export_can_be_narrowed_to_the_no_punch_days(client, app):
+    with app.app_context():
+        seed_register_month()
+
+    login(client)
+    everything = client.get("/attendance/2026-07/register.csv")
+    assert everything.status_code == 200
+    assert everything.data.decode().count("Field Staff") == 2
+
+    missing = client.get("/attendance/2026-07/register.csv?scope=missing")
+    body = missing.data.decode()
+    # Only the day the punch machine could not see, which is what the register is for.
+    assert "02-07-2026" in body
+    assert "01-07-2026" not in body
+    # The row says why the day needs the register, so the sheet can be filled in
+    # without cross-checking the punch report.
+    assert "Missing punch and working hours" in body
+
+
+def test_register_import_applies_day_statuses_in_bulk(client, app):
+    with app.app_context():
+        seed_register_month()
+
+    login(client)
+    csv_body = (
+        "Employee ID,Date,Register Status,Notes\n"
+        "5,02-07-2026,Worked On-Site,Customer site\n"
+    )
+    response = client.post("/attendance/2026-07", data={
+        "action": "import_register",
+        "register_csv": (BytesIO(csv_body.encode()), "register.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"1 day status(es) applied" in response.data
+
+    with app.app_context():
+        override = AttendanceOverride.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert override.manual_status == "Worked On-Site"
+        assert override.notes == "Customer site"
+        # And it reaches the payroll: the day is paid rather than absent.
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(result.paid_working_days) == Decimal("2")
+        assert Decimal(result.lop_days) == Decimal("0")
+
+
+def test_a_bad_register_row_is_reported_by_line_and_nothing_is_applied(client, app):
+    with app.app_context():
+        seed_register_month()
+
+    login(client)
+    csv_body = (
+        "Employee ID,Date,Register Status,Notes\n"
+        "5,01-07-2026,Paid Leave,\n"          # valid
+        "5,02-07-2026,Working Hard,\n"        # not a status
+        "9,02-07-2026,Paid Leave,\n"          # no such attendance row
+    )
+    response = client.post("/attendance/2026-07", data={
+        "action": "import_register",
+        "register_csv": (BytesIO(csv_body.encode()), "register.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"2 row(s) could not be applied" in response.data
+    assert b"Row 3" in response.data and b"Working Hard" in response.data
+    assert b"Row 4" in response.data
+    with app.app_context():
+        # The valid row on line 2 is not applied either: a half-applied register
+        # would leave the month in a state nobody can reason about.
+        assert AttendanceOverride.query.count() == 0
+
+
+def test_a_blank_register_status_leaves_the_day_alone_and_auto_clears_it(client, app):
+    with app.app_context():
+        seed_register_month()
+        db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="5",
+                                          date=date(2026, 7, 2), manual_status="Paid Leave"))
+        db.session.commit()
+
+    login(client)
+    blank = "Employee ID,Date,Register Status\n5,02-07-2026,\n"
+    client.post("/attendance/2026-07", data={
+        "action": "import_register",
+        "register_csv": (BytesIO(blank.encode()), "register.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    with app.app_context():
+        assert AttendanceOverride.query.count() == 1
+
+    auto = "Employee ID,Date,Register Status\n5,02-07-2026,Auto\n"
+    response = client.post("/attendance/2026-07", data={
+        "action": "import_register",
+        "register_csv": (BytesIO(auto.encode()), "register.csv"),
+    }, content_type="multipart/form-data", follow_redirects=True)
+    assert b"1 cleared" in response.data
+    with app.app_context():
+        assert AttendanceOverride.query.count() == 0
