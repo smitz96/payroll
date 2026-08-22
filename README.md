@@ -80,7 +80,7 @@ Wage type is normalized with `strip().upper()`. `MONTHLY` and `DAILY` resolve to
 - Less than 3h00m: the day earns no pay of its own. Available leave covers it; with no leave it is a full-day LOP.
 - OT threshold: only after 9h15m / 555 minutes.
 - OT rounding: the excess is floored to complete 15-minute blocks, the opposite of short hours and deliberately so.
-- OT rate: twice the ordinary hourly rate.
+- OT rate: the ordinary hourly rate. `Overtime multiplier` in Settings pays a premium if it is set above 1.
 - Sunday: default week off, configurable per employee, and awaiting confirmation until someone confirms it.
 - A day is worth the month's salary divided by **the days in that month**, so February pays more per day than July. `Salary days per month` in Settings overrides this with a fixed figure if set to anything other than 0.
 - Hourly rate: that daily rate divided by 9.

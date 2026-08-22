@@ -905,13 +905,19 @@ def calculate_monthly_shortage(actual_minutes):
     return max(0, ceil_to_interval(shortfall, CFG["ROUNDING_INTERVAL_MINUTES"]))
 
 
-def calculate_monthly_overtime(actual_minutes, quarter_rate=Decimal("0")):
+def calculate_monthly_overtime(actual_minutes, quarter_rate=Decimal("0"), multiplier=None):
+    """Raw, payable and paid overtime beyond the daily trigger.
+
+    Payable time is floored to the rounding interval - the opposite of short hours,
+    which rounds up - and paid at `multiplier` times the ordinary rate.
+    """
     if actual_minutes is None or actual_minutes <= CFG["OVERTIME_START_MINUTES"]:
         return 0, 0, Decimal("0")
+    if multiplier is None:
+        multiplier = CFG["OVERTIME_MULTIPLIER"]
     raw = actual_minutes - CFG["OVERTIME_START_MINUTES"]
     rounded = floor_to_interval(raw, CFG["ROUNDING_INTERVAL_MINUTES"])
-    amount = (quarter_rate * Decimal(rounded // CFG["ROUNDING_INTERVAL_MINUTES"])
-              * Decimal(CFG["OVERTIME_MULTIPLIER"]))
+    amount = quarter_rate * Decimal(rounded // CFG["ROUNDING_INTERVAL_MINUTES"]) * Decimal(multiplier)
     return raw, rounded, amount
 
 

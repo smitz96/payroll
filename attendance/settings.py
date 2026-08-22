@@ -16,9 +16,10 @@ MONTHLY_RULES = {
     # figure is right for both a 28-day and a 31-day month.
     "SALARY_CALCULATION_DAYS": 0,
     "SALARY_HOURS_PER_DAY": 9,
-    # Overtime is paid at this multiple of the ordinary hourly rate. Statutory
-    # overtime in India is payable at twice ordinary wages.
-    "OVERTIME_MULTIPLIER": 2,
+    # Overtime is paid at this multiple of the ordinary hourly rate. Set to 1 by the
+    # company: statutory overtime in India is generally payable at twice ordinary
+    # wages, so this is the figure to revisit if that ever has to be met.
+    "OVERTIME_MULTIPLIER": 1,
     "LEAVE_EARNED_PER_MONTH": 2,
     # A single In/Out pair longer than this is treated as a punch error rather than
     # paid time. Sized to clear a genuine overnight shift (typically 8-12h) while

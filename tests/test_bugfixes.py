@@ -3829,14 +3829,17 @@ def test_short_hours_round_up_while_overtime_rounds_down(app):
     assert calculate_monthly_overtime(9 * 60 + 44)[1] == 15
 
 
-def test_overtime_is_paid_at_double_the_ordinary_rate(app):
+def test_overtime_is_paid_at_the_configured_multiple_of_the_ordinary_rate(app):
+    """The company pays overtime at the ordinary rate, so the multiplier is 1."""
     from attendance.payroll_rules import calculate_monthly_overtime
     from attendance.settings import MONTHLY_RULES
-    assert MONTHLY_RULES["OVERTIME_MULTIPLIER"] == 2
-    # A quarter-hour rate of 100 pays 200 for each 15 minutes of overtime.
+    assert MONTHLY_RULES["OVERTIME_MULTIPLIER"] == 1
+    # A quarter-hour rate of 100 pays 100 for each 15 minutes of overtime.
     _raw, rounded, amount = calculate_monthly_overtime(9 * 60 + 30, Decimal("100"))
     assert rounded == 15
-    assert amount == Decimal("200")
+    assert amount == Decimal("100")
+    # And the multiplier is what carries the rate, not a constant in the maths.
+    assert calculate_monthly_overtime(9 * 60 + 30, Decimal("100"), multiplier=2)[2] == Decimal("200")
 
 
 def test_a_day_is_worth_the_month_divided_by_its_own_length(app):
