@@ -49,12 +49,13 @@ def test_overtime_threshold_and_flooring():
         "9h 15m": 0,
         "9h 16m": 0,
         "9h 29m": 0,
-        "9h 30m": 15,
-        "9h 31m": 15,
-        "9h 44m": 15,
-        "9h 45m": 30,
-        "10h 00m": 45,
-        "10h 17m": 60,
+        "9h 30m": 30,
+        "9h 31m": 30,
+        "9h 42m": 30,
+        "9h 45m": 45,
+        "10h 00m": 60,
+        "10h 14m": 60,
+        "10h 17m": 75,
     }
     for raw, payable in expected.items():
         assert calculate_monthly_overtime(parse_duration(raw), Decimal("10"))[1] == payable

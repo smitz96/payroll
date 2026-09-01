@@ -906,19 +906,21 @@ def calculate_monthly_shortage(actual_minutes):
 
 
 def calculate_monthly_overtime(actual_minutes, quarter_rate=Decimal("0"), multiplier=None):
-    """Raw, payable and paid overtime beyond the daily trigger.
+    """Raw, payable and paid overtime once the daily trigger is reached.
 
-    Payable time is floored to the rounding interval - the opposite of short hours,
-    which rounds up - and paid at `multiplier` times the ordinary rate.
+    Eligibility begins at the trigger, then payable time is the total working time
+    floored to the rounding interval minus the full-day target. That means 9h42m
+    is paid as 9h30m, and 10h14m is paid as 10h00m.
     """
-    if actual_minutes is None or actual_minutes <= CFG["OVERTIME_START_MINUTES"]:
+    if actual_minutes is None or actual_minutes < CFG["OVERTIME_START_MINUTES"]:
         return 0, 0, Decimal("0")
     if multiplier is None:
         multiplier = CFG["OVERTIME_MULTIPLIER"]
-    raw = actual_minutes - CFG["OVERTIME_START_MINUTES"]
-    rounded = floor_to_interval(raw, CFG["ROUNDING_INTERVAL_MINUTES"])
-    amount = quarter_rate * Decimal(rounded // CFG["ROUNDING_INTERVAL_MINUTES"]) * Decimal(multiplier)
-    return raw, rounded, amount
+    raw = actual_minutes - CFG["FULL_DAY_MINUTES"]
+    rounded_work = floor_to_interval(actual_minutes, CFG["ROUNDING_INTERVAL_MINUTES"])
+    rounded_ot = max(0, rounded_work - CFG["FULL_DAY_MINUTES"])
+    amount = quarter_rate * Decimal(rounded_ot // CFG["ROUNDING_INTERVAL_MINUTES"]) * Decimal(multiplier)
+    return raw, rounded_ot, amount
 
 
 def days_in_payroll_month(payroll_month):

@@ -1526,7 +1526,7 @@ def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
     assert "Overtime Report" in ot_text
     assert "SMARTfill Payroll" in ot_text
     assert "2026-07-02" in ot_text
-    assert "45" in ot_text
+    assert "60" in ot_text
     assert "2026-07-01" not in ot_text
     assert "2026-07-03" not in ot_text
 

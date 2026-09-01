@@ -9,7 +9,7 @@ MONTHLY_RULES = {
     "FULL_DAY_REQUIRED_MINUTES": 8 * 60 + 50,
     "HALF_DAY_MINIMUM_MINUTES": 3 * 60,
     "LESS_HOURS_RULE_MINIMUM_MINUTES": 6 * 60,
-    "OVERTIME_START_MINUTES": 9 * 60 + 15,
+    "OVERTIME_START_MINUTES": 9 * 60 + 30,
     "ROUNDING_INTERVAL_MINUTES": 15,
     # 0 means "use the actual number of days in the payroll month", which is what the
     # manual salary sheet does. A fixed number can still be set here, but no single
@@ -34,7 +34,7 @@ MONTHLY_RULE_LABELS = {
     "FULL_DAY_REQUIRED_MINUTES": ("Full-day grace threshold", "At or above this, the day is paid full with no short-hours deduction."),
     "HALF_DAY_MINIMUM_MINUTES": ("Half-day minimum", "Below this a worked day earns no pay of its own. For monthly wage it is covered by available leave, and is loss of pay only if there is none."),
     "LESS_HOURS_RULE_MINIMUM_MINUTES": ("Short-hours floor", "Between this and the grace threshold, the day is paid full with a short-hours deduction."),
-    "OVERTIME_START_MINUTES": ("Overtime starts after", "Overtime accrues only beyond this daily duration."),
+    "OVERTIME_START_MINUTES": ("Overtime starts at", "Overtime is paid only when rounded work reaches this daily duration."),
     "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Short hours are rounded up to this interval; overtime is floored to it. A 48-minute shortfall is charged as 60; 29 minutes of overtime is paid as 15."),
     "SALARY_CALCULATION_DAYS": ("Salary days per month", "Monthly salary is divided by this for the daily LOP rate. Set to 0 to divide by the actual days in each month."),
     "SALARY_HOURS_PER_DAY": ("Salary hours per day", "Hourly rate is the daily rate / this."),

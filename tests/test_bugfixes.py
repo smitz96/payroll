@@ -3414,9 +3414,9 @@ def offsite_before_and_after(day, minutes, status):
 
 def test_offsite_day_earns_no_overtime(app):
     with app.app_context():
-        # 10 hours would otherwise be 45 payable overtime minutes.
+        # 10 hours would otherwise be 60 payable overtime minutes.
         (_, plain), (result, day) = offsite_before_and_after(6, 600, "Worked On-Site")
-        assert plain["raw_ot"] == 45
+        assert plain["raw_ot"] == 60
         assert day["attendance_status"] == "Worked On-Site"
         assert Decimal(day["paid_day_value"]) == Decimal("1")
         assert day["raw_ot"] == 0 and day["payable_ot"] == 0
@@ -3816,7 +3816,7 @@ def test_slip_history_holds_back_a_month_that_is_still_a_draft(client, app):
 # --- July 2026 calculation audit ---
 
 def test_short_hours_round_up_while_overtime_rounds_down(app):
-    """The two are deliberately asymmetric: 48 minutes short costs 60, 29 over pays 15."""
+    """The two are deliberately asymmetric: 48 minutes short costs 60; 9h42 pays to 9h30."""
     from attendance.payroll_rules import calculate_monthly_overtime, calculate_monthly_shortage
     # 8h12 is 48 minutes short of the 9h day.
     assert calculate_monthly_shortage(8 * 60 + 12) == 60
@@ -3825,8 +3825,9 @@ def test_short_hours_round_up_while_overtime_rounds_down(app):
     assert calculate_monthly_shortage(8 * 60 + 47) == 15
     # A day at or above the grace threshold is charged nothing at all.
     assert calculate_monthly_shortage(8 * 60 + 50) == 0
-    # 9h44 is 29 minutes past the 9h15 trigger and pays for 15.
-    assert calculate_monthly_overtime(9 * 60 + 44)[1] == 15
+    # 9h42 reaches the 9h30 trigger and pays 30 minutes over the 9h full day.
+    assert calculate_monthly_overtime(9 * 60 + 42)[1] == 30
+    assert calculate_monthly_overtime(9 * 60 + 22)[1] == 0
 
 
 def test_overtime_is_paid_at_the_configured_multiple_of_the_ordinary_rate(app):
@@ -3836,10 +3837,10 @@ def test_overtime_is_paid_at_the_configured_multiple_of_the_ordinary_rate(app):
     assert MONTHLY_RULES["OVERTIME_MULTIPLIER"] == 1
     # A quarter-hour rate of 100 pays 100 for each 15 minutes of overtime.
     _raw, rounded, amount = calculate_monthly_overtime(9 * 60 + 30, Decimal("100"))
-    assert rounded == 15
-    assert amount == Decimal("100")
+    assert rounded == 30
+    assert amount == Decimal("200")
     # And the multiplier is what carries the rate, not a constant in the maths.
-    assert calculate_monthly_overtime(9 * 60 + 30, Decimal("100"), multiplier=2)[2] == Decimal("200")
+    assert calculate_monthly_overtime(9 * 60 + 30, Decimal("100"), multiplier=2)[2] == Decimal("400")
 
 
 def test_a_day_is_worth_the_month_divided_by_its_own_length(app):
