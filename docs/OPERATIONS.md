@@ -40,6 +40,26 @@ This reruns payroll against the current holiday calendar, keeps manual employee 
 
 Finalized payroll months are locked. Unlock requires the admin password and is recorded in Activity Logs.
 
+## Backup & Restore
+
+Before maintenance or server replacement, download a full backup:
+
+```text
+Settings -> Backup & restore -> Download backup
+```
+
+The ZIP includes the SQLite database, uploaded attendance/register files, and generated files from `output/`.
+
+To recover on a new server:
+
+1. Install and start SMARTfill.
+2. Sign in as admin.
+3. Open `Settings -> Backup & restore -> Restore backup`.
+4. Upload the SMARTfill backup ZIP.
+5. Enter the admin password and type `restore backup`.
+
+Restore replaces the current server data. Keep a fresh backup of the current server before restoring over it.
+
 ## Git Pull Updates
 
 Use:

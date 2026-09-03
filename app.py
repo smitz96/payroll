@@ -179,7 +179,7 @@ ERROR_PAGES = {
     403: ("Not allowed", "You do not have access to this page."),
     404: ("Page not found", "The page you asked for does not exist, or the payroll month is not a valid YYYY-MM value."),
     405: ("Not allowed here", "That action is not available on this page."),
-    413: ("Upload too large", "The file is larger than the 16 MB upload limit."),
+    413: ("Upload too large", "The file is larger than the configured upload limit."),
     500: ("Something went wrong", "The action could not be completed. The error has been logged; try again, and check Activity Logs if it keeps happening."),
 }
 

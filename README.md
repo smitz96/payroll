@@ -1,5 +1,7 @@
 # SMARTfill Attendance & Payroll Management
 
+Current version: V1.01
+
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
 Current supported automatic payroll rules:
@@ -130,6 +132,18 @@ The payroll month page shows these five steps and highlights the one you are on.
 The month as a whole only shows `Finalized` once every wage type that has employees is finalized. Recalculation never touches a finalized wage group, so Daily can be re-run after Monthly is signed off. `View monthly only` / `View daily only` filter the page to one wage type and scope both recalculate buttons to that group.
 
 Recalculation replaces payroll results and leave ledger rows for that month, so type changes do not duplicate historical result rows.
+
+## Backup & Restore
+
+Use `Settings -> Backup & restore -> Download backup` to export a full SMARTfill backup before server maintenance or before moving to another machine. The downloaded ZIP contains:
+
+- The SQLite database.
+- Uploaded attendance/register files from `uploads/`.
+- Generated reports and salary output from `output/`.
+
+On a replacement server, install and start the same app, sign in, then use `Settings -> Backup & restore -> Restore backup` to upload the ZIP. Restore is protected by the admin password and the confirmation text `restore backup` because it replaces the current server database and backup-managed file folders.
+
+The default upload limit is `256 MB`. Set `MAX_UPLOAD_MB` in the environment if backups grow larger.
 
 ### Employee Master Fields
 

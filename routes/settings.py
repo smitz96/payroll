@@ -2,21 +2,25 @@ import os
 import shutil
 import subprocess
 from datetime import datetime
+from tempfile import NamedTemporaryFile
 from pathlib import Path
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, after_this_request, current_app, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash
+from werkzeug.utils import secure_filename
 
 from attendance import db
 from attendance.authentication import change_password, login_required
+from attendance.backups import build_full_backup_archive, restore_full_backup_archive
 from attendance.models import AuditLog, User
 from attendance.settings import daily_bonus_rule_rows, leave_rule_rows, monthly_rule_rows
 from attendance.statutory import statutory_rule_rows
 from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
-APP_VERSION = "V1.00"
+APP_VERSION = "V1.01"
 RESET_CONFIRMATION_TEXT = "permanently delete"
+RESTORE_CONFIRMATION_TEXT = "restore backup"
 
 
 def latest_git_release_datetime(app_root):
@@ -84,6 +88,15 @@ def reset_application_data():
     return deleted
 
 
+def current_admin_user():
+    return db.session.get(User, session.get("user_id"))
+
+
+def admin_password_matches(user):
+    password = request.form.get("admin_password", "")
+    return bool(user and check_password_hash(user.password_hash, password))
+
+
 @bp.route("")
 @login_required
 def index():
@@ -115,9 +128,8 @@ def security():
 @bp.route("/git-pull", methods=["POST"])
 @login_required
 def git_pull():
-    user = db.session.get(User, session["user_id"])
-    password = request.form.get("admin_password", "")
-    if not user or not check_password_hash(user.password_hash, password):
+    user = current_admin_user()
+    if not admin_password_matches(user):
         flash("Admin password is incorrect. Update App was not started.", "danger")
         return redirect(url_for("settings.index"))
 
@@ -133,9 +145,8 @@ def git_pull():
 def reset_data():
     # This is the most destructive action in the app, so it is gated the same way
     # as finalize/unlock/server-update: typed confirmation *and* the admin password.
-    user = db.session.get(User, session.get("user_id"))
-    password = request.form.get("admin_password", "")
-    if not user or not check_password_hash(user.password_hash, password):
+    user = current_admin_user()
+    if not admin_password_matches(user):
         flash("Admin password is incorrect. No data was reset.", "danger")
         return redirect(url_for("settings.index"))
 
@@ -155,4 +166,85 @@ def reset_data():
     ))
     db.session.commit()
     flash(f"All app data has been reset. {deleted_rows} row(s) deleted. Admin login was kept.", "success")
+    return redirect(url_for("settings.index"))
+
+
+@bp.route("/backup/download")
+@login_required
+def download_backup():
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    with NamedTemporaryFile(prefix="smartfill-backup-", suffix=".zip", delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+    try:
+        build_full_backup_archive(temp_path)
+
+        @after_this_request
+        def cleanup_backup_file(response):
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            return response
+
+        return send_file(
+            temp_path,
+            as_attachment=True,
+            download_name=f"smartfill-full-backup-{timestamp}.zip",
+            mimetype="application/zip",
+            max_age=0,
+        )
+    except Exception:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+@bp.route("/backup/restore", methods=["POST"])
+@login_required
+def restore_backup():
+    user = current_admin_user()
+    if not admin_password_matches(user):
+        flash("Admin password is incorrect. Backup was not restored.", "danger")
+        return redirect(url_for("settings.index"))
+
+    confirmation = request.form.get("restore_confirmation", "").strip().lower()
+    if confirmation != RESTORE_CONFIRMATION_TEXT:
+        flash('Type "restore backup" to replace this server data from a backup.', "danger")
+        return redirect(url_for("settings.index"))
+
+    upload = request.files.get("backup_zip")
+    if not upload or not upload.filename:
+        flash("Select a SMARTfill backup ZIP file to restore.", "danger")
+        return redirect(url_for("settings.index"))
+    if Path(upload.filename).suffix.lower() != ".zip":
+        flash("Only SMARTfill backup ZIP files can be restored.", "danger")
+        return redirect(url_for("settings.index"))
+
+    username = user.username
+    filename = secure_filename(upload.filename)
+    with NamedTemporaryFile(prefix="smartfill-restore-", suffix=".zip", delete=False) as temp_file:
+        temp_path = Path(temp_file.name)
+    try:
+        upload.save(temp_path)
+        manifest = restore_full_backup_archive(temp_path)
+        db.session.add(AuditLog(
+            actor=username,
+            action="Backup Restored",
+            detail=(
+                f"{filename}; created {manifest.get('created_at', 'unknown')}; "
+                f"format version {manifest.get('format_version', 'unknown')}"
+            )[:2000],
+        ))
+        db.session.commit()
+        flash("Backup restored successfully. Sign in again if your session was from the old server data.", "success")
+    except Exception as exc:
+        db.session.rollback()
+        flash(str(exc), "danger")
+    finally:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
     return redirect(url_for("settings.index"))
