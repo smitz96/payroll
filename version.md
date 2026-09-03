@@ -1,5 +1,3 @@
-# Version History
+# Current Version
 
-## V1.01
-
-First version.
+V1.02

@@ -1,9 +1,10 @@
 """Regression tests for defects found during the UI and workflow review."""
+import csv
 import pathlib
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
-from io import BytesIO
+from io import BytesIO, StringIO
 
 from pypdf import PdfReader
 from conftest import finalize_group
@@ -13,7 +14,7 @@ from attendance.calculator import calculate_payroll_month
 from attendance.models import AttendanceOverride, AttendanceRecord, AuditLog, Employee, Holiday, LeaveLedger, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
 from attendance.parser import implausible_session_minutes, parse_punch_times, working_minutes_from_punches
 from attendance.settings import MONTHLY_RULES, monthly_rule_rows
-from attendance.reports import pdf_money, total_paid_days
+from attendance.reports import build_error_report_pdf, build_manual_override_report_pdf, error_report_csv, manual_override_report_csv, pdf_money, total_paid_days
 from attendance.utils import display_month, is_valid_payroll_month, leave_days
 
 
@@ -153,6 +154,33 @@ def test_attendance_grid_separates_missing_punch_days_from_week_offs(app):
         assert cells[date(2026, 7, 5)]["week_off"] is True
         assert rows[0]["missing_count"] == 1
         assert rows[0]["needs_review"] is True
+
+
+def test_attendance_filter_can_target_other_punch_issues(client, app):
+    from routes.attendance_manager import attendance_grid
+
+    with app.app_context():
+        seed_month()
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Worker",
+                                        date=date(2026, 7, 1), day="Wednesday",
+                                        first_punch="09:30 AM", last_punch="03:30 AM",
+                                        parse_status="NEEDS_REVIEW",
+                                        warning="Punch out before punch in (18h 00m session)"))
+        db.session.commit()
+
+        _dates, rows = attendance_grid("2026-07")
+        assert rows[0]["other_issue_count"] == 1
+        assert rows[0]["has_other_issue"] is True
+        assert rows[0]["needs_review"] is True
+
+    login(client)
+    page = client.get("/attendance/2026-07").data
+    assert page.count(b'class="form-check-input issue-filter-choice"') == 4
+    assert b'value="missing"> No punch days' in page
+    assert b'value="odd"> Odd punch' in page
+    assert b'value="other"> Other issues' in page
+    assert b'data-has-other-issue="1"' in page
+    assert b"other-issue-cell" in page
 
 
 # --- Dashboard counted DAILY wage employees as unsupported ---
@@ -454,6 +482,25 @@ def test_employee_edit_locks_follow_the_employees_wage_group(client, app):
     with app.app_context():
         assert Decimal(SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="5").one().adjustment) == Decimal("0")
         assert Decimal(SalaryRecord.query.filter_by(payroll_month="2026-07", employee_id="6").one().adjustment) == Decimal("500")
+
+
+def test_employee_detail_links_to_that_employees_attendance_summary(client, app):
+    with app.app_context():
+        seed_mixed_month()
+        calculate_payroll_month("2026-07")
+
+    login(client)
+    for employee_id, included, excluded in (("5", "Monthly Worker", "Daily Worker"), ("6", "Daily Worker", "Monthly Worker")):
+        page = client.get(f"/payroll/2026-07/employee/{employee_id}")
+        assert page.status_code == 200
+        assert b"Attendance summary" in page.data
+        assert f"/reports/2026-07/employee/{employee_id}/attendance-summary.pdf".encode() in page.data
+
+        response = client.get(f"/reports/2026-07/employee/{employee_id}/attendance-summary.pdf")
+        assert response.status_code == 200
+        text = pdf_text(response.data)
+        assert included in text
+        assert excluded not in text
 
 
 def test_payroll_page_offers_separate_locks_and_a_wage_filter(client, app):
@@ -1473,19 +1520,20 @@ def test_absences_consume_leave_then_fall_to_lop(app):
         assert Decimal(result.lop_days) == Decimal("0.5")
 
 
-def test_absence_with_no_leave_balance_is_full_lop(app):
+def test_exact_attendance_threshold_gets_full_monthly_leave(app):
     with app.app_context():
         seed_leave_month(opening=Decimal("0"))
         add_july_attendance({3, 10})
         calculate_payroll_month("2026-07")
         result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
         by_date = {row["date"]: row for row in result.detail_json}
-        # Earned leave still accrues and covers what it can, oldest day first.
+        # 25 attended days + 4 week offs = 29 attendance-credit days. In a 31-day
+        # month that reaches days_in_month - 2, so the month earns the full 2 leaves.
         assert by_date["2026-07-03"]["attendance_status"] == "Paid Leave"
-        assert by_date["2026-07-10"]["attendance_status"] in {
-            "Half-Day Paid Leave / Half-Day LOP", "Absent / Attendance Missing",
-        }
-        assert Decimal(result.lop_days) > 0
+        assert by_date["2026-07-10"]["attendance_status"] == "Paid Leave"
+        assert Decimal(result.leave_earned) == Decimal("2")
+        assert Decimal(result.leave_used) == Decimal("2")
+        assert Decimal(result.lop_days) == Decimal("0")
 
 
 def test_no_punch_day_is_an_absence_not_a_review_item(app):
@@ -1590,6 +1638,97 @@ def test_daily_wage_missing_punch_is_absent(app):
         # Daily wage has no leave, so the absent day is simply not paid.
         assert result.calculation_status == "Calculated"
         assert Decimal(result.paid_working_days) == Decimal("1")
+
+
+def test_error_report_excludes_week_off_attendance_warnings(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Worker",
+                                        date=date(2026, 7, 5), day="Sunday", parse_status="NEEDS_REVIEW",
+                                        warning="Missing punch and working hours"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Worker",
+                                        date=date(2026, 7, 6), day="Monday", parse_status="NEEDS_REVIEW",
+                                        warning="Missing punch and working hours"))
+        db.session.commit()
+
+        csv_text = error_report_csv("2026-07")
+        assert "2026-07-05" not in csv_text
+        assert "2026-07-06" in csv_text
+
+        pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(build_error_report_pdf("2026-07"))).pages)
+        assert "2026-07-05" not in pdf_text
+        assert "2026-07-06" in pdf_text
+
+
+def test_error_report_aggregates_rows_by_issue_priority(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        for employee_id, name in (("5", "Missing Staff"), ("6", "Odd Staff"), ("7", "Other Staff")):
+            db.session.add(Employee(id=employee_id, name=name, salary_type="Monthly",
+                                    normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+            db.session.add(WeekOffRule(employee_id=employee_id, confirmed_at=datetime.utcnow()))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Missing Staff",
+                                        date=date(2026, 7, 6), day="Monday", parse_status="NEEDS_REVIEW",
+                                        warning="Missing punch and working hours"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="6", employee_name="Odd Staff",
+                                        date=date(2026, 7, 3), day="Friday", first_punch="09:30 AM",
+                                        parse_status="NEEDS_REVIEW", warning="Odd punch count"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="6", employee_name="Odd Staff",
+                                        date=date(2026, 7, 4), day="Saturday", first_punch="06:30 PM",
+                                        parse_status="NEEDS_REVIEW", warning="Odd punch count"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="7", employee_name="Other Staff",
+                                        date=date(2026, 7, 7), day="Tuesday",
+                                        parse_status="NEEDS_REVIEW",
+                                        warning="Punch out before punch in (18h 00m session)"))
+        db.session.commit()
+
+        rows = list(csv.DictReader(StringIO(error_report_csv("2026-07"))))
+        assert [row["Issue"] for row in rows] == [
+            "Odd punch count",
+            "Odd punch count",
+            "Missing punch and working hours",
+            "Punch out before punch in (18h 00m session)",
+        ]
+        assert [row["Issue Count"] for row in rows] == ["2", "2", "1", "1"]
+
+        pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(build_error_report_pdf("2026-07"))).pages)
+        assert pdf_text.index("Odd punch count") < pdf_text.index("Missing punch and working hours")
+        assert "Punch out before punch in" in pdf_text
+
+
+def test_manual_override_report_compares_override_with_imported_attendance(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07"))
+        db.session.add(Employee(id="5", name="Worker", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker",
+                                    salary_type="Monthly", normalized_salary_type="MONTHLY",
+                                    salary=Decimal("30000")))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Worker",
+                                        date=date(2026, 7, 6), day="Monday",
+                                        first_punch="09:30 AM", last_punch="06:30 PM",
+                                        raw_working_hours="9h 00m", actual_minutes=540,
+                                        parse_status="OK"))
+        db.session.add(AttendanceOverride(payroll_month="2026-07", employee_id="5",
+                                          date=date(2026, 7, 6), manual_status="Paid Leave",
+                                          notes="Approved by manager"))
+        db.session.commit()
+
+        csv_text = manual_override_report_csv("2026-07")
+        assert "Worker" in csv_text
+        assert "Full Day Present" in csv_text
+        assert "Paid Leave" in csv_text
+        assert "Approved by manager" in csv_text
+
+        pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(build_manual_override_report_pdf("2026-07"))).pages)
+        assert "Manual Override Report" in pdf_text
+        assert "Full Day Present" in pdf_text
+        assert "Paid Leave" in pdf_text
+        assert "Approved by manager" in pdf_text
 
 
 # --- Day notes only appear when they explain an exception ---
@@ -2278,7 +2417,7 @@ def test_sandwich_leave_with_no_balance_behind_it_is_shown_as_loss_of_pay(app):
         assert Decimal(result.closing_leave) == available - Decimal(result.leave_used)
         # The paid-day identity holds: nothing is counted as paid that was not paid.
         assert (Decimal(result.paid_working_days) + Decimal(result.week_offs)
-                + Decimal(result.paid_leaves)) == total_paid_days(result)
+                + Decimal(result.paid_leaves) + Decimal(result.holidays or 0)) == total_paid_days(result)
         assert Decimal(result.leave_used) == Decimal(result.paid_leaves)
 
 
@@ -2471,19 +2610,59 @@ def test_daily_summary_title_is_summary_and_bonus_is_just_a_percentage(client, a
     assert "of earned wage" not in text
 
 
-def test_monthly_summary_groups_days_then_leave_then_money(client, app):
+def test_monthly_summary_groups_days_then_leave_then_attendance_time(client, app):
     with app.app_context():
         seed_two_wage_groups()
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        result.less_hours_minutes = 60
+        result.less_hours_deduction = Decimal("672.22")
+        details = list(result.detail_json or [])
+        details[0] = {**details[0], "shortage_minutes": 165}
+        result.detail_json = details
+        db.session.commit()
 
     login(client)
     text = pdf_text(client.get("/reports/2026-07/attendance-summary-monthly.pdf").data)
     order = [text.index(label) for label in (
         "Paid Working Days", "Total Paid Days", "Week Offs", "LOP Days",
-        "Leave Balance", "Leave Carry Forwarded", "Less Hours Deduction", "Adjustment",
+        "Leave Balance", "Leave Carry Forwarded", "Less Hours", "Adjustment",
     )]
-    assert order == sorted(order), "day counts, then leave, then money"
+    assert order == sorted(order), "day counts, then leave, then attendance time"
+    assert "1h 00m" in text
+    assert "2h 45m short" in text
+    assert "Less Hours Deduction" not in text
+    assert pdf_money(Decimal("672.22")) not in text
     # Overtime and adjustment share the final row.
     assert text.index("Over Time") < text.index("Adjustment")
+
+
+def test_attendance_summary_status_badges_keep_status_readable(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        result.calculation_status = "Needs Review"
+        db.session.commit()
+
+    login(client)
+    response = client.get("/reports/2026-07/attendance-summary-monthly.pdf")
+    assert response.status_code == 200
+    text = pdf_text(response.data)
+    assert "Status" in text
+    assert "Needs Review" in text
+
+
+def test_monthly_total_paid_days_include_holidays(app):
+    from attendance.reports import total_paid_days
+
+    result = PayrollResult(
+        payroll_rule_type="MONTHLY",
+        paid_working_days=Decimal("22.00"),
+        week_offs=5,
+        paid_leaves=Decimal("2.00"),
+        holidays=2,
+    )
+
+    assert total_paid_days(result) == Decimal("31.00")
 
 
 def test_payroll_summary_splits_wage_groups_onto_their_own_pages(client, app):
@@ -3581,7 +3760,16 @@ def test_daily_sheet_states_hours_not_amounts(client, app):
     # The label lost the word "Deduction" and the value is a duration.
     assert "Less Hours Deduction" not in text
     assert "1h 00m" in text
+    assert "Absence This Month\n1h 00m\nBonus" in text
     assert pdf_money(result.less_hours_deduction) not in text
+
+
+def test_absence_this_month_uses_working_days():
+    from attendance.utils import minutes_to_working_day_shortage
+
+    assert minutes_to_working_day_shortage(45 * 60 + 48) == "5d 0h 48m short"
+    assert minutes_to_working_day_shortage(19 * 60 + 40) == "2d 1h 40m short"
+    assert minutes_to_working_day_shortage((9 * 60) + (6 * 60) + 44) == "1d 6h 44m short"
 
 
 def test_daily_sheet_bonus_is_a_bare_band(client, app):
@@ -3930,6 +4118,48 @@ def test_register_export_can_be_narrowed_to_the_no_punch_days(client, app):
     # The row says why the day needs the register, so the sheet can be filled in
     # without cross-checking the punch report.
     assert "Missing punch and working hours" in body
+
+
+def test_missing_punch_register_groups_rows_by_issue_priority(client, app):
+    with app.app_context():
+        seed_register_month()
+        db.session.add(Employee(id="6", name="Odd Staff", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.add(Employee(id="7", name="Other Staff", salary_type="Monthly",
+                                normalized_salary_type="MONTHLY", salary=Decimal("30000")))
+        db.session.add(WeekOffRule(employee_id="6", confirmed_at=datetime.utcnow()))
+        db.session.add(WeekOffRule(employee_id="7", confirmed_at=datetime.utcnow()))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="6", employee_name="Odd Staff",
+                                        date=date(2026, 7, 3), day="Friday", first_punch="09:30 AM",
+                                        raw_working_hours="", actual_minutes=None,
+                                        parse_status="NEEDS_REVIEW", warning="Odd punch count"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="6", employee_name="Odd Staff",
+                                        date=date(2026, 7, 6), day="Monday", first_punch="06:30 PM",
+                                        raw_working_hours="", actual_minutes=None,
+                                        parse_status="NEEDS_REVIEW", warning="Odd punch count"))
+        db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="7", employee_name="Other Staff",
+                                        date=date(2026, 7, 4), day="Saturday", first_punch="09:30 AM",
+                                        last_punch="03:30 AM", raw_working_hours="", actual_minutes=None,
+                                        parse_status="NEEDS_REVIEW",
+                                        warning="Punch out before punch in (18h 00m session)"))
+        db.session.commit()
+
+    login(client)
+    body = client.get("/attendance/2026-07/register.csv?scope=missing").data.decode()
+    lines = body.splitlines()
+    assert "Issue,Issue Count,System Status" in lines[0]
+    headers = lines[0].split(",")
+    issue_index = headers.index("Issue")
+    count_index = headers.index("Issue Count")
+    issues = [line.split(",")[issue_index] for line in lines[1:]]
+    counts = [line.split(",")[count_index] for line in lines[1:]]
+    assert issues == [
+        "Odd punch count",
+        "Odd punch count",
+        "Missing punch and working hours",
+        "Punch out before punch in (18h 00m session)",
+    ]
+    assert counts == ["2", "2", "1", "1"]
 
 
 def test_register_import_applies_day_statuses_in_bulk(client, app):

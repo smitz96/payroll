@@ -6,11 +6,11 @@ from tempfile import NamedTemporaryFile
 from pathlib import Path
 
 from flask import Blueprint, after_this_request, current_app, flash, redirect, render_template, request, send_file, session, url_for
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from attendance import db
-from attendance.authentication import change_password, login_required
+from attendance.authentication import MODULES, change_password, current_username, login_required, require_permission, validate_new_password
 from attendance.backups import build_full_backup_archive, restore_full_backup_archive
 from attendance.models import AuditLog, User
 from attendance.settings import daily_bonus_rule_rows, leave_rule_rows, monthly_rule_rows
@@ -18,7 +18,7 @@ from attendance.statutory import statutory_rule_rows
 from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
-APP_VERSION = "V1.01"
+APP_VERSION = "V1.02"
 RESET_CONFIRMATION_TEXT = "permanently delete"
 RESTORE_CONFIRMATION_TEXT = "restore backup"
 
@@ -97,9 +97,15 @@ def admin_password_matches(user):
     return bool(user and check_password_hash(user.password_hash, password))
 
 
+def selected_permissions():
+    allowed = {key for key, _label, _description in MODULES}
+    return sorted({value for value in request.form.getlist("permissions") if value in allowed})
+
+
 @bp.route("")
 @login_required
 def index():
+    require_permission("settings")
     about = {
         "version": APP_VERSION,
         "release_at": latest_git_release_datetime(Path(current_app.root_path)) or "Not available",
@@ -128,6 +134,7 @@ def security():
 @bp.route("/git-pull", methods=["POST"])
 @login_required
 def git_pull():
+    require_permission("settings")
     user = current_admin_user()
     if not admin_password_matches(user):
         flash("Admin password is incorrect. Update App was not started.", "danger")
@@ -143,6 +150,7 @@ def git_pull():
 @bp.route("/reset-data", methods=["POST"])
 @login_required
 def reset_data():
+    require_permission("settings")
     # This is the most destructive action in the app, so it is gated the same way
     # as finalize/unlock/server-update: typed confirmation *and* the admin password.
     user = current_admin_user()
@@ -172,6 +180,7 @@ def reset_data():
 @bp.route("/backup/download")
 @login_required
 def download_backup():
+    require_permission("settings")
     timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     with NamedTemporaryFile(prefix="smartfill-backup-", suffix=".zip", delete=False) as temp_file:
         temp_path = Path(temp_file.name)
@@ -204,6 +213,7 @@ def download_backup():
 @bp.route("/backup/restore", methods=["POST"])
 @login_required
 def restore_backup():
+    require_permission("settings")
     user = current_admin_user()
     if not admin_password_matches(user):
         flash("Admin password is incorrect. Backup was not restored.", "danger")
@@ -248,3 +258,80 @@ def restore_backup():
         except OSError:
             pass
     return redirect(url_for("settings.index"))
+
+
+@bp.route("/users", methods=["GET", "POST"])
+@login_required
+def users():
+    require_permission("settings")
+    if request.method == "POST":
+        action = request.form.get("action", "create")
+        try:
+            if action == "create":
+                username = request.form.get("username", "").strip()
+                password = request.form.get("new_password", "")
+                confirm = request.form.get("confirm_password", "")
+                if not username:
+                    raise ValueError("Username is required.")
+                if User.query.filter_by(username=username).first():
+                    raise ValueError("Username already exists.")
+                if password != confirm:
+                    raise ValueError("Password and confirmation do not match.")
+                valid, message = validate_new_password(password)
+                if not valid:
+                    raise ValueError(message)
+                user = User(
+                    username=username,
+                    password_hash=generate_password_hash(password),
+                    is_active=request.form.get("is_active") == "on",
+                    is_admin=False,
+                    permissions_json=selected_permissions(),
+                )
+                db.session.add(user)
+                db.session.add(AuditLog(
+                    actor=current_username(),
+                    action="User Created",
+                    detail=f"{username}; permissions: {', '.join(user.permissions_json or []) or 'none'}",
+                ))
+                flash("User created successfully.", "success")
+            elif action == "update":
+                user = db.session.get(User, int(request.form.get("user_id")))
+                if not user:
+                    raise ValueError("User was not found.")
+                if user.is_admin:
+                    raise ValueError("Admin permissions cannot be changed here.")
+                user.is_active = request.form.get("is_active") == "on"
+                user.permissions_json = selected_permissions()
+                db.session.add(AuditLog(
+                    actor=current_username(),
+                    action="User Permissions Updated",
+                    detail=f"{user.username}; active: {'Yes' if user.is_active else 'No'}; permissions: {', '.join(user.permissions_json or []) or 'none'}",
+                ))
+                flash("User permissions updated.", "success")
+            elif action == "reset_password":
+                user = db.session.get(User, int(request.form.get("user_id")))
+                password = request.form.get("new_password", "")
+                confirm = request.form.get("confirm_password", "")
+                if not user:
+                    raise ValueError("User was not found.")
+                if user.is_admin and user.id != session.get("user_id"):
+                    raise ValueError("Use Change password for the admin account.")
+                if password != confirm:
+                    raise ValueError("Password and confirmation do not match.")
+                valid, message = validate_new_password(password)
+                if not valid:
+                    raise ValueError(message)
+                user.password_hash = generate_password_hash(password)
+                user.failed_login_count = 0
+                user.locked_until = None
+                db.session.add(AuditLog(actor=current_username(), action="User Password Reset", detail=f"{user.username}"))
+                flash("User password reset.", "success")
+            else:
+                raise ValueError("Unknown user management action.")
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            flash(str(exc), "danger")
+        return redirect(url_for("settings.users"))
+    user_rows = User.query.order_by(User.is_admin.desc(), User.username).all()
+    return render_template("users.html", users=user_rows, modules=MODULES)

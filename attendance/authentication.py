@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from uuid import uuid4
 
-from flask import current_app, flash, redirect, session, url_for
+from flask import abort, current_app, flash, redirect, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from attendance import db
@@ -13,11 +13,51 @@ SESSION_TOKEN_KEY = "session_token"
 PENDING_LOGIN_USER_KEY = "pending_login_user_id"
 PENDING_LOGIN_GRANTED_AT_KEY = "pending_login_granted_at"
 
+MODULES = (
+    ("dashboard", "Dashboard", "View the main overview after sign-in."),
+    ("attendance", "Attendance", "Import, review, edit, and submit attendance."),
+    ("employees", "Employees", "Maintain employee master data and imports."),
+    ("weekoffs", "Week Offs", "Confirm and maintain weekly off patterns."),
+    ("leave_balances", "Leave Balance", "View, import, and adjust leave balances."),
+    ("holidays", "Holidays", "Maintain the holiday calendar."),
+    ("payroll", "Payroll", "Open months, load wages, calculate payroll, and edit employee payroll details."),
+    ("finalization", "Finalization", "Finalize or unlock payroll wage groups."),
+    ("reports", "Reports", "View and download reports and salary slips."),
+    ("money", "Loans & Advances", "Maintain loans and salary advances."),
+    ("logs", "Activity Logs", "View system activity logs."),
+    ("settings", "Settings & Users", "Manage users, backup/restore, app updates, and reset data."),
+)
+MODULE_LABELS = {key: label for key, label, _description in MODULES}
+ALL_MODULE_KEYS = {key for key, _label, _description in MODULES}
+
+ENDPOINT_MODULES = {
+    "dashboard": "dashboard",
+    "attendance_manager": "attendance",
+    "master": "employees",
+    "weekoffs": "weekoffs",
+    "leave_balances": "leave_balances",
+    "holidays": "holidays",
+    "payroll": "payroll",
+    "reports": "reports",
+    "salary_slips": "reports",
+    "loans": "money",
+    "advances": "money",
+    "logs": "logs",
+    "settings": "settings",
+}
+ANY_AUTHENTICATED_ENDPOINTS = {"auth.logout", "settings.security"}
+
 
 def init_admin_user():
-    if not User.query.filter_by(username="admin").first():
-        db.session.add(User(username="admin", password_hash=generate_password_hash("12345")))
+    user = User.query.filter_by(username="admin").first()
+    if not user:
+        db.session.add(User(username="admin", password_hash=generate_password_hash("12345"), is_admin=True))
         db.session.add(AuditLog(actor="system", action="Admin Initialized", detail="Initial admin account created"))
+        db.session.commit()
+        return
+    if not user.is_admin:
+        user.is_admin = True
+        db.session.add(user)
         db.session.commit()
 
 
@@ -190,21 +230,72 @@ def current_username():
     return session.get("username", "admin")
 
 
+def current_user():
+    user_id = session.get("user_id")
+    return db.session.get(User, user_id) if user_id else None
+
+
+def normalized_permissions(user):
+    values = getattr(user, "permissions_json", None) or []
+    return {str(value) for value in values if str(value) in ALL_MODULE_KEYS}
+
+
+def user_has_permission(user, permission):
+    if not user:
+        return False
+    if user.is_admin:
+        return True
+    if permission == "dashboard":
+        return True
+    return permission in normalized_permissions(user)
+
+
+def has_permission(permission):
+    return user_has_permission(current_user(), permission)
+
+
+def require_permission(permission):
+    if not has_permission(permission):
+        abort(403)
+
+
+def register_permission_hooks(app):
+    @app.before_request
+    def enforce_module_permissions():
+        endpoint = request.endpoint or ""
+        if not endpoint or endpoint == "static" or endpoint.startswith("auth.login"):
+            return None
+        if endpoint in ANY_AUTHENTICATED_ENDPOINTS:
+            return None
+        if not session.get("user_id"):
+            return None
+        module = ENDPOINT_MODULES.get(endpoint.split(".", 1)[0])
+        if module == "payroll" and (has_permission("payroll") or has_permission("finalization")):
+            return None
+        if module and not has_permission(module):
+            abort(403)
+        return None
+
+    @app.context_processor
+    def inject_permission_helpers():
+        user = current_user()
+        return {
+            "current_user": user,
+            "available_modules": MODULES,
+            "has_permission": has_permission,
+            "is_admin": bool(user and user.is_admin),
+        }
+
+
 def change_password(user_id, current_password, new_password, confirm_password):
     user = db.session.get(User, user_id)
     if not user or not check_password_hash(user.password_hash, current_password):
         return False, "Current password is incorrect."
-    minimum = int(current_app.config.get("MIN_PASSWORD_LENGTH", 10))
-    if not new_password or len(new_password) < minimum:
-        return False, f"New password must be at least {minimum} characters."
-    if not any(character.isalpha() for character in new_password) or not any(character.isdigit() for character in new_password):
-        return False, "New password must contain at least one letter and one number."
-    if new_password.strip().lower() in {"12345", "password", "admin", "smartfill"}:
-        return False, "Choose a less predictable password."
-    if new_password == current_password:
-        return False, "New password must be different from the current password."
     if new_password != confirm_password:
         return False, "New password and confirmation do not match."
+    valid, message = validate_new_password(new_password, current_password)
+    if not valid:
+        return False, message
     user.password_hash = generate_password_hash(new_password)
     user.failed_login_count = 0
     user.locked_until = None
@@ -212,3 +303,16 @@ def change_password(user_id, current_password, new_password, confirm_password):
     db.session.commit()
     flash("Password changed successfully.", "success")
     return True, "Password changed successfully."
+
+
+def validate_new_password(new_password, current_password=None):
+    minimum = int(current_app.config.get("MIN_PASSWORD_LENGTH", 10))
+    if not new_password or len(new_password) < minimum:
+        return False, f"New password must be at least {minimum} characters."
+    if not any(character.isalpha() for character in new_password) or not any(character.isdigit() for character in new_password):
+        return False, "New password must contain at least one letter and one number."
+    if new_password.strip().lower() in {"12345", "password", "admin", "smartfill"}:
+        return False, "Choose a less predictable password."
+    if current_password is not None and new_password == current_password:
+        return False, "New password must be different from the current password."
+    return True, ""

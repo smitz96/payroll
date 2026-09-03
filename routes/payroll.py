@@ -4,11 +4,12 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from pathlib import Path
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, session, url_for
+from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 
 from attendance import db
-from attendance.authentication import current_username, login_required
+from attendance.authentication import current_username, has_permission, login_required, require_permission
 from attendance.calculator import attendance_missing_salary, calculate_employee_payroll, calculate_payroll_month, name_mismatches
 from attendance.advances import advance_deduction_for_employee, advances_for_payroll_month
 from attendance.holidays import holiday_dates_for_records
@@ -20,7 +21,7 @@ from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
 from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
 from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
-from attendance.utils import LEAVE_DAY_PRECISION, decimal_money, display_month, is_valid_payroll_month, minutes_to_duration, money
+from attendance.utils import LEAVE_DAY_PRECISION, decimal_money, display_month, is_valid_payroll_month, minutes_to_duration, minutes_to_working_day_shortage, money
 from attendance.wage_groups import (
     GROUP_LABELS,
     any_group_finalized,
@@ -511,6 +512,7 @@ def clear_manual_payroll_modifications(month, wage_group=None):
 @login_required
 def new():
     if request.method == "POST":
+        require_permission("payroll")
         month = request.form.get("month")
         if not month:
             flash("Select a payroll month.", "danger")
@@ -574,6 +576,7 @@ def month(month):
         action = request.form.get("action")
         try:
             if action == "finalize":
+                require_permission("finalization")
                 if not verify_admin_password():
                     flash("Admin password is required to finalize payroll.", "danger")
                     return redirect(url_for("payroll.month", month=month))
@@ -586,6 +589,7 @@ def month(month):
                 db.session.commit()
                 flash(f"{GROUP_LABELS[group]} wage payroll finalized and locked.", "success")
             elif action == "unlock":
+                require_permission("finalization")
                 if not verify_admin_password():
                     flash("Admin password is required to unlock payroll.", "danger")
                     return redirect(url_for("payroll.month", month=month))
@@ -596,6 +600,8 @@ def month(month):
                 unlock_group(payroll_month, group, current_username())
                 db.session.commit()
                 flash(f"{GROUP_LABELS[group]} wage payroll unlocked. Changes are allowed again.", "success")
+            elif not has_permission("payroll"):
+                flash("You do not have access to change payroll data.", "danger")
             elif action == "delete":
                 confirmation = request.form.get("delete_confirmation", "").strip().lower()
                 if confirmation != DELETE_CONFIRMATION_TEXT:
@@ -673,6 +679,8 @@ def month(month):
                 scope = f"{GROUP_LABELS[group]} wage" if group else "all open wage types"
                 flash(f"Recalculated {scope} for {len(results)} wage record(s). Manual employee changes were kept.", "success")
         except Exception as exc:
+            if isinstance(exc, HTTPException):
+                raise
             flash(str(exc), "danger")
         return redirect(url_for("payroll.month", month=month))
     sort = request.args.get("sort", "id")
@@ -742,6 +750,7 @@ def employee(month, employee_id):
     if not is_valid_payroll_month(month):
         abort(404)
     if request.method == "POST":
+        require_permission("payroll")
         if is_payroll_finalized(month, employee_id):
             flash(LOCKED_MESSAGE, "danger")
             return redirect(url_for("payroll.employee", month=month, employee_id=employee_id))
@@ -793,7 +802,7 @@ def employee(month, employee_id):
         payroll_advances=payroll_advances,
         advance_deduction=advance_deduction,
         global_leave_encashment=global_leave_encashment,
-        bonus_absence_duration=minutes_to_duration(int(getattr(result, "absence_minutes", 0) or 0)) if result else "",
+        bonus_absence_duration=minutes_to_working_day_shortage(int(getattr(result, "absence_minutes", 0) or 0), suffix=False) if result else "",
         bonus_explanation=daily_bonus_explanation(
             int(getattr(result, "absence_minutes", 0) or 0),
             bool(employee and employee.bonus_ignored),

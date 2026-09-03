@@ -31,6 +31,11 @@ def ensure_schema_columns():
             db.session.execute(db.text("ALTER TABLE user ADD COLUMN last_failed_login_at DATETIME"))
         if "locked_until" not in user_columns:
             db.session.execute(db.text("ALTER TABLE user ADD COLUMN locked_until DATETIME"))
+        if "is_admin" not in user_columns:
+            db.session.execute(db.text("ALTER TABLE user ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
+            db.session.execute(db.text("UPDATE user SET is_admin = 1 WHERE username = 'admin'"))
+        if "permissions_json" not in user_columns:
+            db.session.execute(db.text("ALTER TABLE user ADD COLUMN permissions_json JSON"))
     if "salary_record" in tables:
         salary_columns = {column["name"] for column in inspector.get_columns("salary_record")}
         if "loan" not in salary_columns:
@@ -268,6 +273,8 @@ def create_app(test_config=None):
     app.register_blueprint(salary_slips_bp)
     app.register_blueprint(weekoffs_bp)
     app.register_blueprint(logs_bp)
+    from attendance.authentication import register_permission_hooks
+    register_permission_hooks(app)
     return app
 
 

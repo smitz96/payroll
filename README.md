@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.01
+Current version: V1.02
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -211,6 +211,7 @@ The tests cover wage type normalization, unsupported wage type protection, Month
 - [Development setup](docs/DEVELOPMENT.md)
 - [Raspberry Pi deployment](docs/DEPLOYMENT.md)
 - [Operations guide](docs/OPERATIONS.md)
+- [Version history](version_history.md)
 
 ## Linux / Raspberry Pi Deployment
 

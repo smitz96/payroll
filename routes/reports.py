@@ -17,6 +17,7 @@ from attendance.reports import (
     build_employee_pdf,
     build_error_report_pdf,
     build_less_hours_report_pdf,
+    build_manual_override_report_pdf,
     build_loan_pdf,
     build_overtime_report_pdf,
     build_payroll_summary_pdf,
@@ -24,6 +25,7 @@ from attendance.reports import (
     build_salary_register_xlsx,
     error_report_csv,
     less_hours_report_csv,
+    manual_override_report_csv,
     overtime_report_csv,
     payroll_summary_csv,
 )
@@ -103,9 +105,9 @@ def index():
         {"title": "Department Wise Attendance", "detail": "Attendance and leave by department, with each employee's calendar. No salary figures.", "icon": "users", "href": "reports.department_wise_pdf"},
         {"title": "Payroll Summary", "detail": "Employee-wise salary summary and deductions.", "icon": "salary", "href": "reports.payroll_summary_pdf"},
         {"title": "Salary Sheet (PF & ESIC)", "detail": "Full payroll register with PF, ESIC and professional tax. Also downloadable as XLSX.", "icon": "salary", "href": "reports.salary_register_pdf", "xlsx": "reports.salary_register_xlsx", "requires_final": MONTHLY},
-        {"title": "Detailed Attendance", "detail": "Daily working hours, status, shortage, and overtime.", "icon": "attendance", "href": "reports.attendance_detail_pdf"},
         {"title": "Overtime Report", "detail": "Only employees and dates with paid overtime.", "icon": "overtime", "href": "reports.overtime_pdf"},
         {"title": "Less Hours Report", "detail": "Shortage rows with less-hours deductions.", "icon": "less-hours", "href": "reports.less_hours_pdf"},
+        {"title": "Manual Override Report", "detail": "User day-status changes compared with imported attendance.", "icon": "review", "href": "reports.manual_overrides_pdf"},
         {"title": "Error Report", "detail": "Missing salary, attendance, and payroll review items.", "icon": "review", "href": "reports.errors_pdf"},
     ]
     for card in cards:
@@ -191,6 +193,18 @@ def errors_pdf(month):
     return pdf_response(build_error_report_pdf(month), f"smartfill-errors-{month}.pdf")
 
 
+@bp.route("/<month>/manual-overrides.csv")
+@login_required
+def manual_overrides(month):
+    return csv_response(manual_override_report_csv(month), f"smartfill-manual-overrides-{month}.csv")
+
+
+@bp.route("/<month>/manual-overrides.pdf")
+@login_required
+def manual_overrides_pdf(month):
+    return pdf_response(build_manual_override_report_pdf(month), f"smartfill-manual-overrides-{month}.pdf")
+
+
 @bp.route("/<month>/overtime.csv")
 @login_required
 def overtime(month):
@@ -232,6 +246,21 @@ def employee_pdf(month, employee_id):
     filename = (f"attendance-summary-{month}-{employee_id}.pdf" if daily
                 else f"smartfill-salary-slip-{month}-{employee_id}.pdf")
     return pdf_response(build_employee_pdf(month, employee_id), filename)
+
+
+@bp.route("/<month>/employee/<employee_id>/attendance-summary.pdf")
+@login_required
+def employee_attendance_summary_pdf(month, employee_id):
+    salary = SalaryRecord.query.filter_by(payroll_month=month, employee_id=employee_id).first()
+    if not salary or salary.normalized_salary_type not in {"MONTHLY", "DAILY"}:
+        abort(404)
+    wage_group = salary.normalized_salary_type
+    filename = (
+        f"attendance-summary-{month}-{employee_id}.pdf"
+        if wage_group == "DAILY"
+        else f"smartfill-attendance-summary-{month}-{employee_id}.pdf"
+    )
+    return pdf_response(build_attendance_summary_pdf(month, wage_group, employee_id=employee_id), filename)
 
 
 @bp.route("/<month>/attendance-summary-monthly.pdf")

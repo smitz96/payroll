@@ -101,6 +101,7 @@ def attendance_grid(month):
             # paid nor deducted until someone sets an override, so it must be visible.
             "missing": not punches and not week_off,
             "week_off": week_off,
+            "other_issue": bool(record.warning) and len(punches) % 2 == 0 and bool(punches) and not week_off,
             "warning": record.warning or "",
         }
     # Sorted explicitly: first-seen order is only correct when every employee has
@@ -111,9 +112,11 @@ def attendance_grid(month):
         cells = row["cells"].values()
         row["odd_count"] = sum(1 for cell in cells if cell["odd"])
         row["missing_count"] = sum(1 for cell in cells if cell["missing"])
+        row["other_issue_count"] = sum(1 for cell in cells if cell["other_issue"])
         row["has_odd"] = row["odd_count"] > 0
         row["has_missing"] = row["missing_count"] > 0
-        row["needs_review"] = row["has_odd"] or row["has_missing"]
+        row["has_other_issue"] = row["other_issue_count"] > 0
+        row["needs_review"] = row["has_odd"] or row["has_missing"] or row["has_other_issue"]
     return dates, rows
 
 
@@ -253,6 +256,7 @@ def month(month):
     employee_rows = sorted(employee_rows, key=lambda row: employee_sort_value(row, sort), reverse=order == "desc")
     odd_count = sum(row["odd_count"] for row in employee_rows)
     missing_count = sum(row["missing_count"] for row in employee_rows)
+    other_issue_count = sum(row["other_issue_count"] for row in employee_rows)
     return render_template(
         "attendance_manager.html",
         month=month,
@@ -263,6 +267,7 @@ def month(month):
         employee_rows=employee_rows,
         odd_count=odd_count,
         missing_count=missing_count,
+        other_issue_count=other_issue_count,
         review_employee_count=sum(1 for row in employee_rows if row["needs_review"]),
         unknown_employees=unknown_employees,
         is_finalized=is_payroll_finalized(month),

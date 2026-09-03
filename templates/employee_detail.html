@@ -9,6 +9,9 @@
   </div>
   <div class="d-flex gap-2 flex-wrap">
     <a class="btn btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Back to payroll</a>
+    {% if salary and salary.normalized_salary_type in ["MONTHLY", "DAILY"] %}
+    <a class="btn btn-outline-primary" href="{{ url_for('reports.employee_attendance_summary_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">Attendance summary</a>
+    {% endif %}
     {# The daily wage PDF is an attendance summary and carries no pay, so it stays
        available while the month is a draft. The monthly slip does not. #}
     {% if is_finalized or (salary and salary.normalized_salary_type == "DAILY") %}
@@ -21,10 +24,14 @@
 {% if is_finalized %}
 <div class="alert alert-warning mt-3">Payroll is finalized and locked. Unlock payroll from the month page before making changes.</div>
 {% endif %}
+{% if not has_permission('payroll') %}
+<div class="alert alert-info mt-3">You have read-only payroll access. Payroll edits require the Payroll module.</div>
+{% endif %}
 {% if salary and salary.normalized_salary_type not in ["MONTHLY", "DAILY"] %}
 <div class="alert alert-warning">Wage type rules are not configured. No automatic payroll calculation performed.</div>
 {% endif %}
 {% set is_daily_wage = salary and salary.normalized_salary_type == "DAILY" %}
+{% set can_edit_payroll = has_permission('payroll') and not is_finalized %}
 {% if result %}
 {# Grouped by what a reader is looking for: the month and its day counts, then the
    leave position, then hours, then money. PF and ESIC live in the Payroll
@@ -111,31 +118,31 @@
   <div class="adjust-grid">
     <div class="adjust-field">
       <label class="form-label" for="adjustmentAmount">Adjustment</label>
-      <input class="form-control" id="adjustmentAmount" name="adjustment" value="{{ salary.adjustment if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+      <input class="form-control" id="adjustmentAmount" name="adjustment" value="{{ salary.adjustment if salary else 0 }}" inputmode="decimal" {% if not salary or not can_edit_payroll %}disabled{% endif %}>
       <small>Positive adds to the salary, negative deducts from it.</small>
     </div>
     <div class="adjust-field">
       <label class="form-label" for="manualLoan">Manual loan / other deduction</label>
-      <input class="form-control" id="manualLoan" name="loan" value="{{ salary.loan if salary else 0 }}" inputmode="decimal" {% if not salary or is_finalized %}disabled{% endif %}>
+      <input class="form-control" id="manualLoan" name="loan" value="{{ salary.loan if salary else 0 }}" inputmode="decimal" {% if not salary or not can_edit_payroll %}disabled{% endif %}>
       <small>Deducted on top of any active loan installment.</small>
     </div>
     {% if not is_daily_wage %}
     {% set employee_leave_encashment_checked = (global_leave_encashment and salary and not salary.leave_encashment_disabled) or (salary and salary.leave_encashment_enabled) %}
     <div class="adjust-field">
       <label class="form-check">
-        <input class="form-check-input" type="checkbox" name="leave_encashment_enabled" id="leaveEncashmentEnabled" {% if employee_leave_encashment_checked %}checked{% endif %} {% if not salary or is_finalized %}disabled{% endif %}>
+        <input class="form-check-input" type="checkbox" name="leave_encashment_enabled" id="leaveEncashmentEnabled" {% if employee_leave_encashment_checked %}checked{% endif %} {% if not salary or not can_edit_payroll %}disabled{% endif %}>
         <span>{{ "Include in global leave encashment" if global_leave_encashment else "Encash leave" }}</span>
       </label>
-      <input class="form-control" name="leave_encashment_days" id="leaveEncashmentDays" value="{{ 'All available' if global_leave_encashment and employee_leave_encashment_checked else (salary.leave_encashment_days if salary else 0) }}" inputmode="decimal" placeholder="Days to encash" {% if not salary or is_finalized or global_leave_encashment or not salary.leave_encashment_enabled %}disabled{% endif %}>
+      <input class="form-control" name="leave_encashment_days" id="leaveEncashmentDays" value="{{ 'All available' if global_leave_encashment and employee_leave_encashment_checked else (salary.leave_encashment_days if salary else 0) }}" inputmode="decimal" placeholder="Days to encash" {% if not salary or not can_edit_payroll or global_leave_encashment or not salary.leave_encashment_enabled %}disabled{% endif %}>
       <small>{% if global_leave_encashment %}Global encashment is on; untick to exclude this employee. {% endif %}{% if result %}{{ (result.closing_leave or 0) + (result.leave_encashment_days or 0) }} day(s) available, worth {{ result.leave_encashment_amount|money }}.{% else %}Enter the number of days to pay out.{% endif %}</small>
     </div>
     {% endif %}
     <div class="adjust-field">
       <label class="form-check">
-        <input class="form-check-input" type="checkbox" name="loan_installment_skip" {% if loan_skip and loan_skip.skip %}checked{% endif %} {% if is_finalized or not active_loans %}disabled{% endif %}>
+        <input class="form-check-input" type="checkbox" name="loan_installment_skip" {% if loan_skip and loan_skip.skip %}checked{% endif %} {% if not can_edit_payroll or not active_loans %}disabled{% endif %}>
         <span>Skip loan installment</span>
       </label>
-      <input class="form-control" name="loan_skip_notes" value="{{ loan_skip.notes if loan_skip else '' }}" placeholder="Reason for skipping" {% if is_finalized or not active_loans %}disabled{% endif %}>
+      <input class="form-control" name="loan_skip_notes" value="{{ loan_skip.notes if loan_skip else '' }}" placeholder="Reason for skipping" {% if not can_edit_payroll or not active_loans %}disabled{% endif %}>
       <small>{% if active_loans %}Installment due this month: {{ active_loan_installment }}.{% else %}No active loan this month.{% endif %}</small>
     </div>
     {% if payroll_advances or advance_deduction %}
@@ -186,12 +193,12 @@
       {% if row.note %}
       <span class="calendar-note" title="{{ row.note }}">{{ row.note }}</span>
       {% endif %}
-      <select class="form-select form-select-sm calendar-override" name="manual_status_{{ rec.id }}" aria-label="Override for {{ rec.date }}" {% if is_finalized %}disabled{% endif %}>
+      <select class="form-select form-select-sm calendar-override" name="manual_status_{{ rec.id }}" aria-label="Override for {{ rec.date }}" {% if not can_edit_payroll %}disabled{% endif %}>
         {% for option in override_options %}
         <option {% if overrides.get(rec.date) and overrides.get(rec.date).manual_status == option %}selected{% endif %}>{{ option }}</option>
         {% endfor %}
       </select>
-      <input class="form-control form-control-sm calendar-notes" name="notes_{{ rec.id }}" placeholder="Notes" aria-label="Notes for {{ rec.date }}" value="{{ overrides.get(rec.date).notes if overrides.get(rec.date) else '' }}" {% if is_finalized %}disabled{% endif %}>
+      <input class="form-control form-control-sm calendar-notes" name="notes_{{ rec.id }}" placeholder="Notes" aria-label="Notes for {{ rec.date }}" value="{{ overrides.get(rec.date).notes if overrides.get(rec.date) else '' }}" {% if not can_edit_payroll %}disabled{% endif %}>
     </div>
     {% endif %}
     {% endfor %}
@@ -200,7 +207,7 @@
 </div>
 {# The page's only submit buttons. They used to appear here and again inside the
    adjustments panel, which made four buttons for two actions. #}
-{% if not is_finalized %}
+{% if can_edit_payroll %}
 <div class="sticky-actions">
   <span class="sticky-actions-hint">Changes to adjustments and day overrides are saved together.</span>
   <button class="btn btn-outline-primary" name="action" value="save">Save only</button>

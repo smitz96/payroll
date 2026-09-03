@@ -10,7 +10,7 @@ from attendance.loans import loan_installment_for_employee, loan_pending_after_m
 from attendance.settings import DAILY_BONUS_RULES as BONUS_CFG
 from attendance.statutory import professional_tax, statutory_for_employee
 from attendance.settings import MONTHLY_RULES as CFG
-from attendance.utils import LEAVE_DAY_PRECISION, ceil_to_interval, floor_to_interval, minutes_to_duration, money, truncate_leave_days
+from attendance.utils import LEAVE_DAY_PRECISION, ceil_to_interval, floor_to_interval, minutes_to_duration, minutes_to_working_day_shortage, money, truncate_leave_days
 from attendance.weekoffs import is_week_off_for_date
 
 
@@ -128,7 +128,12 @@ class MonthlyPayrollRule(PayrollRule):
                                if row["status"] in {"Week Off", "Week Off Worked", "Holiday"}), Decimal("0"))
             taken = sum((Decimal(str(row["leave_used"])) for _r, _o, row in rows), Decimal("0"))
             comp_off = sum((Decimal("1") for _r, _o, row in rows if row["status"] == "Week Off Worked"), Decimal("0"))
-            return calculate_monthly_leave_earned(full + half + not_working + taken, days_in_month) + comp_off
+            attendance_credit = full + half + not_working
+            if attendance_credit >= Decimal(days_in_month - 2):
+                earned = Decimal(str(CFG["LEAVE_EARNED_PER_MONTH"]))
+            else:
+                earned = calculate_monthly_leave_earned(full + half + not_working + taken, days_in_month)
+            return earned + comp_off
 
         # The accrual is pro-rated by the days that end up paid, but how many days end
         # up paid depends on how much leave there was to spend, which is the accrual
@@ -686,16 +691,16 @@ def daily_bonus_explanation(absence_minutes, bonus_ignored=False):
     allowance = BONUS_CFG["PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES"]
     full_percent = BONUS_CFG["FULL_ATTENDANCE_BONUS_PERCENT"]
     partial_percent = BONUS_CFG["PARTIAL_ATTENDANCE_BONUS_PERCENT"]
-    absence = minutes_to_duration(absence_minutes)
+    absence = minutes_to_working_day_shortage(absence_minutes)
     if absence_minutes <= 0:
         return f"No absence this month, so the full {full_percent}% attendance bonus applies."
     if absence_minutes <= allowance:
         return (
-            f"Absence of {absence} is within the {minutes_to_duration(allowance)} allowance, "
+            f"Absence of {absence} is within the {minutes_to_working_day_shortage(allowance, suffix=False)} allowance, "
             f"so the {partial_percent}% attendance bonus applies."
         )
     return (
-        f"Absence of {absence} is over the {minutes_to_duration(allowance)} allowance, "
+        f"Absence of {absence} is over the {minutes_to_working_day_shortage(allowance, suffix=False)} allowance, "
         "so no attendance bonus is payable."
     )
 

@@ -11,9 +11,11 @@
   </div>
   {# The only page-level action. Recalculating now lives on the workflow step that
      names it, so the header is not three red buttons of very different weight. #}
+  {%- if has_permission('payroll') %}
   <div class="d-flex gap-2 flex-wrap">
     <button type="button" class="btn btn-outline-danger" id="openDeletePayroll">Delete payroll</button>
   </div>
+  {%- endif %}
 </div>
 
 {# Monthly and Daily are signed off independently, so each carries its own lock. #}
@@ -32,10 +34,12 @@
     {# Filtering moved to the segmented control above the employee tables, so these
        cards carry only the sign-off action. #}
     <div class="wage-lock-actions">
+      {% if has_permission('finalization') %}
       {% if group.finalized %}
       <button type="button" class="btn btn-sm btn-outline-primary open-wage-dialog" data-dialog="unlockPayrollDialog" data-group="{{ group.key }}" data-label="{{ group.label }}">Unlock {{ group.label|lower }}</button>
       {% elif group.has_employees %}
       <button type="button" class="btn btn-sm btn-outline-danger open-wage-dialog" data-dialog="finalizePayrollDialog" data-group="{{ group.key }}" data-label="{{ group.label }}">Finalize {{ group.label|lower }}</button>
+      {% endif %}
       {% endif %}
     </div>
   </div>
@@ -54,6 +58,7 @@
        flow. A step whose prerequisites are unmet is dimmed and inert. #}
     <span class="workflow-step-cta">
       {% for item in step.actions %}
+      {% if has_permission('payroll') %}
       <form method="post"{% if item.confirm %} onsubmit="return confirm('{{ item.confirm }}');"{% endif %}>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="action" value="{{ item.action }}">
@@ -61,6 +66,7 @@
         <button class="btn btn-sm {{ item.variant }}"
                 {% if not item.enabled %}disabled title="{{ item.disabled_reason }}"{% elif item.hint %}title="{{ item.hint }}"{% endif %}>{{ item.label }}</button>
       </form>
+      {% endif %}
       {% endfor %}
       {% if step.href %}
       <a class="btn btn-sm {{ 'btn-primary' if step.state == 'current' and not step.actions else 'btn-outline-secondary' }}{{ ' disabled-link' if not step.enabled }}"
@@ -84,6 +90,7 @@
 <div class="alert alert-warning">Attendance is imported but not submitted. Review punches in <strong>Review &amp; submit</strong> above, then submit. Calculation stays disabled until you do.</div>
 {% endif %}
 
+{% if has_permission('payroll') %}
 <form method="post" class="tool-panel mb-4">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="action" value="leave_encashment">
@@ -96,6 +103,7 @@
   </div>
   <p class="text-muted mb-0 mt-2">When enabled, all available leave balance is encashed for every monthly-wage employee. Open an employee to disable encashment for that employee only.</p>
 </form>
+{% endif %}
 
 {% if missing_salary %}
 <div class="alert alert-warning"><strong>Attendance employees missing wage data</strong><br>{% for id, name in missing_salary.items() %}{{ id }} - {{ name }}: no wage record for this month. Check the wage type and salary in Employee Master, then load wages again.<br>{% endfor %}</div>
@@ -231,6 +239,7 @@
   </form>
 </dialog>
 
+{% if has_permission('payroll') %}
 <dialog class="confirm-dialog" id="deletePayrollDialog">
   <form method="post" id="deletePayrollForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -248,6 +257,7 @@
     </div>
   </form>
 </dialog>
+{% endif %}
 
 <script>
   const deleteDialog = document.getElementById('deletePayrollDialog');
@@ -259,20 +269,24 @@
   const requiredDeleteText = 'permanently delete';
 
   function refreshDeleteState() {
-    confirmDelete.disabled = deleteInput.value.trim().toLowerCase() !== requiredDeleteText;
+    if (confirmDelete && deleteInput) {
+      confirmDelete.disabled = deleteInput.value.trim().toLowerCase() !== requiredDeleteText;
+    }
   }
 
-  openDelete.addEventListener('click', () => {
-    deleteInput.value = '';
-    refreshDeleteState();
-    deleteDialog.showModal();
-    deleteInput.focus();
-  });
-  closeDelete.addEventListener('click', () => deleteDialog.close());
-  cancelDelete.addEventListener('click', () => deleteDialog.close());
-  deleteInput.addEventListener('paste', event => event.preventDefault());
-  deleteInput.addEventListener('drop', event => event.preventDefault());
-  deleteInput.addEventListener('input', refreshDeleteState);
+  if (openDelete && deleteDialog && deleteInput) {
+    openDelete.addEventListener('click', () => {
+      deleteInput.value = '';
+      refreshDeleteState();
+      deleteDialog.showModal();
+      deleteInput.focus();
+    });
+  }
+  closeDelete?.addEventListener('click', () => deleteDialog.close());
+  cancelDelete?.addEventListener('click', () => deleteDialog.close());
+  deleteInput?.addEventListener('paste', event => event.preventDefault());
+  deleteInput?.addEventListener('drop', event => event.preventDefault());
+  deleteInput?.addEventListener('input', refreshDeleteState);
 
   // One finalize dialog and one unlock dialog serve both wage groups; the trigger
   // fills in which group it applies to.

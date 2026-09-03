@@ -7,6 +7,7 @@ exports the month as a register sheet and reads back a whole month of day status
 in one pass, writing them as the same attendance overrides the employee page sets.
 """
 import csv
+from collections import Counter
 from datetime import datetime
 from io import StringIO
 
@@ -17,7 +18,7 @@ from attendance.weekoffs import is_week_off_for_date
 
 REGISTER_COLUMNS = [
     "Employee ID", "Employee Name", "Date", "Day", "Punch In", "Punch Out",
-    "Hours", "System Status", "Register Status", "Notes",
+    "Hours", "Issue", "Issue Count", "System Status", "Register Status", "Notes",
 ]
 # Blank means "leave this day as the punches read it"; AUTO_STATUS clears a status
 # set earlier. Everything else must be one of the statuses the employee page offers.
@@ -27,6 +28,10 @@ REGISTER_REQUIRED_COLUMNS = {"Employee ID", "Date", "Register Status"}
 # Only the working days a register is actually consulted for, so the file stays
 # readable: no punches, and not a week off.
 MISSING_PUNCH_SCOPE = "missing"
+ISSUE_PRIORITY = {
+    "Odd punch count": 0,
+    "Missing punch and working hours": 1,
+}
 
 
 def register_statuses():
@@ -43,6 +48,26 @@ def system_status_for(record):
     if record.parse_status == "OK":
         return "No punches"
     return record.warning or record.parse_status or "Needs review"
+
+
+def issue_for_status(status):
+    status = str(status or "")
+    for issue in ISSUE_PRIORITY:
+        if issue in status:
+            return issue
+    return status or "Needs review"
+
+
+def issue_priority(issue):
+    priority = min(
+        (ISSUE_PRIORITY[item] for item in ISSUE_PRIORITY if item in issue),
+        default=len(ISSUE_PRIORITY),
+    )
+    return priority, issue.lower()
+
+
+def issue_sort_key(row):
+    return (*issue_priority(row["Issue"]), employee_sort_key(row["Employee ID"]), row["Date"])
 
 
 def register_rows(month, scope=None):
@@ -62,6 +87,7 @@ def register_rows(month, scope=None):
             if record.actual_minutes or is_week_off_for_date(record.employee_id, record.date):
                 continue
         override = overrides.get((record.employee_id, record.date))
+        system_status = system_status_for(record)
         rows.append({
             "Employee ID": record.employee_id,
             "Employee Name": record.employee_name or "",
@@ -70,10 +96,19 @@ def register_rows(month, scope=None):
             "Punch In": record.first_punch or "",
             "Punch Out": record.last_punch or "",
             "Hours": minutes_to_duration(record.actual_minutes or 0),
-            "System Status": system_status_for(record),
+            "Issue": issue_for_status(system_status) if scope == MISSING_PUNCH_SCOPE else "",
+            "System Status": system_status,
             "Register Status": override.manual_status if override else BLANK_STATUS,
             "Notes": (override.notes if override else "") or "",
         })
+    if scope == MISSING_PUNCH_SCOPE:
+        rows.sort(key=issue_sort_key)
+        issue_counts = Counter(row["Issue"] for row in rows)
+        for row in rows:
+            row["Issue Count"] = issue_counts[row["Issue"]]
+    else:
+        for row in rows:
+            row["Issue Count"] = ""
     return rows
 
 

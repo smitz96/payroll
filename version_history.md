@@ -1,0 +1,35 @@
+# Version History
+
+## V1.02
+
+Current version.
+
+- Added employee-specific attendance summary access from employee payroll detail for both Monthly and Daily wage groups.
+- Removed the old Detailed Attendance report card from the Reports page.
+- Beautified Overtime, Less Hours, and Error PDF reports with clearer labels, KPI summaries, readable durations, and stronger visual emphasis.
+- Added Manual Override Report in PDF and CSV formats, comparing imported attendance with user-entered day-status overrides.
+- Improved Error Report by excluding configured week-off attendance warnings and grouping issues by priority with issue counts.
+- Improved the missing-punch register export with issue grouping and issue counts.
+- Added Attendance Manager filters for Needs review, No punch days, Odd punch, and Other issues, with multi-select support.
+- Made the website more mobile friendly with responsive layout, navigation, report, form, and attendance-grid improvements.
+- Updated leave earning logic so employees receive the full monthly leave allotment when attended days plus week offs plus holidays reaches at least `days in month - 2`; otherwise leave remains pro-rated.
+- Improved attendance summaries so short-hours values are displayed in hours/minutes and warning markers are easier for employees to notice.
+- Fixed Total Paid Days to include holidays.
+- Added calculation status indicators with a green tick for Calculated and a warning mark for Needs Review.
+
+## V1.01
+
+- Added full backup and restore support so payroll data can be exported from one server and restored on another server after a crash or migration.
+- Added multiuser support with module-based access control.
+- Added a Users management area for admin-controlled user and permission management.
+- Removed the old Users & access entry from Settings security.
+- Updated app documentation for backup/restore, local setup, and operational usage.
+
+## V1.00
+
+First released version.
+
+- Imported monthly attendance and employee wage data.
+- Calculated payroll for Monthly and Daily wage groups.
+- Generated salary slips, payroll summaries, attendance summaries, overtime, less-hours, and error reports.
+- Supported week offs, holidays, leave balances, loan/advance deductions, payroll finalization, and local SQLite storage.

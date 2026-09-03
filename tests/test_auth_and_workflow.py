@@ -288,7 +288,8 @@ def test_reports_page_has_dedicated_route_and_pdf_cards(client, app):
     assert b"Payroll PDF Reports" in response.data
     assert b"Salary Slips (Monthly)" in response.data
     assert b"Payroll Summary" in response.data
-    assert b"Detailed Attendance" in response.data
+    assert b"Manual Override Report" in response.data
+    assert b"Detailed Attendance" not in response.data
     # The slips card is listed while the month is a draft but is not yet a link.
     assert b"/reports/2026-07/final-report.pdf" not in response.data
     assert b"Available once monthly wage payroll is finalized." in response.data
@@ -1514,7 +1515,8 @@ def test_overtime_and_less_hours_reports_only_include_paid_rows(client, app):
     assert b"/reports/2026-07/overtime.pdf" not in page.data
     assert b"Open Reports" in page.data
     reports_page = client.get("/reports/?month=2026-07")
-    for label in (b"Payroll Summary", b"Detailed Attendance", b"Overtime Report", b"Less Hours Report", b"Error Report"):
+    assert b"Detailed Attendance" not in reports_page.data
+    for label in (b"Payroll Summary", b"Overtime Report", b"Less Hours Report", b"Manual Override Report", b"Error Report"):
         assert label in reports_page.data
 
     ot = client.get("/reports/2026-07/overtime.pdf")

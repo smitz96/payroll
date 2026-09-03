@@ -1,7 +1,7 @@
 import calendar
 import csv
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 from io import BytesIO, StringIO
 from decimal import Decimal
@@ -12,14 +12,19 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A3, A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.platypus import Flowable, Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.graphics.shapes import Drawing, Polygon, String
 
 from attendance import db
 from attendance.loans import loan_installment_for_loan, loan_paid_before_month, loan_pending_after_month, loan_remaining_before_month, loan_repayment_schedule
-from attendance.models import AttendanceRecord, Employee, Loan, PayrollMonth, PayrollResult, SalaryRecord
+from attendance.holidays import holiday_dates_for_records
+from attendance.models import AttendanceOverride, AttendanceRecord, Employee, Loan, PayrollMonth, PayrollResult, SalaryRecord
+from attendance.payroll_rules import classify_daily_attendance, classify_monthly_attendance
 from attendance.settings import COMPANY_ADDRESS
 from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
-from attendance.utils import format_percent, is_valid_payroll_month, leave_days, minutes_to_duration, money
+from attendance.utils import format_percent, is_valid_payroll_month, leave_days, minutes_to_duration, minutes_to_working_day_shortage, money
+from attendance.weekoffs import is_week_off_for_date
 
 ONES = [
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
@@ -48,6 +53,10 @@ ORANGE_WASH = colors.HexColor("#FDF0E3")
 RED_WASH = colors.HexColor("#FCEBEC")
 TEAL_TEXT = colors.HexColor("#0B6B7A")
 TEAL_WASH = colors.HexColor("#E4F5F8")
+ERROR_ISSUE_PRIORITY = {
+    "Odd punch count": 0,
+    "Missing punch and working hours": 1,
+}
 
 # Kept for the brand lockup only; the report chrome itself is system-coloured.
 BRAND_BLUE = colors.HexColor("#0C306A")
@@ -69,6 +78,72 @@ def _status_colours(status):
     return SURFACE_SOFT, MUTED
 
 
+class StatusBadge(Flowable):
+    """Inline calculation status marker for summary PDF tables."""
+
+    def __init__(self, status, icon="check", font_size=8):
+        super().__init__()
+        self.status = str(status or "").strip() or "—"
+        self.icon = icon
+        self.font_size = font_size
+        self.icon_size = font_size + 4
+        _wash, self.text_colour = _status_colours(self.status)
+        self.width = self.icon_size + 3 + stringWidth(self.status, "Helvetica-Bold", self.font_size)
+        self.height = max(self.icon_size, self.font_size + 3)
+        self.hAlign = "CENTER"
+
+    def draw(self):
+        canvas = self.canv
+        icon_y = (self.height - self.icon_size) / 2
+        text_y = (self.height - self.font_size) / 2
+        canvas.saveState()
+        if self.icon == "warning":
+            self._draw_warning(canvas, 0, icon_y, self.icon_size)
+        else:
+            self._draw_check(canvas, 0, icon_y, self.icon_size)
+        canvas.setFont("Helvetica-Bold", self.font_size)
+        canvas.setFillColor(self.text_colour)
+        canvas.drawString(self.icon_size + 3, text_y, self.status)
+        canvas.restoreState()
+
+    def _draw_warning(self, canvas, x, y, size):
+        path = canvas.beginPath()
+        path.moveTo(x + size / 2, y + size)
+        path.lineTo(x + size, y)
+        path.lineTo(x, y)
+        path.close()
+        canvas.setFillColor(colors.HexColor("#FFCC00"))
+        canvas.setStrokeColor(ORANGE_TEXT)
+        canvas.setLineWidth(0.45)
+        canvas.drawPath(path, fill=1, stroke=1)
+        canvas.setFillColor(INK)
+        canvas.setFont("Helvetica-Bold", size * 0.72)
+        canvas.drawCentredString(x + size / 2, y + size * 0.18, "!")
+
+    def _draw_check(self, canvas, x, y, size):
+        canvas.setFillColor(GREEN_TEXT)
+        canvas.setStrokeColor(GREEN_TEXT)
+        canvas.circle(x + size / 2, y + size / 2, size / 2, stroke=0, fill=1)
+        canvas.setStrokeColor(colors.white)
+        canvas.setLineWidth(max(1.1, size * 0.16))
+        canvas.setLineCap(1)
+        path = canvas.beginPath()
+        path.moveTo(x + size * 0.28, y + size * 0.50)
+        path.lineTo(x + size * 0.43, y + size * 0.34)
+        path.lineTo(x + size * 0.72, y + size * 0.68)
+        canvas.drawPath(path, stroke=1, fill=0)
+
+
+def status_badge(status, font_size=8):
+    text = str(status or "").strip()
+    normalized = text.lower()
+    if normalized == "calculated":
+        return StatusBadge(text, icon="check", font_size=font_size)
+    if normalized == "needs review":
+        return StatusBadge(text, icon="warning", font_size=font_size)
+    return status
+
+
 def payroll_month_days(month):
     year, month_number = (int(part) for part in month.split("-"))
     return calendar.monthrange(year, month_number)[1]
@@ -79,7 +154,12 @@ def total_paid_days(result):
         return ""
     if result.payroll_rule_type == "DAILY":
         return Decimal(result.paid_working_days or 0) + Decimal(result.holidays or 0)
-    return Decimal(result.paid_working_days or 0) + Decimal(result.week_offs or 0) + Decimal(result.paid_leaves or 0)
+    return (
+        Decimal(result.paid_working_days or 0)
+        + Decimal(result.week_offs or 0)
+        + Decimal(result.paid_leaves or 0)
+        + Decimal(result.holidays or 0)
+    )
 
 
 def result_has_loan(result):
@@ -221,19 +301,95 @@ def less_hours_report_csv(month):
     return out.getvalue()
 
 
+def manual_override_report_csv(month):
+    out = StringIO()
+    writer = csv.writer(out)
+    writer.writerow([
+        "Employee ID", "Employee Name", "Date", "Imported Status", "Imported Hours",
+        "In Time", "Out Time", "Manual Override", "Notes", "Updated At",
+    ])
+    for row in manual_override_report_rows(month):
+        writer.writerow([
+            row["employee_id"],
+            row["employee"],
+            row["date"],
+            row["imported_status"],
+            row["imported_hours"],
+            row["in_time"],
+            row["out_time"],
+            row["manual_status"],
+            row["notes"],
+            pdf_datetime(row["updated_at"]),
+        ])
+    return out.getvalue()
+
+
+def error_issue_for_text(text):
+    text = str(text or "")
+    for issue in ERROR_ISSUE_PRIORITY:
+        if issue in text:
+            return issue
+    return text or "Needs review"
+
+
+def error_issue_sort_key(row):
+    priority = min(
+        (ERROR_ISSUE_PRIORITY[issue] for issue in ERROR_ISSUE_PRIORITY if issue in row["issue"]),
+        default=len(ERROR_ISSUE_PRIORITY),
+    )
+    return priority, row["issue"].lower(), row["area"].lower(), row["employee_id"]
+
+
+def error_report_rows(month):
+    rows = []
+    names = employee_name_map(month)
+    for salary in SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id):
+        if salary.warning:
+            issue = error_issue_for_text(salary.warning)
+            rows.append({
+                "area": "Salary",
+                "employee_id": salary.employee_id,
+                "employee": salary.name,
+                "issue": issue,
+                "issue_count": 0,
+                "detail": salary.warning,
+            })
+    for rec in AttendanceRecord.query.filter_by(payroll_month=month).order_by(AttendanceRecord.employee_id, AttendanceRecord.date):
+        if rec.warning and not is_week_off_for_date(rec.employee_id, rec.date):
+            issue = error_issue_for_text(rec.warning)
+            rows.append({
+                "area": "Attendance",
+                "employee_id": rec.employee_id,
+                "employee": names.get(rec.employee_id, rec.employee_name or ""),
+                "issue": issue,
+                "issue_count": 0,
+                "detail": f"{rec.date}: {rec.warning}",
+            })
+    for result in PayrollResult.query.filter_by(payroll_month=month).order_by(PayrollResult.employee_id):
+        if result.calculation_status != "Calculated":
+            detail = result.message or result.calculation_status
+            issue = error_issue_for_text(detail)
+            rows.append({
+                "area": "Payroll",
+                "employee_id": result.employee_id,
+                "employee": names.get(result.employee_id, ""),
+                "issue": issue,
+                "issue_count": 0,
+                "detail": detail,
+            })
+    issue_counts = Counter(row["issue"] for row in rows)
+    for row in rows:
+        row["issue_count"] = issue_counts[row["issue"]]
+    rows.sort(key=error_issue_sort_key)
+    return rows
+
+
 def error_report_csv(month):
     out = StringIO()
     writer = csv.writer(out)
-    writer.writerow(["Area", "Employee ID", "Issue"])
-    for salary in SalaryRecord.query.filter_by(payroll_month=month):
-        if salary.warning:
-            writer.writerow(["Salary", salary.employee_id, salary.warning])
-    for rec in AttendanceRecord.query.filter_by(payroll_month=month):
-        if rec.warning:
-            writer.writerow(["Attendance", rec.employee_id, f"{rec.date}: {rec.warning}"])
-    for result in PayrollResult.query.filter_by(payroll_month=month):
-        if result.calculation_status != "Calculated":
-            writer.writerow(["Payroll", result.employee_id, result.message or result.calculation_status])
+    writer.writerow(["Issue", "Issue Count", "Area", "Employee ID", "Employee", "Detail"])
+    for row in error_report_rows(month):
+        writer.writerow([row["issue"], row["issue_count"], row["area"], row["employee_id"], row["employee"], row["detail"]])
     return out.getvalue()
 
 
@@ -252,7 +408,19 @@ def calculated_results_for_month(month):
     ]
 
 
-def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, landscape_page=True, kpis=None, status_column=None):
+def report_pdf(
+    title,
+    subtitle,
+    headers,
+    rows,
+    col_widths=None,
+    font_size=7,
+    landscape_page=True,
+    kpis=None,
+    status_column=None,
+    center_from=None,
+    accent_columns=None,
+):
     buffer = BytesIO()
     pagesize = landscape(A4) if landscape_page else A4
     doc = SimpleDocTemplate(buffer, pagesize=pagesize, leftMargin=11 * mm, rightMargin=11 * mm, topMargin=11 * mm, bottomMargin=14 * mm)
@@ -266,6 +434,11 @@ def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, lan
         textColor=MUTED,
     )
     empty_style = ParagraphStyle("ReportEmpty", parent=cell_style, textColor=FAINT)
+    accent_columns = accent_columns or {}
+    accent_styles = {
+        column: ParagraphStyle(f"ReportAccent{column}", parent=cell_style, fontName="Helvetica-Bold", textColor=colour)
+        for column, colour in accent_columns.items()
+    }
     available_width = pagesize[0] - doc.leftMargin - doc.rightMargin
     if not col_widths:
         col_widths = [available_width / len(headers)] * len(headers)
@@ -273,14 +446,18 @@ def report_pdf(title, subtitle, headers, rows, col_widths=None, font_size=7, lan
     table_rows = [[Paragraph(str(value).upper(), header_style) for value in headers]]
     if rows:
         for row in rows:
-            table_rows.append([Paragraph(str(value if value not in (None, "") else "—"), cell_style) for value in row])
+            table_rows.append([
+                value if isinstance(value, Flowable)
+                else Paragraph(str(value if value not in (None, "") else "—"), accent_styles.get(index, cell_style))
+                for index, value in enumerate(row)
+            ])
     else:
         table_rows.append([Paragraph("No records found", empty_style)] + [Paragraph("", cell_style)] * (len(headers) - 1))
 
     story = [_report_brand_header(title, subtitle, styles, available_width), Spacer(1, 9)]
     if kpis:
         story.extend([_kpi_row(kpis, available_width), Spacer(1, 9)])
-    story.append(_table(table_rows, col_widths=col_widths, font_size=font_size, status_column=status_column if rows else None))
+    story.append(_table(table_rows, col_widths=col_widths, font_size=font_size, status_column=status_column if rows else None, center_from=center_from))
     page_callback = _titled_page_callback(title)
     doc.build(story, onFirstPage=page_callback, onLaterPages=page_callback)
     buffer.seek(0)
@@ -432,7 +609,7 @@ def build_overtime_report_pdf(month):
                 item.get("first_punch", "") or "-",
                 item.get("last_punch", "") or "-",
                 item.get("actual_duration") or item.get("raw_working_hours", ""),
-                payable_ot,
+                pdf_minutes(payable_ot),
                 pdf_money(ot_amount),
             ])
             contributed = True
@@ -441,17 +618,19 @@ def build_overtime_report_pdf(month):
             total_amount += Decimal(result.ot_amount or 0)
     return report_pdf(
         "Overtime Report",
-        f"{display_month(month)} · Only days with payable overtime",
-        ["ID", "Employee", "Date", "In Time", "Out Time", "Working Hours", "OT Paid Minutes", "OT Amount"],
+        f"{display_month(month)} · Employee-wise payable overtime",
+        ["ID", "Employee", "Date", "In Time", "Out Time", "Worked", "OT Duration", "OT Amount"],
         rows,
-        col_widths=[16 * mm, 58 * mm, 26 * mm, 26 * mm, 26 * mm, 32 * mm, 36 * mm, 32 * mm],
-        font_size=7,
+        col_widths=[14 * mm, 55 * mm, 24 * mm, 25 * mm, 25 * mm, 30 * mm, 36 * mm, 34 * mm],
+        font_size=7.2,
         kpis=[
             ("Overtime days", len(rows)),
             ("Employees", len({row[0] for row in rows})),
-            ("Payable minutes", f"{total_minutes:,}"),
+            ("Payable time", pdf_minutes(total_minutes)),
             ("Overtime amount", pdf_money(total_amount)),
         ],
+        center_from=2,
+        accent_columns={6: GREEN_TEXT, 7: GREEN_TEXT},
     )
 
 
@@ -474,7 +653,7 @@ def build_less_hours_report_pdf(month):
                 item.get("first_punch", "") or "-",
                 item.get("last_punch", "") or "-",
                 item.get("rounded_duration") or item.get("actual_duration") or item.get("raw_working_hours", ""),
-                shortage,
+                f"{pdf_minutes(shortage)} short",
                 pdf_money(deduction),
             ])
             contributed = True
@@ -483,46 +662,80 @@ def build_less_hours_report_pdf(month):
             total_deduction += Decimal(result.less_hours_deduction or 0)
     return report_pdf(
         "Less Hours Report",
-        f"{display_month(month)} · Only days with a short-hours deduction",
-        ["ID", "Employee", "Date", "In Time", "Out Time", "Working Hours", "Less Minutes", "Deduction"],
+        f"{display_month(month)} · Employee-wise short working hours",
+        ["ID", "Employee", "Date", "In Time", "Out Time", "Worked", "Short Time", "Deduction"],
         rows,
-        col_widths=[16 * mm, 58 * mm, 26 * mm, 26 * mm, 26 * mm, 32 * mm, 32 * mm, 36 * mm],
-        font_size=7,
+        col_widths=[14 * mm, 55 * mm, 24 * mm, 25 * mm, 25 * mm, 30 * mm, 39 * mm, 31 * mm],
+        font_size=7.2,
         kpis=[
             ("Short days", len(rows)),
             ("Employees", len({row[0] for row in rows})),
-            ("Short minutes", f"{total_minutes:,}"),
+            ("Short time", pdf_minutes(total_minutes)),
             ("Total deduction", pdf_money(total_deduction)),
         ],
+        center_from=2,
+        accent_columns={6: RED_TEXT, 7: RED_TEXT},
+    )
+
+
+def build_manual_override_report_pdf(month):
+    data = manual_override_report_rows(month)
+    rows = [
+        [
+            row["employee_id"],
+            row["employee"],
+            row["date"],
+            row["imported_status"],
+            row["imported_hours"] or "-",
+            row["in_time"] or "-",
+            row["out_time"] or "-",
+            row["manual_status"],
+            row["notes"] or "-",
+            pdf_datetime(row["updated_at"]) or "-",
+        ]
+        for row in data
+    ]
+    return report_pdf(
+        "Manual Override Report",
+        f"{display_month(month)} · User changes compared with imported attendance",
+        ["ID", "Employee", "Date", "Imported Status", "Imported Hours", "In", "Out", "Manual Status", "Notes", "Updated"],
+        rows,
+        col_widths=[12 * mm, 42 * mm, 22 * mm, 33 * mm, 25 * mm, 22 * mm, 22 * mm, 34 * mm, 54 * mm, 28 * mm],
+        font_size=6.4,
+        kpis=[
+            ("Overrides", len(rows)),
+            ("Employees", len({row["employee_id"] for row in data})),
+            ("Statuses changed", len({row["manual_status"] for row in data})),
+            ("Payroll month", display_month(month)),
+        ],
+        center_from=2,
+        accent_columns={7: ORANGE_TEXT},
+        status_column=7,
     )
 
 
 def build_error_report_pdf(month):
-    rows = []
-    for salary in SalaryRecord.query.filter_by(payroll_month=month).order_by(SalaryRecord.employee_id):
-        if salary.warning:
-            rows.append(["Salary", salary.employee_id, salary.name, salary.warning])
-    names = employee_name_map(month)
-    for rec in AttendanceRecord.query.filter_by(payroll_month=month).order_by(AttendanceRecord.employee_id, AttendanceRecord.date):
-        if rec.warning:
-            rows.append(["Attendance", rec.employee_id, names.get(rec.employee_id, rec.employee_name or ""), f"{rec.date}: {rec.warning}"])
-    for result in PayrollResult.query.filter_by(payroll_month=month).order_by(PayrollResult.employee_id):
-        if result.calculation_status != "Calculated":
-            rows.append(["Payroll", result.employee_id, names.get(result.employee_id, ""), result.message or result.calculation_status])
-    area_counts = {area: sum(1 for row in rows if row[0] == area) for area in ("Salary", "Attendance", "Payroll")}
+    data = error_report_rows(month)
+    rows = [
+        [row["issue"], row["issue_count"], row["area"], row["employee_id"], row["employee"], row["detail"]]
+        for row in data
+    ]
+    area_counts = {area: sum(1 for row in data if row["area"] == area) for area in ("Salary", "Attendance", "Payroll")}
     return report_pdf(
         "Error Report",
         f"{display_month(month)} · Items to resolve before finalizing",
-        ["Area", "Employee ID", "Employee", "Issue"],
+        ["Issue", "Count", "Area", "Employee ID", "Employee", "Detail"],
         rows,
-        col_widths=[28 * mm, 26 * mm, 56 * mm, 160 * mm],
-        font_size=7,
+        col_widths=[48 * mm, 14 * mm, 25 * mm, 22 * mm, 48 * mm, 117 * mm],
+        font_size=7.1,
         kpis=[
             ("Total issues", len(rows)),
             ("Attendance", area_counts["Attendance"]),
             ("Payroll", area_counts["Payroll"]),
             ("Wage data", area_counts["Salary"]),
         ],
+        center_from=1,
+        accent_columns={0: RED_TEXT, 1: RED_TEXT, 5: RED_TEXT},
     )
 
 
@@ -557,6 +770,65 @@ def pdf_money(value):
     if value is None:
         return "N/A"
     return f"{Decimal(value):,.2f}"
+
+
+def pdf_minutes(value):
+    minutes = int(value or 0)
+    return f"{minutes_to_duration(minutes)} ({minutes}m)"
+
+
+def pdf_datetime(value):
+    if not value:
+        return ""
+    return value.strftime("%d-%m-%Y %H:%M")
+
+
+def imported_status_for_override(record, salary, holidays):
+    if not record:
+        return "No imported row"
+    wage_group = (salary.normalized_salary_type if salary else "") or ""
+    if wage_group == "DAILY":
+        return classify_daily_attendance(record, holidays)["status"]
+    return classify_monthly_attendance(record, holidays)["status"]
+
+
+def manual_override_report_rows(month):
+    overrides = AttendanceOverride.query.filter_by(payroll_month=month).order_by(
+        AttendanceOverride.employee_id,
+        AttendanceOverride.date,
+    ).all()
+    records = {
+        (record.employee_id, record.date): record
+        for record in AttendanceRecord.query.filter_by(payroll_month=month).all()
+    }
+    salaries = {
+        salary.employee_id: salary
+        for salary in SalaryRecord.query.filter_by(payroll_month=month).all()
+    }
+    names = employee_name_map(month)
+    holidays = holiday_dates_for_records(records.values())
+    rows = []
+    for override in overrides:
+        record = records.get((override.employee_id, override.date))
+        salary = salaries.get(override.employee_id)
+        imported_status = imported_status_for_override(record, salary, holidays)
+        rows.append({
+            "employee_id": override.employee_id,
+            "employee": names.get(override.employee_id, record.employee_name if record else ""),
+            "date": override.date,
+            "imported_status": imported_status,
+            "imported_hours": (
+                (record.raw_working_hours or minutes_to_duration(record.actual_minutes))
+                if record and record.actual_minutes is not None
+                else (record.raw_working_hours if record else "")
+            ),
+            "in_time": record.first_punch if record else "",
+            "out_time": record.last_punch if record else "",
+            "manual_status": override.manual_status,
+            "notes": override.notes or "",
+            "updated_at": override.updated_at,
+        })
+    return rows
 
 
 def words_below_thousand(number):
@@ -618,7 +890,7 @@ def employee_salary_summary_rows(salary, result):
     base_salary = pdf_money(salary.salary) if salary else "N/A"
     final_salary = pdf_money(result.final_salary) if result.final_salary is not None else "Not Calculated"
     rows = [
-        ["Calculation Status", result.calculation_status],
+        ["Calculation Status", status_badge(result.calculation_status)],
         ["Wage Type", salary.salary_type if salary else "N/A"],
         ["Base Salary", base_salary],
         ["Days in Month", payroll_month_days(result.payroll_month)],
@@ -664,7 +936,7 @@ def employee_salary_summary_rows(salary, result):
 
 
 def bonus_absence_text(result):
-    return minutes_to_duration(int(getattr(result, "absence_minutes", 0) or 0))
+    return minutes_to_working_day_shortage(int(getattr(result, "absence_minutes", 0) or 0), suffix=False)
 
 
 def bonus_percent_text(result):
@@ -696,7 +968,7 @@ def employee_compact_summary_rows(salary, result):
         rows = [
             ["Payable Salary", pdf_money(final_value) if final_value is not None else "Not Calculated", "In Words", money_in_words(final_value)],
             ["Daily Wage", pdf_money(salary.salary) if salary else "N/A", "Wage Type", salary.salary_type if salary else "N/A"],
-            ["Status", result.calculation_status, "Days in Month", payroll_month_days(result.payroll_month)],
+            ["Status", status_badge(result.calculation_status), "Days in Month", payroll_month_days(result.payroll_month)],
             ["Paid Working Days", result.paid_working_days, "Paid Holidays", result.holidays],
             ["Payable Days", total_paid_days(result), "Week Offs", result.week_offs],
             ["Less Hours Deduction", pdf_money(result.less_hours_deduction), "Over Time", pdf_money(result.ot_amount)],
@@ -711,7 +983,7 @@ def employee_compact_summary_rows(salary, result):
     rows = [
         ["Payable Salary", pdf_money(final_value) if final_value is not None else "Not Calculated", "In Words", money_in_words(final_value)],
         ["Base Salary", pdf_money(salary.salary) if salary else "N/A", "Wage Type", salary.salary_type if salary else "N/A"],
-        ["Status", result.calculation_status, "Days in Month", payroll_month_days(result.payroll_month)],
+        ["Status", status_badge(result.calculation_status), "Days in Month", payroll_month_days(result.payroll_month)],
         ["Paid Working Days", result.paid_working_days, "Week Offs", result.week_offs],
         ["Total Paid Days", total_paid_days(result), "LOP Days", result.lop_days],
         ["Leave Balance", result.opening_leave, "Leave Earned This Month", result.leave_earned],
@@ -743,15 +1015,16 @@ def monthly_attendance_summary_rows(salary, result):
     if not result:
         return [["Status", "Not Calculated", "Wage Type", salary.salary_type if salary else "N/A"]]
     # Grouped by what a reader is looking for: the day counts together, then the
-    # leave position, then the money. Overtime and adjustment share the last row.
+    # leave position, then attendance time. This is not a pay document, so less
+    # hours are shown as duration rather than as the rupee deduction.
     rows = [
-        ["Status", result.calculation_status, "Days in Month", payroll_month_days(result.payroll_month)],
+        ["Status", status_badge(result.calculation_status), "Days in Month", payroll_month_days(result.payroll_month)],
         ["Paid Working Days", result.paid_working_days, "Total Paid Days", total_paid_days(result)],
         ["Week Offs", result.week_offs, "LOP Days", result.lop_days],
         ["Leave Balance", result.opening_leave, "Leave Earned This Month", result.leave_earned],
         ["Leave Used This Month", result.leave_used, "Leave Carry Forwarded", result.closing_leave],
         ["Leave Encashed", f"{getattr(result, 'leave_encashment_days', 0)}d / {pdf_money(getattr(result, 'leave_encashment_amount', 0))}",
-         "Less Hours Deduction", pdf_money(result.less_hours_deduction)],
+         "Less Hours", minutes_to_duration(result.less_hours_minutes or 0)],
         ["Over Time", pdf_money(result.ot_amount), "Adjustment", pdf_money(result.manual_adjustment)],
     ]
     if result_has_loan(result):
@@ -782,7 +1055,7 @@ def daily_attendance_summary_rows(salary, result):
     if not result:
         return [["Status", "Not Calculated", "", ""]]
     return [
-        ["Status", result.calculation_status, "Payable Days", total_paid_days(result)],
+        ["Status", status_badge(result.calculation_status), "Payable Days", total_paid_days(result)],
         ["Less Hours", minutes_to_duration(result.less_hours_minutes or 0),
          "Over Time", minutes_to_duration(result.payable_ot_minutes or 0)],
         ["Absence This Month", bonus_absence_text(result), "Bonus", bonus_band_text(result)],
@@ -834,6 +1107,55 @@ def punch_sessions(punches, first_punch="", last_punch=""):
 
 def calendar_tone(status):
     return CALENDAR_TONES.get(status, (SURFACE_SOFT, MUTED))
+
+
+def warning_icon(size=10):
+    """Small vector warning mark for PDF calendar cells."""
+    drawing = Drawing(size, size)
+    drawing.add(Polygon(
+        [size / 2, size, size, 0, 0, 0],
+        fillColor=colors.HexColor("#FFCC00"),
+        strokeColor=ORANGE_TEXT,
+        strokeWidth=0.45,
+    ))
+    drawing.add(String(
+        size / 2,
+        size * 0.23,
+        "!",
+        textAnchor="middle",
+        fontName="Helvetica-Bold",
+        fontSize=size * 0.72,
+        fillColor=INK,
+    ))
+    drawing.hAlign = "CENTER"
+    return drawing
+
+
+def calendar_warning_block(minutes, icon_size):
+    """Centered short-hours warning for a PDF calendar cell."""
+    warning_text = f"{minutes_to_duration(minutes)} short"
+    text_style = ParagraphStyle(
+        "CalShortageBlock",
+        fontName="Helvetica-Bold",
+        fontSize=8.8 if icon_size >= 10 else 5.4,
+        leading=10 if icon_size >= 10 else 6.4,
+        textColor=RED_TEXT,
+        alignment=TA_CENTER,
+    )
+    table = Table(
+        [[warning_icon(icon_size)], [Paragraph(warning_text, text_style)]],
+        colWidths=[28 * mm if icon_size >= 10 else 16 * mm],
+    )
+    table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    table.hAlign = "CENTER"
+    return table
 
 
 def attendance_calendar_grid(month, result):
@@ -1310,9 +1632,9 @@ def attendance_calendar_table(month, result, styles, available_width, compact=Fa
                 parts.append(Paragraph(session, punch_style))
             if cell["hours"]:
                 parts.append(Paragraph(cell["hours"], meta_style_local))
-            extras = []
             if cell["shortage"]:
-                extras.append(f"-{cell['shortage']}m")
+                parts.append(calendar_warning_block(cell["shortage"], 10 if variant is not SLIP else 6))
+            extras = []
             if cell["overtime"]:
                 extras.append(f"+{cell['overtime']}m OT")
             if extras:

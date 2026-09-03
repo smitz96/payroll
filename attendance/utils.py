@@ -51,6 +51,27 @@ def minutes_to_duration(minutes):
     return f"{sign}{minutes // 60}h {minutes % 60:02d}m"
 
 
+def minutes_to_working_day_shortage(minutes, minutes_per_day=9 * 60, suffix=True):
+    """Format absence as working days plus remaining time.
+
+    Daily wage absence is measured in minutes, but employees think in working days.
+    A 9-hour workday means 19h 40m short should read as 2d 1h 40m short, not as a
+    long raw hour total.
+    """
+    if minutes is None:
+        return "-"
+    minutes = max(0, int(minutes))
+    day_minutes = max(1, int(minutes_per_day))
+    days, remainder = divmod(minutes, day_minutes)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if remainder or not parts:
+        parts.append(minutes_to_duration(remainder))
+    text = " ".join(parts)
+    return f"{text} short" if suffix else text
+
+
 def floor_to_interval(minutes, interval=15):
     return (int(minutes) // interval) * interval
 
