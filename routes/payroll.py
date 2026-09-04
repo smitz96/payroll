@@ -1,9 +1,11 @@
 import calendar
+import csv
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from io import StringIO
 from pathlib import Path
 
-from flask import Blueprint, abort, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
@@ -16,7 +18,7 @@ from attendance.holidays import holiday_dates_for_records
 from attendance.loans import active_loans_for_employee, employee_has_loan, loan_installment_for_employee, loan_skip_for_employee
 from attendance.master import employee_active_for_payroll_month, employees_left_out_of_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
-from attendance.parser import ensure_month, import_attendance_csv
+from attendance.parser import ensure_month, import_attendance_csv, import_employee_attendance
 from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave, salary_days_for_month
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
 from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
@@ -564,6 +566,46 @@ def save_upload(file, month, label):
     return str(path)
 
 
+def save_employee_attendance_upload(file, month, employee_id):
+    if not file or not file.filename:
+        raise ValueError("Select an attendance CSV or XLSX file.")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED:
+        raise ValueError("Only CSV or XLSX uploads are allowed.")
+    filename = secure_filename(f"{month}-employee-{employee_id}-attendance-{file.filename}")
+    path = Path("uploads") / filename
+    file.save(path)
+    return str(path)
+
+
+def employee_attendance_export_csv(month, employee_id):
+    employee = db.session.get(Employee, employee_id)
+    output = StringIO()
+    headers = [
+        "Employee ID", "Employee Name", "Department", "Designation", "Date", "Day",
+        "Shift", "From", "To", "First Punch", "Last Punch", "Total Working Hours",
+    ]
+    writer = csv.DictWriter(output, fieldnames=headers)
+    writer.writeheader()
+    records = AttendanceRecord.query.filter_by(payroll_month=month, employee_id=employee_id).order_by(AttendanceRecord.date).all()
+    for record in records:
+        writer.writerow({
+            "Employee ID": record.employee_id,
+            "Employee Name": record.employee_name or (employee.name if employee else ""),
+            "Department": record.department or (employee.department if employee else ""),
+            "Designation": record.designation or (employee.designation if employee else ""),
+            "Date": record.date.isoformat(),
+            "Day": record.day or record.date.strftime("%A"),
+            "Shift": record.shift or "",
+            "From": record.shift_from or "",
+            "To": record.shift_to or "",
+            "First Punch": record.first_punch or "",
+            "Last Punch": record.last_punch or "",
+            "Total Working Hours": record.raw_working_hours or minutes_to_duration(record.actual_minutes),
+        })
+    return output.getvalue()
+
+
 @bp.route("/<month>", methods=["GET", "POST"])
 @login_required
 def month(month):
@@ -741,6 +783,22 @@ def month(month):
         review_count=len([r for r in results.values() if r.calculation_status != "Calculated"]) + len(missing_salary),
         sort=sort,
         order=order,
+        )
+
+
+@bp.route("/<month>/employee/<employee_id>/attendance.csv")
+@login_required
+def employee_attendance_csv(month, employee_id):
+    if not is_valid_payroll_month(month):
+        abort(404)
+    employee = db.session.get(Employee, employee_id)
+    if employee and not employee_active_for_payroll_month(employee, month):
+        abort(404)
+    filename = secure_filename(f"smartfill-employee-{employee_id}-attendance-{month}.csv")
+    return Response(
+        employee_attendance_export_csv(month, employee_id),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
@@ -756,6 +814,13 @@ def employee(month, employee_id):
             return redirect(url_for("payroll.employee", month=month, employee_id=employee_id))
         action = request.form.get("action", "save")
         try:
+            if action == "reimport_attendance":
+                upload_path = save_employee_attendance_upload(request.files.get("employee_attendance_file"), month, employee_id)
+                imported, warnings = import_employee_attendance(upload_path, month, employee_id, current_username())
+                flash(f"Attendance re-imported for employee {employee_id}: {imported} row(s). Payroll recalculated for this employee only.", "success")
+                for warning in warnings:
+                    flash(warning, "warning")
+                return redirect(url_for("payroll.employee", month=month, employee_id=employee_id))
             saved_overrides = save_employee_detail_changes(month, employee_id)
             if action == "recalculate":
                 calculate_employee_payroll(month, employee_id, current_username())

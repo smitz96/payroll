@@ -318,22 +318,92 @@ class UnknownEmployeesError(ValueError):
         )
 
 
+def _validate_attendance_rows(rows, path):
+    missing = [name for name in ATTENDANCE_REQUIRED if name not in (rows[0].keys() if rows else [])]
+    if not missing:
+        return
+    # The two formats are not interchangeable: .xlsx is read as the daily punch
+    # grid (dates across the top), while .csv must be one row per employee-day.
+    # Saying so here is the difference between "my file was rejected" and "the
+    # upload did nothing", which is how a grid saved as CSV reads otherwise.
+    hint = ("The daily punch report grid must be uploaded as .xlsx. A .csv file has to be "
+            "one row per employee per day."
+            if Path(path).suffix.lower() != ".xlsx" else
+            "The .xlsx must be the daily punch report, with dates across the top row.")
+    raise ValueError(f"Attendance file is missing column(s): {', '.join(missing)}. {hint}")
+
+
+def _attendance_record_from_row(row, month, duplicate_keys, warnings, default_details):
+    employee_id = clean(row.get("Employee ID"))
+    name = clean(row.get("Employee Name"))
+    if not employee_id:
+        warnings.append("Attendance row missing Employee ID")
+        return None
+    update_employee_from_attendance(db.session.get(Employee, employee_id), name, row)
+    created_defaults = ensure_employee_defaults(employee_id)
+    if created_defaults:
+        default_details.append(f"{employee_id} - {name or employee_id}: {', '.join(created_defaults)}")
+    warning_parts = []
+    status = "OK"
+    try:
+        record_date = parse_csv_date(row.get("Date"))
+    except ValueError as exc:
+        warnings.append(f"Employee {employee_id}: {exc}")
+        return None
+    try:
+        actual = parse_duration(row.get("Total Working Hours"))
+    except ValueError as exc:
+        actual = None
+        status = "NEEDS_REVIEW"
+        warning_parts.append(str(exc))
+    first = clean(row.get("First Punch"))
+    last = clean(row.get("Last Punch"))
+    raw_hours = clean(row.get("Total Working Hours"))
+    punches = row.get("_Punches") or [punch for punch in [first, last] if punch]
+    if duplicate_keys[(employee_id, clean(row.get("Date")))] > 1:
+        status = "NEEDS_REVIEW"
+        warning_parts.append("Duplicate employee/date")
+    if not first and not last and not raw_hours:
+        status = "NEEDS_REVIEW"
+        warning_parts.append("Missing punch and working hours")
+    elif (first and not last) or (last and not first):
+        status = "NEEDS_REVIEW"
+        warning_parts.append("Punch error")
+    if clean(row.get("_Punch Warning")):
+        status = "NEEDS_REVIEW"
+        warning_parts.append(clean(row.get("_Punch Warning")))
+    elif punches:
+        long_session = implausible_session_minutes(punches)
+        if long_session:
+            status = "NEEDS_REVIEW"
+            warning_parts.append(f"Punch out before punch in ({minutes_to_duration(long_session)} session)")
+    return AttendanceRecord(
+        payroll_month=month,
+        employee_id=employee_id,
+        employee_name=name,
+        department=clean(row.get("Department")),
+        designation=clean(row.get("Designation")),
+        date=record_date,
+        day=clean(row.get("Day")),
+        shift=clean(row.get("Shift")),
+        shift_from=clean(row.get("From")),
+        shift_to=clean(row.get("To")),
+        first_punch=first,
+        last_punch=last,
+        punches_json=punches,
+        raw_working_hours=raw_hours,
+        actual_minutes=actual,
+        parse_status=status,
+        warning="; ".join(warning_parts),
+    )
+
+
 def import_attendance_csv(path, month, actor="admin"):
     ensure_month(month)
     # Everything that can reject the upload runs before any existing data is touched,
     # so a failed import leaves the month exactly as it was.
     rows = attendance_rows_from_upload(path)
-    missing = [name for name in ATTENDANCE_REQUIRED if name not in (rows[0].keys() if rows else [])]
-    if missing:
-        # The two formats are not interchangeable: .xlsx is read as the daily punch
-        # grid (dates across the top), while .csv must be one row per employee-day.
-        # Saying so here is the difference between "my file was rejected" and "the
-        # upload did nothing", which is how a grid saved as CSV reads otherwise.
-        hint = ("The daily punch report grid must be uploaded as .xlsx. A .csv file has to be "
-                "one row per employee per day."
-                if Path(path).suffix.lower() != ".xlsx" else
-                "The .xlsx must be the daily punch report, with dates across the top row.")
-        raise ValueError(f"Attendance file is missing column(s): {', '.join(missing)}. {hint}")
+    _validate_attendance_rows(rows, path)
     unknown = unknown_attendance_employees(rows)
     if unknown:
         raise UnknownEmployeesError(unknown)
@@ -350,74 +420,56 @@ def import_attendance_csv(path, month, actor="admin"):
     duplicate_keys = Counter((clean(r.get("Employee ID")), clean(r.get("Date"))) for r in rows)
     imported = 0
     for row in rows:
-        employee_id = clean(row.get("Employee ID"))
-        name = clean(row.get("Employee Name"))
-        if not employee_id:
-            warnings.append("Attendance row missing Employee ID")
-            continue
-        update_employee_from_attendance(db.session.get(Employee, employee_id), name, row)
-        created_defaults = ensure_employee_defaults(employee_id)
-        if created_defaults:
-            default_details.append(f"{employee_id} - {name or employee_id}: {', '.join(created_defaults)}")
-        warning_parts = []
-        status = "OK"
-        try:
-            date = parse_csv_date(row.get("Date"))
-        except ValueError as exc:
-            warnings.append(f"Employee {employee_id}: {exc}")
-            continue
-        try:
-            actual = parse_duration(row.get("Total Working Hours"))
-        except ValueError as exc:
-            actual = None
-            status = "NEEDS_REVIEW"
-            warning_parts.append(str(exc))
-        first = clean(row.get("First Punch"))
-        last = clean(row.get("Last Punch"))
-        raw_hours = clean(row.get("Total Working Hours"))
-        punches = row.get("_Punches") or [punch for punch in [first, last] if punch]
-        if duplicate_keys[(employee_id, clean(row.get("Date")))] > 1:
-            status = "NEEDS_REVIEW"
-            warning_parts.append("Duplicate employee/date")
-        if not first and not last and not raw_hours:
-            status = "NEEDS_REVIEW"
-            warning_parts.append("Missing punch and working hours")
-        elif (first and not last) or (last and not first):
-            status = "NEEDS_REVIEW"
-            warning_parts.append("Punch error")
-        if clean(row.get("_Punch Warning")):
-            status = "NEEDS_REVIEW"
-            warning_parts.append(clean(row.get("_Punch Warning")))
-        elif punches:
-            long_session = implausible_session_minutes(punches)
-            if long_session:
-                status = "NEEDS_REVIEW"
-                warning_parts.append(f"Punch out before punch in ({minutes_to_duration(long_session)} session)")
-        record = AttendanceRecord(
-            payroll_month=month,
-            employee_id=employee_id,
-            employee_name=name,
-            department=clean(row.get("Department")),
-            designation=clean(row.get("Designation")),
-            date=date,
-            day=clean(row.get("Day")),
-            shift=clean(row.get("Shift")),
-            shift_from=clean(row.get("From")),
-            shift_to=clean(row.get("To")),
-            first_punch=first,
-            last_punch=last,
-            punches_json=punches,
-            raw_working_hours=raw_hours,
-            actual_minutes=actual,
-            parse_status=status,
-            warning="; ".join(warning_parts),
-        )
-        db.session.add(record)
-        imported += 1
+        record = _attendance_record_from_row(row, month, duplicate_keys, warnings, default_details)
+        if record:
+            db.session.add(record)
+            imported += 1
     db.session.add(AuditLog(actor=actor, action="Attendance Uploaded", detail=f"{Path(path).name}: {imported} rows"))
     if default_details:
         db.session.add(AuditLog(actor=actor, action="Employee Defaults Created", detail=" | ".join(default_details)))
     db.session.commit()
+    return imported, warnings
+
+
+def import_employee_attendance(path, month, employee_id, actor="admin", clear_overrides=True):
+    from attendance.calculator import calculate_employee_payroll
+    from attendance.models import AttendanceOverride
+
+    ensure_month(month)
+    rows = attendance_rows_from_upload(path)
+    _validate_attendance_rows(rows, path)
+    selected_employee_id = clean(employee_id)
+    employee_rows = [row for row in rows if clean(row.get("Employee ID")) == selected_employee_id]
+    if not employee_rows:
+        raise ValueError(f"Attendance file has no rows for Employee ID {selected_employee_id}.")
+    unknown = unknown_attendance_employees(employee_rows)
+    if unknown:
+        raise UnknownEmployeesError(unknown)
+
+    AttendanceRecord.query.filter_by(payroll_month=month, employee_id=selected_employee_id).delete()
+    if clear_overrides:
+        AttendanceOverride.query.filter_by(payroll_month=month, employee_id=selected_employee_id).delete()
+    warnings = []
+    default_details = []
+    duplicate_keys = Counter((clean(r.get("Employee ID")), clean(r.get("Date"))) for r in employee_rows)
+    imported = 0
+    for row in employee_rows:
+        record = _attendance_record_from_row(row, month, duplicate_keys, warnings, default_details)
+        if record:
+            db.session.add(record)
+            imported += 1
+    db.session.add(AuditLog(
+        actor=actor,
+        action="Employee Attendance Re-imported",
+        detail=(
+            f"{month}: Employee ID {selected_employee_id}; {imported} row(s); "
+            f"source {Path(path).name}; overrides cleared: {'yes' if clear_overrides else 'no'}"
+        ),
+    ))
+    if default_details:
+        db.session.add(AuditLog(actor=actor, action="Employee Defaults Created", detail=" | ".join(default_details)))
+    db.session.flush()
+    calculate_employee_payroll(month, selected_employee_id, actor)
     return imported, warnings
 
 

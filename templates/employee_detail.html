@@ -111,6 +111,29 @@
   </div>
 </div>
 {% endif %}
+{% if can_edit_payroll %}
+<form method="post" enctype="multipart/form-data" class="tool-panel mb-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="reimport_attendance">
+  <h2 class="section-title">Re-import this employee attendance</h2>
+  <div class="adjust-grid">
+    <div class="adjust-field">
+      <label class="form-label" for="employeeAttendanceFile">Punch data file</label>
+      <input class="form-control" id="employeeAttendanceFile" name="employee_attendance_file" type="file" accept=".csv,.xlsx" required>
+      <small>Only rows for employee ID {{ employee_id }} are imported. Other employees remain unchanged.</small>
+    </div>
+    <div class="adjust-field is-readonly">
+      <span class="form-label">What changes</span>
+      <strong class="adjust-readonly-value">Attendance and payroll</strong>
+      <small>Existing day overrides for this employee are cleared, then payroll is recalculated for this employee only.</small>
+    </div>
+  </div>
+  <div class="mt-3">
+    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.employee_attendance_csv', month=month, employee_id=employee_id) }}">Download current attendance</a>
+    <button class="btn btn-outline-primary" type="submit">Re-import &amp; recalculate</button>
+  </div>
+</form>
+{% endif %}
 <form method="post" id="employeeDetailForm">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <div class="tool-panel mb-4">

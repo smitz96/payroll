@@ -3135,6 +3135,108 @@ def test_adjustment_cards_match_the_wage_type(client, app):
     assert "Encash leave" not in cards("6")
 
 
+def attendance_upload_csv(rows):
+    headers = [
+        "Employee ID", "Employee Name", "Department", "Designation", "Date", "Day",
+        "Shift", "From", "To", "First Punch", "Last Punch", "Total Working Hours",
+    ]
+    buffer = StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=headers)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue().encode()
+
+
+def test_employee_attendance_reimport_only_replaces_that_employee(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+        db.session.add(AttendanceOverride(
+            payroll_month="2026-07", employee_id="5", date=date(2026, 7, 1),
+            manual_status="Paid Leave", notes="old correction",
+        ))
+        db.session.add(AttendanceOverride(
+            payroll_month="2026-07", employee_id="6", date=date(2026, 7, 1),
+            manual_status="Paid Leave", notes="keep this",
+        ))
+        db.session.commit()
+        old_other = AttendanceRecord.query.filter_by(
+            payroll_month="2026-07", employee_id="6", date=date(2026, 7, 1)
+        ).one()
+        old_other_last_punch = old_other.last_punch
+
+    login(client)
+    upload = attendance_upload_csv([
+        {
+            "Employee ID": "5", "Employee Name": "Month Worker", "Department": "Design",
+            "Designation": "Design Manager", "Date": "03-07-2026", "Day": "Friday",
+            "Shift": "Normal Shift", "From": "", "To": "", "First Punch": "09:45 AM",
+            "Last Punch": "06:45 PM", "Total Working Hours": "9h 00m",
+        },
+        {
+            "Employee ID": "6", "Employee Name": "Day Worker", "Department": "Stores",
+            "Designation": "Helper", "Date": "01-07-2026", "Day": "Wednesday",
+            "Shift": "Normal Shift", "From": "", "To": "", "First Punch": "10:00 AM",
+            "Last Punch": "07:00 PM", "Total Working Hours": "9h 00m",
+        },
+    ])
+    response = client.post(
+        "/payroll/2026-07/employee/5",
+        data={
+            "action": "reimport_attendance",
+            "employee_attendance_file": (BytesIO(upload), "corrected.csv"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert b"Payroll recalculated for this employee only" in response.data
+
+    with app.app_context():
+        employee_records = AttendanceRecord.query.filter_by(payroll_month="2026-07", employee_id="5").all()
+        assert [(record.date, record.first_punch, record.last_punch) for record in employee_records] == [
+            (date(2026, 7, 3), "09:45 AM", "06:45 PM")
+        ]
+        other_record = AttendanceRecord.query.filter_by(
+            payroll_month="2026-07", employee_id="6", date=date(2026, 7, 1)
+        ).one()
+        assert other_record.last_punch == old_other_last_punch
+        assert AttendanceOverride.query.filter_by(payroll_month="2026-07", employee_id="5").count() == 0
+        assert AttendanceOverride.query.filter_by(payroll_month="2026-07", employee_id="6").count() == 1
+        assert PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").count() == 1
+        assert PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").count() == 1
+        audit = AuditLog.query.filter_by(action="Employee Attendance Re-imported").one()
+        assert "Employee ID 5" in audit.detail
+
+
+def test_employee_page_has_reimport_form(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    page = client.get("/payroll/2026-07/employee/5").data.decode()
+    assert "Re-import this employee attendance" in page
+    assert 'name="employee_attendance_file"' in page
+    assert 'accept=".csv,.xlsx"' in page
+    assert "/payroll/2026-07/employee/5/attendance.csv" in page
+
+
+def test_employee_attendance_download_exports_only_that_employee(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    response = client.get("/payroll/2026-07/employee/5/attendance.csv")
+    assert response.status_code == 200
+    assert response.headers["Content-Disposition"] == "attachment; filename=smartfill-employee-5-attendance-2026-07.csv"
+    rows = list(csv.DictReader(StringIO(response.data.decode())))
+    assert len(rows) == 2
+    assert {row["Employee ID"] for row in rows} == {"5"}
+    assert rows[0]["Employee Name"] == "Month Worker"
+    assert rows[0]["Date"] == "2026-07-01"
+    assert rows[0]["First Punch"] == "09:30 AM"
+    assert rows[0]["Last Punch"] == "06:30 PM"
+    assert rows[0]["Total Working Hours"] == "9h 00m"
+
+
 # --- Wage filtering is one control, not a button per card ---
 
 def test_wage_filter_is_a_single_segmented_control(client, app):

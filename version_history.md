@@ -1,8 +1,15 @@
 # Version History
 
-## V1.02
+## V1.03
 
 Current version.
+
+- Added employee-specific punch-data reimport from the employee payroll detail page.
+- Added employee-specific attendance CSV download so one employee's attendance can be exported, corrected, and reimported.
+- Per-employee reimport replaces only that employee's attendance rows, clears only that employee's day overrides, and recalculates only that employee's payroll.
+- Kept full-month attendance import behavior unchanged for normal monthly uploads.
+
+## V1.02
 
 - Added employee-specific attendance summary access from employee payroll detail for both Monthly and Daily wage groups.
 - Removed the old Detailed Attendance report card from the Reports page.
