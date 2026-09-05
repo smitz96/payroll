@@ -563,6 +563,47 @@ def test_wage_step_action_stays_available_after_completion(client, app):
         assert Decimal(salary.salary) == Decimal("45000")
 
 
+def test_reloading_wages_recalculates_existing_pf_deductions(client, app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07", attendance_submitted=True))
+        db.session.add(Employee(
+            id="5", name="PF Worker", salary_type="Monthly", normalized_salary_type="MONTHLY",
+            salary=Decimal("30000"), basic_salary=Decimal("15000"), hra=Decimal("6000"),
+            allowance=Decimal("9000"), pf_enabled=False,
+        ))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(
+            payroll_month="2026-07", employee_id="5", name="PF Worker",
+            salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000"),
+        ))
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="5", employee_name="PF Worker",
+            date=date(2026, 7, 1), day="Wednesday", first_punch="09:30 AM",
+            last_punch="06:30 PM", raw_working_hours="9h 00m", actual_minutes=540,
+            parse_status="OK",
+        ))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        before = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(before.pf_employee) == Decimal("0.00")
+        before_total_deduction = Decimal(before.total_deduction)
+
+        employee = db.session.get(Employee, "5")
+        employee.pf_enabled = True
+        db.session.commit()
+
+    login(client)
+    response = client.post("/payroll/2026-07", data={"action": "salary"}, follow_redirects=True)
+    assert b"Wage data loaded from master" in response.data
+    assert b"Payroll recalculated for 1 employee" in response.data
+
+    with app.app_context():
+        after = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(after.pf_wage) > Decimal("0")
+        assert Decimal(after.pf_employee) > Decimal("0")
+        assert Decimal(after.total_deduction) > before_total_deduction
+
+
 def test_wage_step_action_is_hidden_once_a_group_is_finalized(client, app):
     with app.app_context():
         seed_mixed_month()
@@ -3205,6 +3246,37 @@ def test_employee_attendance_reimport_only_replaces_that_employee(client, app):
         assert PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").count() == 1
         audit = AuditLog.query.filter_by(action="Employee Attendance Re-imported").one()
         assert "Employee ID 5" in audit.detail
+
+
+def test_employee_attendance_reimport_calculates_hours_from_punches(client, app):
+    with app.app_context():
+        seed_two_wage_groups()
+
+    login(client)
+    upload = attendance_upload_csv([{
+        "Employee ID": "5", "Employee Name": "Month Worker", "Department": "Design",
+        "Designation": "Design Manager", "Date": "03-07-2026", "Day": "Friday",
+        "Shift": "Normal Shift", "From": "", "To": "", "First Punch": "09:45 AM",
+        "Last Punch": "06:30 PM", "Total Working Hours": "",
+    }])
+    response = client.post(
+        "/payroll/2026-07/employee/5",
+        data={
+            "action": "reimport_attendance",
+            "employee_attendance_file": (BytesIO(upload), "corrected.csv"),
+        },
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    assert b"Payroll recalculated for this employee only" in response.data
+
+    with app.app_context():
+        record = AttendanceRecord.query.filter_by(
+            payroll_month="2026-07", employee_id="5", date=date(2026, 7, 3)
+        ).one()
+        assert record.actual_minutes == 525
+        assert record.raw_working_hours == "8h 45m"
+        assert record.parse_status == "OK"
 
 
 def test_employee_page_has_reimport_form(client, app):

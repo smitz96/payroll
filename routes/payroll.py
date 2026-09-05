@@ -687,9 +687,15 @@ def month(month):
                 flash("Review and submit attendance before calculating payroll.", "warning")
                 return redirect(url_for("attendance_manager.month", month=month))
             elif action == "salary":
+                existing_results = PayrollResult.query.filter_by(payroll_month=month).count()
                 created, updated, skipped = sync_salary_records_from_master(month, current_username())
-                db.session.commit()
-                flash(f"Wage data loaded from master: {created} created, {updated} updated, {len(skipped)} skipped.", "success")
+                recalculated = []
+                if existing_results:
+                    recalculated = calculate_payroll_month(month, current_username())
+                else:
+                    db.session.commit()
+                recalc_note = f" Payroll recalculated for {len(recalculated)} employee(s)." if existing_results else ""
+                flash(f"Wage data loaded from master: {created} created, {updated} updated, {len(skipped)} skipped.{recalc_note}", "success")
                 # Name the skipped employees; a bare count hides who is missing from payroll.
                 for reason in skipped:
                     flash(f"Skipped {reason}", "warning")

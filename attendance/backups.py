@@ -51,7 +51,7 @@ def build_full_backup_archive(target_path):
         "format": BACKUP_FORMAT,
         "format_version": BACKUP_FORMAT_VERSION,
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "app_version": "V1.04",
+        "app_version": "V1.05",
         "includes": ["database", *FILE_DIRECTORIES],
     }
     with TemporaryDirectory() as temp_dir:

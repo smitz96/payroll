@@ -350,16 +350,20 @@ def _attendance_record_from_row(row, month, duplicate_keys, warnings, default_de
     except ValueError as exc:
         warnings.append(f"Employee {employee_id}: {exc}")
         return None
+    first = clean(row.get("First Punch"))
+    last = clean(row.get("Last Punch"))
+    raw_hours = clean(row.get("Total Working Hours"))
+    punches = row.get("_Punches") or [punch for punch in [first, last] if punch]
     try:
         actual = parse_duration(row.get("Total Working Hours"))
     except ValueError as exc:
         actual = None
         status = "NEEDS_REVIEW"
         warning_parts.append(str(exc))
-    first = clean(row.get("First Punch"))
-    last = clean(row.get("Last Punch"))
-    raw_hours = clean(row.get("Total Working Hours"))
-    punches = row.get("_Punches") or [punch for punch in [first, last] if punch]
+    if actual is None and not raw_hours:
+        actual = _working_minutes_from_punches(punches)
+        if actual is not None:
+            raw_hours = minutes_to_duration(actual)
     if duplicate_keys[(employee_id, clean(row.get("Date")))] > 1:
         status = "NEEDS_REVIEW"
         warning_parts.append("Duplicate employee/date")

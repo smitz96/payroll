@@ -1,8 +1,13 @@
 # Version History
 
-## V1.04
+## V1.05
 
 Current version.
+
+- Per-employee attendance reimport now auto-calculates Total Working Hours from First Punch and Last Punch when the hours cell is blank or `-`.
+- Reload wages now recalculates existing open payroll results, so Employee Master changes such as PF/ESIC/TDS immediately update deductions before finalization.
+
+## V1.04
 
 - Split the Reports page into Standard Reports and Other Reports.
 - Standard Reports now contains Attendance Summary for Monthly, Summary for Daily Wage Group, and Payroll Summary.

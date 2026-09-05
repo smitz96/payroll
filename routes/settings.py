@@ -18,7 +18,7 @@ from attendance.statutory import statutory_rule_rows
 from attendance.utils import format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
-APP_VERSION = "V1.04"
+APP_VERSION = "V1.05"
 RESET_CONFIRMATION_TEXT = "permanently delete"
 RESTORE_CONFIRMATION_TEXT = "restore backup"
 
