@@ -1,8 +1,15 @@
 # Version History
 
-## V1.03
+## V1.04
 
 Current version.
+
+- Split the Reports page into Standard Reports and Other Reports.
+- Standard Reports now contains Attendance Summary for Monthly, Summary for Daily Wage Group, and Payroll Summary.
+- Moved salary slips, department attendance, salary sheet, overtime, less-hours, manual override, and error reports into Other Reports.
+- Fixed per-employee attendance reimport so edited CSV exports with slash dates such as `01/08/26` or `01/08/2026` are accepted.
+
+## V1.03
 
 - Added employee-specific punch-data reimport from the employee payroll detail page.
 - Added employee-specific attendance CSV download so one employee's attendance can be exported, corrected, and reimported.

@@ -100,7 +100,7 @@ def parse_csv_date(value):
     text = clean(value)
     if not text:
         raise ValueError("Missing date")
-    for date_format in ("%d-%m-%Y", "%Y-%m-%d"):
+    for date_format in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y"):
         try:
             return datetime.strptime(text, date_format).date()
         except ValueError:

@@ -1150,7 +1150,11 @@ html[data-theme="dark"] .attendance-log-footer { background:var(--ios-surface-2)
 .report-snapshot-grid div { border:1px solid var(--smartfill-line); border-radius:var(--r-md); background:var(--ios-surface-2); padding:10px 12px; }
 .report-snapshot-grid span { display:block; color:var(--smartfill-muted); font-size:.78rem; font-weight:700; }
 .report-snapshot-grid strong { display:block; color:var(--smartfill-ink); font-size:1.05rem; margin:4px 0 0; overflow-wrap:anywhere; }
+.report-sections { padding:16px; display:grid; gap:18px; background:var(--smartfill-surface); }
+.report-section { display:grid; gap:10px; }
+.report-section-title { margin:0; color:var(--smartfill-muted); font-size:.82rem; font-weight:760; letter-spacing:0; text-transform:uppercase; }
 .report-page-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; padding:16px; background:var(--smartfill-surface); }
+.report-section .report-page-grid { padding:0; }
 .report-card-large { min-height:116px; box-shadow:none; }
 .report-card-locked { cursor:default; background:var(--ios-surface-2); border-style:dashed; }
 .report-card-locked:hover { transform:none; box-shadow:none; }

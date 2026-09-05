@@ -98,23 +98,34 @@ def index():
     results = scoped_results(selected_month) if selected_month else []
     calculated = [result for result in results if result.final_salary is not None and result.calculation_status in {"Calculated", "Needs Review"}]
     missing_salary = attendance_missing_salary(selected_month) if selected_month else {}
-    cards = [
-        {"title": "Salary Slips (Monthly)", "detail": "One salary slip per monthly wage employee. Daily wage employees do not receive a slip.", "icon": "pdf", "href": "reports.final_report_pdf", "requires_final": MONTHLY},
-        {"title": "Attendance Summary for Monthly", "detail": "Attendance sheet per monthly wage employee, one to a page.", "icon": "attendance", "href": "reports.monthly_attendance_summary_pdf"},
-        {"title": "Summary for Daily Wage Group", "detail": "Attendance sheet per daily wage employee. Carries no company branding.", "icon": "attendance", "href": "reports.daily_attendance_summary_pdf"},
-        {"title": "Department Wise Attendance", "detail": "Attendance and leave by department, with each employee's calendar. No salary figures.", "icon": "users", "href": "reports.department_wise_pdf"},
-        {"title": "Payroll Summary", "detail": "Employee-wise salary summary and deductions.", "icon": "salary", "href": "reports.payroll_summary_pdf"},
-        {"title": "Salary Sheet (PF & ESIC)", "detail": "Full payroll register with PF, ESIC and professional tax. Also downloadable as XLSX.", "icon": "salary", "href": "reports.salary_register_pdf", "xlsx": "reports.salary_register_xlsx", "requires_final": MONTHLY},
-        {"title": "Overtime Report", "detail": "Only employees and dates with paid overtime.", "icon": "overtime", "href": "reports.overtime_pdf"},
-        {"title": "Less Hours Report", "detail": "Shortage rows with less-hours deductions.", "icon": "less-hours", "href": "reports.less_hours_pdf"},
-        {"title": "Manual Override Report", "detail": "User day-status changes compared with imported attendance.", "icon": "review", "href": "reports.manual_overrides_pdf"},
-        {"title": "Error Report", "detail": "Missing salary, attendance, and payroll review items.", "icon": "review", "href": "reports.errors_pdf"},
+    report_sections = [
+        {
+            "title": "Standard Reports",
+            "cards": [
+                {"title": "Attendance Summary for Monthly", "detail": "Attendance sheet per monthly wage employee, one to a page.", "icon": "attendance", "href": "reports.monthly_attendance_summary_pdf"},
+                {"title": "Summary for Daily Wage Group", "detail": "Attendance sheet per daily wage employee. Carries no company branding.", "icon": "attendance", "href": "reports.daily_attendance_summary_pdf"},
+                {"title": "Payroll Summary", "detail": "Employee-wise salary summary and deductions.", "icon": "salary", "href": "reports.payroll_summary_pdf"},
+            ],
+        },
+        {
+            "title": "Other Reports",
+            "cards": [
+                {"title": "Salary Slips (Monthly)", "detail": "One salary slip per monthly wage employee. Daily wage employees do not receive a slip.", "icon": "pdf", "href": "reports.final_report_pdf", "requires_final": MONTHLY},
+                {"title": "Department Wise Attendance", "detail": "Attendance and leave by department, with each employee's calendar. No salary figures.", "icon": "users", "href": "reports.department_wise_pdf"},
+                {"title": "Salary Sheet (PF & ESIC)", "detail": "Full payroll register with PF, ESIC and professional tax. Also downloadable as XLSX.", "icon": "salary", "href": "reports.salary_register_pdf", "xlsx": "reports.salary_register_xlsx", "requires_final": MONTHLY},
+                {"title": "Overtime Report", "detail": "Only employees and dates with paid overtime.", "icon": "overtime", "href": "reports.overtime_pdf"},
+                {"title": "Less Hours Report", "detail": "Shortage rows with less-hours deductions.", "icon": "less-hours", "href": "reports.less_hours_pdf"},
+                {"title": "Manual Override Report", "detail": "User day-status changes compared with imported attendance.", "icon": "review", "href": "reports.manual_overrides_pdf"},
+                {"title": "Error Report", "detail": "Missing salary, attendance, and payroll review items.", "icon": "review", "href": "reports.errors_pdf"},
+            ],
+        },
     ]
-    for card in cards:
-        group = card.pop("requires_final", None)
-        card["locked"] = bool(group and selected_month and not group_finalized(selected_month, group))
-        card["locked_note"] = (f"Available once {GROUP_LABELS[group].lower()} wage payroll is finalized."
-                               if card["locked"] else "")
+    for section in report_sections:
+        for card in section["cards"]:
+            group = card.pop("requires_final", None)
+            card["locked"] = bool(group and selected_month and not group_finalized(selected_month, group))
+            card["locked_note"] = (f"Available once {GROUP_LABELS[group].lower()} wage payroll is finalized."
+                                   if card["locked"] else "")
     snapshot = {
         "month": selected,
         "month_label": display_month(selected_month) if selected_month else "Not started",
@@ -128,7 +139,7 @@ def index():
     }
     return render_template(
         "reports.html",
-        cards=cards,
+        report_sections=report_sections,
         month=selected_month,
         month_options=[{"value": item.month, "label": display_month(item.month)} for item in months],
         snapshot=snapshot,

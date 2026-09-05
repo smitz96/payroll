@@ -82,3 +82,5 @@ def test_days_in_payroll_month_handles_calendar_month_length():
 def test_parse_date_accepts_manual_and_picker_formats():
     assert parse_csv_date("15-08-2026").isoformat() == "2026-08-15"
     assert parse_csv_date("2026-08-15").isoformat() == "2026-08-15"
+    assert parse_csv_date("15/08/2026").isoformat() == "2026-08-15"
+    assert parse_csv_date("15/08/26").isoformat() == "2026-08-15"

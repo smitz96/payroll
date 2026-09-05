@@ -286,10 +286,22 @@ def test_reports_page_has_dedicated_route_and_pdf_cards(client, app):
     assert b"<h1" in response.data
     assert b"Reports" in response.data
     assert b"Payroll PDF Reports" in response.data
+    assert b"Standard Reports" in response.data
+    assert b"Other Reports" in response.data
     assert b"Salary Slips (Monthly)" in response.data
     assert b"Payroll Summary" in response.data
     assert b"Manual Override Report" in response.data
     assert b"Detailed Attendance" not in response.data
+    page = response.data.decode()
+    standard = page.split("Standard Reports", 1)[1].split("Other Reports", 1)[0]
+    other = page.split("Other Reports", 1)[1]
+    assert "Attendance Summary for Monthly" in standard
+    assert "Summary for Daily Wage Group" in standard
+    assert "Payroll Summary" in standard
+    assert "Salary Slips (Monthly)" not in standard
+    assert "Salary Slips (Monthly)" in other
+    assert "Department Wise Attendance" in other
+    assert "Error Report" in other
     # The slips card is listed while the month is a draft but is not yet a link.
     assert b"/reports/2026-07/final-report.pdf" not in response.data
     assert b"Available once monthly wage payroll is finalized." in response.data
