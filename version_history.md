@@ -1,8 +1,16 @@
 # Version History
 
-## V1.05
+## V1.06
 
 Current version.
+
+- Updated less-hours and overtime payroll amounts to use an 8-hour divisor for Monthly wage employees and an 8.5-hour divisor for Daily wage employees, while keeping the 9-hour attendance full-day criteria unchanged.
+- Improved Payroll Summary report columns by adding Holidays, moving Leave before Total Paid, and removing Designation and Wage Type.
+- Split combined deductions in Payroll Summary into separate Less Hours and Compliance heads.
+- Compliance now includes employee PF, employee ESIC, and Professional Tax.
+- Renamed Addition to Over Time in Payroll Summary and displayed Over Time and Less Hours as `minutes/amount`.
+
+## V1.05
 
 - Per-employee attendance reimport now auto-calculates Total Working Hours from First Punch and Last Punch when the hours cell is blank or `-`.
 - Reload wages now recalculates existing open payroll results, so Employee Master changes such as PF/ESIC/TDS immediately update deductions before finalization.

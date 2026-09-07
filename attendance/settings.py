@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+
 # Printed on the salary slip under the logo.
 COMPANY_ADDRESS = (
     "Survey No. 242/3, Panchratna Industrial Estate Lane, Near Ramol Cross Road, "
@@ -15,7 +18,10 @@ MONTHLY_RULES = {
     # manual salary sheet does. A fixed number can still be set here, but no single
     # figure is right for both a 28-day and a 31-day month.
     "SALARY_CALCULATION_DAYS": 0,
-    "SALARY_HOURS_PER_DAY": 9,
+    # Attendance still uses a 9-hour full-day target. These divisors are only for
+    # converting the day rate into an hourly money rate for less-hours and overtime.
+    "MONTHLY_RATE_HOURS_PER_DAY": 8,
+    "DAILY_RATE_HOURS_PER_DAY": Decimal("8.5"),
     # Overtime is paid at this multiple of the ordinary hourly rate. Set to 1 by the
     # company: statutory overtime in India is generally payable at twice ordinary
     # wages, so this is the figure to revisit if that ever has to be met.
@@ -37,7 +43,8 @@ MONTHLY_RULE_LABELS = {
     "OVERTIME_START_MINUTES": ("Overtime starts at", "Overtime is paid only when rounded work reaches this daily duration."),
     "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Short hours are rounded up to this interval; overtime is floored to it. A 48-minute shortfall is charged as 60; 29 minutes of overtime is paid as 15."),
     "SALARY_CALCULATION_DAYS": ("Salary days per month", "Monthly salary is divided by this for the daily LOP rate. Set to 0 to divide by the actual days in each month."),
-    "SALARY_HOURS_PER_DAY": ("Salary hours per day", "Hourly rate is the daily rate / this."),
+    "MONTHLY_RATE_HOURS_PER_DAY": ("Monthly wage rate divisor", "For less-hours and overtime only: monthly daily rate is divided by this many hours."),
+    "DAILY_RATE_HOURS_PER_DAY": ("Daily wage rate divisor", "For less-hours and overtime only: daily wage rate is divided by this many hours."),
     "OVERTIME_MULTIPLIER": ("Overtime multiplier", "Overtime is paid at this multiple of the ordinary hourly rate."),
     "LEAVE_EARNED_PER_MONTH": ("Leave earned per full month", "Pro-rated by the days that end up paid, and truncated rather than rounded so the accrual never overshoots."),
     "MAX_SESSION_MINUTES": ("Maximum overnight session", "An In/Out pair that crosses midnight and runs longer than this is flagged as a punch error instead of being paid. Long same-day shifts are unaffected."),
@@ -84,7 +91,7 @@ def monthly_rule_rows():
             display = "Days in the month" if not value else f"{value} days"
         elif key == "OVERTIME_MULTIPLIER":
             display = f"{value}x ordinary rate"
-        elif key == "SALARY_HOURS_PER_DAY":
+        elif key in {"MONTHLY_RATE_HOURS_PER_DAY", "DAILY_RATE_HOURS_PER_DAY"}:
             display = f"{value} hours"
         elif key == "LEAVE_EARNED_PER_MONTH":
             display = f"{value} days"

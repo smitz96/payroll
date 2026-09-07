@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.05
+Current version: V1.06
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -80,12 +80,12 @@ Wage type is normalized with `strip().upper()`. `MONTHLY` and `DAILY` resolve to
 - Short-hours rounding: the shortfall is rounded **up** to the next 15 minutes. 48 minutes short is charged as 60.
 - Half day: 3h00m through below 6h00m.
 - Less than 3h00m: the day earns no pay of its own. Available leave covers it; with no leave it is a full-day LOP.
-- OT threshold: only after 9h15m / 555 minutes.
+- OT threshold: only at or after 9h30m / 570 minutes.
 - OT rounding: the excess is floored to complete 15-minute blocks, the opposite of short hours and deliberately so.
 - OT rate: the ordinary hourly rate. `Overtime multiplier` in Settings pays a premium if it is set above 1.
 - Sunday: default week off, configurable per employee, and awaiting confirmation until someone confirms it.
 - A day is worth the month's salary divided by **the days in that month**, so February pays more per day than July. `Salary days per month` in Settings overrides this with a fixed figure if set to anything other than 0.
-- Hourly rate: that daily rate divided by 9.
+- Less-hours and OT hourly rate: monthly wage daily rate is divided by 8; daily wage rate is divided by 8.5. Attendance full-day criteria still use the 9-hour target.
 - A single In/Out pair longer than 12 hours is flagged as a punch error, not paid. This catches an Out punch entered before its In punch, which would otherwise roll past midnight and be paid with overtime.
 
 Every value above lives in `attendance/settings.py` and is shown, with its effect, on the Settings page.

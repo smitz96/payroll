@@ -465,19 +465,18 @@ def report_pdf(
 
 
 PAYROLL_SUMMARY_HEADERS = [
-    "ID", "Employee", "Designation", "Wage Type", "Base", "Days", "Working", "Week Off",
-    "Total Paid", "Leave", "LOP", "Deduction", "Addition", "Payable", "Status",
+    "ID", "Employee", "Base", "Days", "Working", "Holidays", "Week Off",
+    "Leave", "Total Paid", "LOP", "Over Time", "Less Hours", "Compliance", "Payable", "Status",
 ]
 PAYROLL_SUMMARY_WIDTHS = [
-    11 * mm, 30 * mm, 28 * mm, 16 * mm, 18 * mm, 11 * mm, 15 * mm, 15 * mm,
-    16 * mm, 12 * mm, 11 * mm, 20 * mm, 18 * mm, 21 * mm, 21 * mm,
+    11 * mm, 42 * mm, 19 * mm, 12 * mm, 16 * mm, 14 * mm, 15 * mm,
+    12 * mm, 16 * mm, 11 * mm, 17 * mm, 17 * mm, 18 * mm, 23 * mm, 22 * mm,
 ]
 
 
 def payroll_summary_rows(month, wage_group):
     """Summary rows for one wage group, with the group's payable and deduction totals."""
     names = employee_name_map(month)
-    designations = {employee.id: employee.designation or "" for employee in Employee.query.all()}
     salaries = {s.employee_id: s for s in SalaryRecord.query.filter_by(payroll_month=month).all()}
     rows = []
     total_payable = Decimal("0")
@@ -489,20 +488,25 @@ def payroll_summary_rows(month, wage_group):
             continue
         total_payable += Decimal(result.final_salary or 0)
         total_deduction += Decimal(result.total_deduction or 0)
+        compliance_deduction = (
+            Decimal(result.pf_employee or 0)
+            + Decimal(result.esi_employee or 0)
+            + Decimal(result.professional_tax or 0)
+        )
         rows.append([
             result.employee_id,
             names.get(result.employee_id, result.employee_id),
-            designations.get(result.employee_id, ""),
-            salary.salary_type or "",
             pdf_money(salary.salary),
             payroll_month_days(month),
             result.paid_working_days,
+            result.holidays,
             result.week_offs,
-            total_paid_days(result),
             result.paid_leaves,
+            total_paid_days(result),
             result.lop_days,
-            pdf_money(result.total_deduction),
-            pdf_money(result.total_addition),
+            pdf_minutes_money(result.payable_ot_minutes, result.ot_amount),
+            pdf_minutes_money(result.less_hours_minutes, result.less_hours_deduction),
+            pdf_money(compliance_deduction),
             pdf_money(result.final_salary),
             result.calculation_status,
         ])
@@ -770,6 +774,10 @@ def pdf_money(value):
     if value is None:
         return "N/A"
     return f"{Decimal(value):,.2f}"
+
+
+def pdf_minutes_money(minutes, amount):
+    return f"{int(minutes or 0)}m/{pdf_money(amount or 0)}"
 
 
 def pdf_minutes(value):

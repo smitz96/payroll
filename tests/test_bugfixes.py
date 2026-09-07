@@ -604,6 +604,76 @@ def test_reloading_wages_recalculates_existing_pf_deductions(client, app):
         assert Decimal(after.total_deduction) > before_total_deduction
 
 
+def test_monthly_less_hours_and_ot_use_eight_hour_rate_divisor(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07", attendance_submitted=True))
+        db.session.add(Employee(
+            id="5", name="Monthly Rate Worker", salary_type="Monthly",
+            normalized_salary_type="MONTHLY", salary=Decimal("24800"),
+        ))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(
+            payroll_month="2026-07", employee_id="5", name="Monthly Rate Worker",
+            salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("24800"),
+        ))
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="5", employee_name="Monthly Rate Worker",
+            date=date(2026, 7, 1), day="Wednesday", first_punch="09:30 AM",
+            last_punch="06:19 PM", raw_working_hours="8h 49m", actual_minutes=529,
+            parse_status="OK",
+        ))
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="5", employee_name="Monthly Rate Worker",
+            date=date(2026, 7, 2), day="Thursday", first_punch="09:30 AM",
+            last_punch="07:00 PM", raw_working_hours="9h 30m", actual_minutes=570,
+            parse_status="OK",
+        ))
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        # 24,800 / 31 days = 800 daily rate; 800 / 8 / 4 = 25 per 15 minutes.
+        assert result.less_hours_minutes == 15
+        assert Decimal(result.less_hours_deduction) == Decimal("25.00")
+        assert result.payable_ot_minutes == 30
+        assert Decimal(result.ot_amount) == Decimal("50.00")
+
+
+def test_daily_less_hours_and_ot_use_eight_and_half_hour_rate_divisor(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07", attendance_submitted=True))
+        db.session.add(Employee(
+            id="6", name="Daily Rate Worker", salary_type="Daily",
+            normalized_salary_type="DAILY", salary=Decimal("850"),
+        ))
+        db.session.add(WeekOffRule(employee_id="6", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(
+            payroll_month="2026-07", employee_id="6", name="Daily Rate Worker",
+            salary_type="Daily", normalized_salary_type="DAILY", salary=Decimal("850"),
+        ))
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="6", employee_name="Daily Rate Worker",
+            date=date(2026, 7, 1), day="Wednesday", first_punch="09:30 AM",
+            last_punch="06:19 PM", raw_working_hours="8h 49m", actual_minutes=529,
+            parse_status="OK",
+        ))
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="6", employee_name="Daily Rate Worker",
+            date=date(2026, 7, 2), day="Thursday", first_punch="09:30 AM",
+            last_punch="07:00 PM", raw_working_hours="9h 30m", actual_minutes=570,
+            parse_status="OK",
+        ))
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        # 850 / 8.5 / 4 = 25 per 15 minutes.
+        assert result.less_hours_minutes == 15
+        assert Decimal(result.less_hours_deduction) == Decimal("25.00")
+        assert result.payable_ot_minutes == 30
+        assert Decimal(result.ot_amount) == Decimal("50.00")
+
+
 def test_wage_step_action_is_hidden_once_a_group_is_finalized(client, app):
     with app.app_context():
         seed_mixed_month()
@@ -2737,6 +2807,52 @@ def test_payroll_summary_lists_employees_in_numeric_id_order(app):
         ids = [row[0] for row in rows]
         # A string sort would put 10 and 11 before 2.
         assert ids == ["2", "5", "10", "11"]
+
+
+def test_payroll_summary_splits_less_hours_and_compliance(app):
+    from attendance.reports import PAYROLL_SUMMARY_HEADERS, payroll_summary_rows
+
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07", attendance_submitted=True))
+        db.session.add(Employee(
+            id="5", name="PF Short Worker", salary_type="Monthly", normalized_salary_type="MONTHLY",
+            salary=Decimal("24800"), basic_salary=Decimal("15000"), hra=Decimal("5000"),
+            allowance=Decimal("4800"), pf_enabled=True, esic_enabled=True,
+        ))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(
+            payroll_month="2026-07", employee_id="5", name="PF Short Worker",
+            salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("24800"),
+        ))
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="5", employee_name="PF Short Worker",
+            date=date(2026, 7, 1), day="Wednesday", first_punch="09:30 AM",
+            last_punch="06:19 PM", raw_working_hours="8h 49m", actual_minutes=529,
+            parse_status="OK",
+        ))
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+
+        headers = PAYROLL_SUMMARY_HEADERS
+        assert "Deduction" not in headers
+        assert "Designation" not in headers
+        assert "Wage Type" not in headers
+        assert headers[4:7] == ["Working", "Holidays", "Week Off"]
+        assert headers[7:9] == ["Leave", "Total Paid"]
+        assert headers[10:13] == ["Over Time", "Less Hours", "Compliance"]
+        rows, _payable, _deduction = payroll_summary_rows("2026-07", "MONTHLY")
+        row = rows[0]
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        compliance = (
+            Decimal(result.pf_employee or 0)
+            + Decimal(result.esi_employee or 0)
+            + Decimal(result.professional_tax or 0)
+        )
+        assert row[5] == result.holidays
+        assert row[10] == f"{result.payable_ot_minutes}m/{pdf_money(result.ot_amount)}"
+        assert row[11] == f"{result.less_hours_minutes}m/{pdf_money(result.less_hours_deduction)}"
+        assert row[12] == pdf_money(compliance)
+        assert row[11] != pdf_money(result.total_deduction)
 
 
 def test_payroll_month_table_shows_paid_ot_and_less_hours_for_both_groups(client, app):

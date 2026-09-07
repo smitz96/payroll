@@ -55,7 +55,7 @@ class MonthlyPayrollRule(PayrollRule):
         salary = Decimal(salary_record.salary)
         salary_days = Decimal(salary_days_for_month(salary_record.payroll_month))
         daily_rate = salary / salary_days
-        hourly_rate = daily_rate / Decimal(CFG["SALARY_HOURS_PER_DAY"])
+        hourly_rate = daily_rate / Decimal(CFG["MONTHLY_RATE_HOURS_PER_DAY"])
         quarter_rate = hourly_rate / Decimal(4)
         full_days = Decimal("0")
         half_days = Decimal("0")
@@ -344,7 +344,7 @@ class DailyPayrollRule(PayrollRule):
         holidays = holidays or set()
         overrides = overrides or {}
         daily_rate = Decimal(salary_record.salary)
-        hourly_rate = daily_rate / Decimal(CFG["SALARY_HOURS_PER_DAY"])
+        hourly_rate = daily_rate / Decimal(CFG["DAILY_RATE_HOURS_PER_DAY"])
         quarter_rate = hourly_rate / Decimal(4)
         full_days = Decimal("0")
         half_days = Decimal("0")
