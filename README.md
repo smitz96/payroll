@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.06
+Current version: V1.07
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -153,6 +153,10 @@ Monthly wage employees additionally have:
 
 - **Salary breakup** - `Basic`, `HRA`, `Allowance`. All three must add up to `Salary` exactly. Leaving all three at zero means the breakup has not been captured yet and is allowed; once any one is filled in, the total has to reconcile. The form shows a running total and the shortfall or excess as you type.
 - **Compliance** - `PF` and `ESIC` yes/no flags.
+- **Annual CTC bonus** - yearly cost to company on the salary slip is monthly salary
+  plus employer PF and ESIC, multiplied by 12. When enabled, one additional contracted
+  monthly salary is added as the bonus, without repeating employer PF or ESIC. It does
+  not change monthly take-home pay.
 
 Every employee, monthly or daily, also has a **week off pattern**, a **status**, and - once they are no longer working - a **last working day**:
 

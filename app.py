@@ -96,6 +96,9 @@ def ensure_schema_columns():
             ("allowance", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
             ("pf_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
             ("esic_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+            # Monthly annual CTC benefit. Existing employees remain on 12 months
+            # until this is explicitly enabled in Employee Master.
+            ("annual_ctc_bonus_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
             # Daily wage attendance bonus opt-out. Defaulting to 0 keeps every existing
             # daily employee in the bonus, which is how it worked before the flag.
             ("bonus_ignored", "BOOLEAN NOT NULL DEFAULT 0"),

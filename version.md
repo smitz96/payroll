@@ -1,3 +1,3 @@
 # Current Version
 
-V1.06
+V1.07

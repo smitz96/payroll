@@ -258,12 +258,13 @@ class MonthlyPayrollRule(PayrollRule):
         leave_encashment = daily_rate * leave_encashment_days
         closing_leave = (closing_leave_before_encashment - leave_encashment_days).quantize(LEAVE_DAY_PRECISION)
         manual_deduction = abs(manual) if manual < 0 else Decimal("0")
-        # Statutory contributions are based on what the employee actually earns this
-        # month, so loss of pay and short hours reduce the wage they are computed on.
-        # PF follows basic alone; ESI follows the whole earned wage.
-        earned_wage = salary - lop_deduction - less_deduction
-        earned_ratio = earned_wage / salary if salary else Decimal("0")
+        # PF follows earned basic wages only. Short hours remains a separate
+        # deduction line, so it does not also shrink the PF wage base.
+        earned_wage_before_short_hours = salary - lop_deduction
+        earned_ratio = earned_wage_before_short_hours / salary if salary else Decimal("0")
         earned_basic = max(Decimal("0"), Decimal(employee.basic_salary or 0) if employee else Decimal("0")) * earned_ratio
+        # ESI and professional tax follow the actual wage payable for the month.
+        earned_wage = earned_wage_before_short_hours - less_deduction
         pf, esi = statutory_for_employee(
             employee,
             earned_basic=earned_basic,

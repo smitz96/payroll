@@ -8,10 +8,10 @@
 <script>
   (function () {
     document.querySelectorAll('form').forEach(function (form) {
-      var panel = form.querySelector('[data-monthly-only]');
-      var dailyPanel = form.querySelector('[data-daily-only]');
+      var panels = Array.prototype.slice.call(form.querySelectorAll('[data-monthly-only]'));
+      var dailyPanels = Array.prototype.slice.call(form.querySelectorAll('[data-daily-only]'));
       var wageType = form.querySelector('[name="wage_type"]');
-      if ((!panel && !dailyPanel) || !wageType) return;
+      if ((!panels.length && !dailyPanels.length) || !wageType) return;
       var salaryField = form.querySelector('[data-salary-total]');
       var parts = Array.prototype.slice.call(form.querySelectorAll('[data-breakup]'));
       var readout = form.querySelector('[data-breakup-total]');
@@ -27,8 +27,16 @@
 
       function refresh() {
         var monthly = wageType.value.trim().toUpperCase() === 'MONTHLY';
-        if (panel) panel.hidden = !monthly;
-        if (dailyPanel) {
+        panels.forEach(function (panel) {
+          panel.hidden = !monthly;
+          // Hidden checkboxes still post, so clear monthly-only options for daily wage.
+          if (!monthly) {
+            panel.querySelectorAll('input[type="checkbox"]').forEach(function (box) {
+              box.checked = false;
+            });
+          }
+        });
+        dailyPanels.forEach(function (dailyPanel) {
           dailyPanel.hidden = monthly;
           // A hidden checkbox still posts, so clear it when it no longer applies.
           if (monthly) {
@@ -36,7 +44,7 @@
               box.checked = false;
             });
           }
-        }
+        });
         // Likewise for the breakup amounts.
         if (!monthly) {
           parts.forEach(function (part) { part.value = '0'; });

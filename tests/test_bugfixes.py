@@ -47,6 +47,13 @@ def test_display_month_is_safe_for_malformed_input():
     assert display_month(None) == "Not started"
 
 
+def test_pdf_money_uses_indian_digit_grouping():
+    assert pdf_money(Decimal("1701600")) == "17,01,600.00"
+    assert pdf_money(Decimal("411600")) == "4,11,600.00"
+    assert pdf_money(Decimal("30000")) == "30,000.00"
+    assert pdf_money(Decimal("-1701600.5")) == "-17,01,600.50"
+
+
 def test_malformed_month_returns_404_instead_of_500(client, app):
     login(client)
     for path in (
@@ -740,6 +747,17 @@ def test_compliance_flags_save_for_monthly(client, app):
         assert "PF Yes" in audit.detail and "ESIC Yes" in audit.detail
 
 
+def test_annual_ctc_bonus_setting_saves_for_monthly_employee(client, app):
+    login(client)
+    response = add_employee(client, annual_ctc_bonus_enabled="on")
+    assert b"Employee master saved" in response.data
+    with app.app_context():
+        employee = db.session.get(Employee, "80")
+        assert employee.annual_ctc_bonus_enabled is True
+        audit = AuditLog.query.filter_by(action="Employee Master Created").one()
+        assert "Annual CTC Bonus Yes" in audit.detail
+
+
 def test_daily_wage_never_stores_breakup_or_compliance(client, app):
     """The fields are monthly-only, so a daily row must not keep values for them."""
     login(client)
@@ -1297,7 +1315,7 @@ def test_master_export_leads_with_sample_rows(client, app):
     login(client)
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
-    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Ignore Monthly Bonus,Week Off Pattern,Status,Last Working Day")
+    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Annual CTC Bonus,Ignore Monthly Bonus,Week Off Pattern,Status,Last Working Day")
     assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
     assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
     # The sample IDs cannot be mistaken for an employee number, so a reader never
@@ -2919,6 +2937,35 @@ def test_pf_follows_earned_basic_below_the_ceiling(app):
     assert pf["employee"] == Decimal("1481")
 
 
+def test_pf_wage_is_not_reduced_by_less_hours_deduction(app):
+    with app.app_context():
+        db.session.add(PayrollMonth(month="2026-07", attendance_submitted=True))
+        db.session.add(Employee(
+            id="5", name="PF Short Worker", salary_type="Monthly", normalized_salary_type="MONTHLY",
+            salary=Decimal("16000"), basic_salary=Decimal("10000"), hra=Decimal("6000"),
+            allowance=Decimal("0"), pf_enabled=True,
+        ))
+        db.session.add(WeekOffRule(employee_id="5", confirmed_at=datetime.utcnow()))
+        db.session.add(SalaryRecord(
+            payroll_month="2026-07", employee_id="5", name="PF Short Worker",
+            salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("16000"),
+        ))
+        db.session.add(AttendanceRecord(
+            payroll_month="2026-07", employee_id="5", employee_name="PF Short Worker",
+            date=date(2026, 7, 1), day="Wednesday", first_punch="09:30 AM",
+            last_punch="06:19 PM", raw_working_hours="8h 49m", actual_minutes=529,
+            parse_status="OK",
+        ))
+        db.session.commit()
+
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        assert Decimal(result.less_hours_deduction) > 0
+        assert Decimal(result.lop_deduction) == Decimal("0.00")
+        assert Decimal(result.pf_wage) == Decimal("10000.00")
+        assert Decimal(result.pf_employee) == Decimal("1200.00")
+
+
 def test_esi_stops_above_the_wage_ceiling(app):
     from attendance.statutory import esi_contributions
     covered = esi_contributions(Decimal("18500"), Decimal("18000"))
@@ -3594,7 +3641,7 @@ def test_salary_slip_has_the_payslip_structure(client, app):
 
     login(client)
     text = slip_text(client, app)
-    for heading in ("Pay Slip:", "Payable days:", "Loss of pay days:",
+    for heading in ("Pay Slip for",
                     "Employee Name", "Employee Code", "Department", "Designation",
                     "EARNINGS (INR)", "DEDUCTIONS (INR)", "Actual Amount", "Paid Amount",
                     "Sub Total", "Others", "Gross Pay", "Gross Deductions", "Net Pay",
@@ -3605,8 +3652,10 @@ def test_salary_slip_has_the_payslip_structure(client, app):
                     "Total contribution to PF account",
                     "LEAVE SUMMARY", "Balance from last month", "Earned this month",
                     "Used this month", "Carry forward",
+                    "Phone: +91 79 4008 5357", "Email: hr@smartfill.in",
                     "system generated payslip"):
         assert heading in text, heading
+    assert "/ Email:" not in text
     # Only the three components survive from the sample slip.
     assert "Basic" in text and "House Rent Allowance" in text and "Conveyance Allowance" in text
     for dropped in ("Kit Allowance", "Medical Allowance", "Special Allowance", "Travel Allowance"):
@@ -3614,6 +3663,53 @@ def test_salary_slip_has_the_payslip_structure(client, app):
     # Bank, PF number, UAN and PAN are deliberately absent.
     for dropped in ("Bank A/C", "UAN No", "PAN No", "Business Unit", "Cost Center", "Date of Join"):
         assert dropped not in text, dropped
+
+
+def test_salary_slip_shows_yearly_ctc_with_one_salary_bonus(client, app):
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+        employee = db.session.get(Employee, "5")
+        employee.annual_ctc_bonus_enabled = True
+        db.session.commit()
+
+    login(client)
+    text = slip_text(client, app)
+    normalized_text = " ".join(text.split())
+    # (30,000 salary + 1,800 employer PF + 0 employer ESIC) x 12
+    # + one 30,000 salary bonus. Employer contributions are not repeated in the bonus.
+    assert "Yearly Cost to Company" in normalized_text
+    assert "4,11,600.00 INR" in text
+    assert "Annual CTC Bonus" not in text
+    assert normalized_text.index("In words:") < normalized_text.index("Yearly Cost to Company")
+    assert normalized_text.index("Yearly Cost to Company") < normalized_text.index("PF & ESIC Contributions")
+
+
+def test_yearly_ctc_counts_employer_pf_and_esic_for_twelve_months_only(app):
+    from attendance.reports import yearly_ctc
+
+    with app.app_context():
+        salary = SalaryRecord(salary=Decimal("30000"))
+        employee = Employee(annual_ctc_bonus_enabled=True)
+        result = PayrollResult(pf_employer=Decimal("1800"), esi_employer=Decimal("975"))
+        # (30,000 + 1,800 + 975) x 12 + one plain 30,000 salary bonus.
+        assert yearly_ctc(salary, employee, result) == Decimal("423300.00")
+        employee.annual_ctc_bonus_enabled = False
+        assert yearly_ctc(salary, employee, result) == Decimal("393300.00")
+
+
+def test_salary_slip_adds_attendance_totals_and_stays_on_one_a4_page(app):
+    from attendance.reports import build_employee_pdf
+
+    with app.app_context():
+        seed_statutory_employee(pf=True)
+        pdf = build_employee_pdf("2026-07", "5")
+    reader = PdfReader(BytesIO(pdf))
+    assert len(reader.pages) == 1
+    text = " ".join((reader.pages[0].extract_text() or "").split())
+    for label in ("Days in Month", "Payable Days", "Present Days", "Loss of Pay Days",
+                  "Week-Offs & Holidays", "Paid-Leave Days"):
+        assert label in text
+    assert "Working Days" not in text
 
 
 def test_slip_net_pay_reconciles_with_the_payroll_result(app):
@@ -4100,18 +4196,16 @@ def test_slip_pf_rows_are_ordered_employer_employee_charges(client, app):
     assert "\nPF Employee\n" not in text
 
 
-def test_slip_band_shows_days_in_month_between_period_and_payable(client, app):
+def test_slip_uses_full_width_period_band_and_moves_day_totals_to_attendance(client, app):
     with app.app_context():
         result = seed_statutory_employee(pf=True)
 
     login(client)
     text = slip_text(client, app)
-    assert "Days in this Month: 31" in text
-    order = [text.index(label) for label in
-             ("Pay Slip:", "Days in this Month:", "Payable days:", "Loss of pay days:")]
-    assert order == sorted(order)
-    # Nothing wraps: each cell is one line in the extracted text.
-    assert f"Payable days: {total_paid_days(result)}" in text
+    normalized = " ".join(text.split())
+    assert "Pay Slip for July 2026" in normalized
+    assert "Days in Month" in normalized and "Loss of Pay Days" in normalized and "Payable Days" in normalized
+    assert normalized.index("ATTENDANCE") < normalized.index("Days in Month") < normalized.index("EARNINGS (INR)")
 
 
 # --- Pay documents are released only after the wage group is finalized ---
@@ -4242,7 +4336,7 @@ def test_slip_history_downloads_every_finalized_month_oldest_first(client, app):
     assert response.mimetype == "application/pdf"
     pages = PdfReader(BytesIO(response.data)).pages
     # One slip to a page, April-to-March reading order, and the draft month is absent.
-    assert [page.extract_text().split("Pay Slip: ")[1].split("Days in")[0].strip() for page in pages] == [
+    assert [page.extract_text().split("Pay Slip for ")[1].splitlines()[0].strip() for page in pages] == [
         "February 2026", "July 2026",
     ]
 

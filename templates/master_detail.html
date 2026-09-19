@@ -111,6 +111,13 @@
       </label>
       <div class="status-detail">When ticked, less-hours shortage is not deducted. Full day and half day counting still applies.</div>
     </div>
+    <div class="col-md-12 wage-panel" data-monthly-only hidden>
+      <label class="form-check">
+        <input class="form-check-input" type="checkbox" name="annual_ctc_bonus_enabled" {% if employee.annual_ctc_bonus_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <span>Include annual bonus in CTC</span>
+      </label>
+      <div class="status-detail">Adds one contracted monthly salary to yearly CTC. The salary slip shows 13 months of salary instead of 12; monthly take-home pay is unchanged.</div>
+    </div>
     <div class="col-md-12 adjustment-actions">
       <button class="btn btn-primary">Save Employee Details</button>
     </div>

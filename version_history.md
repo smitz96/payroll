@@ -1,8 +1,17 @@
 # Version History
 
-## V1.06
+## V1.07
 
 Current version.
+
+- Added an employee-level Annual CTC Bonus option for Monthly wage employees, including Employee Master forms, CSV import/export, schema migration, and audit details.
+- Added Yearly Cost to Company to salary slips using `(monthly salary + employer PF + employer ESIC) x 12`, plus one plain monthly salary when the annual bonus option is enabled.
+- Redesigned the salary slip header and attendance summary, added company contact details, and kept each employee slip within one A4 page.
+- Moved Yearly Cost to Company below the amount in words and formatted it consistently with Net Pay.
+- Updated PDF currency values to use Indian lakh/crore digit grouping.
+- Kept short-hours deductions separate from the PF wage base while continuing to reduce PF wages for loss-of-pay days.
+
+## V1.06
 
 - Updated less-hours and overtime payroll amounts to use an 8-hour divisor for Monthly wage employees and an 8.5-hour divisor for Daily wage employees, while keeping the 9-hour attendance full-day criteria unchanged.
 - Improved Payroll Summary report columns by adding Holidays, moving Leave before Total Paid, and removing Designation and Wage Type.

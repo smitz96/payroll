@@ -177,6 +177,13 @@
           <span>Ignore Less Hours</span>
         </label>
         <div class="status-detail mb-3">When ticked, short-hours shortage is not deducted. Full-day and half-day counting still applies.</div>
+        <div class="wage-panel" data-monthly-only hidden>
+          <label class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="annual_ctc_bonus_enabled">
+            <span>Include annual bonus in CTC</span>
+          </label>
+          <div class="status-detail mb-3">Adds one contracted monthly salary to yearly CTC. Monthly take-home pay is unchanged.</div>
+        </div>
         <p class="text-muted mb-0">Once an active employee is set as Monthly or Daily, wage type cannot be changed. Mark the employee as left or terminated first, then add the same employee under a new Employee ID with the updated wage group.</p>
       </section>
     </div>
@@ -268,6 +275,7 @@
           <div><span>PF</span><strong>{{ "Yes" if employee.pf_enabled else "No" }}</strong></div>
           <div><span>ESIC</span><strong>{{ "Yes" if employee.esic_enabled else "No" }}</strong></div>
           <div><span>TDS</span><strong>{{ employee.tds or 0 }}</strong></div>
+          <div><span>Annual CTC Bonus</span><strong>{{ "Yes" if employee.annual_ctc_bonus_enabled else "No" }}</strong></div>
           {% elif employee.normalized_salary_type == 'DAILY' %}
           <div><span>Ignore Monthly Bonus</span><strong>{{ "Yes" if employee.bonus_ignored else "No" }}</strong></div>
           {% endif %}
@@ -283,6 +291,13 @@
           <input class="form-check-input" type="checkbox" name="less_hours_ignored" {% if employee.less_hours_ignored %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
           <span>Ignore Less Hours</span>
         </label>
+        <div class="wage-panel" data-monthly-only hidden>
+          <label class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" name="annual_ctc_bonus_enabled" {% if employee.annual_ctc_bonus_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+            <span>Include annual bonus in CTC</span>
+          </label>
+          <div class="status-detail mb-3">Adds one contracted monthly salary to yearly CTC. Monthly take-home pay is unchanged.</div>
+        </div>
         <p class="text-muted mb-0">Wage type cannot be changed for an active employee once set. Mark the employee as left or terminated before adding a new Employee ID with another wage group.</p>
       </section>
     </div>

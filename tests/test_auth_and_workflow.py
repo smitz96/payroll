@@ -1476,17 +1476,18 @@ def test_pdf_reports_download(client, app):
     assert employee_reader.metadata.title == "Worker Salary Slip - July 2026"
     employee_text = "\n".join(page.extract_text() or "" for page in employee_reader.pages)
     assert "Final Salary Report" not in employee_text
-    assert "Pay Slip: July 2026" in employee_text
+    assert "Pay Slip for July 2026" in employee_text
     # The slip carries no brand line or page number; the masthead identifies it.
     assert "SMARTfill Payroll" not in employee_text
     assert "Panchratna Industrial Estate" in employee_text
     assert "EARNINGS (INR)" in employee_text
     assert "DEDUCTIONS (INR)" in employee_text
     assert "Net Pay" in employee_text
-    # Attendance day counts and the calendar belong to the attendance summary now;
-    # the slip carries the pay components and the statutory figures.
-    assert "Payable days" in employee_text
-    assert "Loss of pay days" in employee_text
+    # Compact attendance totals sit above the pay components; the day-by-day calendar
+    # remains in the separate attendance summary.
+    assert "Days in Month" in employee_text
+    assert "Loss of Pay Days" in employee_text
+    assert "Payable Days" in employee_text
     assert "Basic" in employee_text
     assert "House Rent Allowance" in employee_text
     assert "Professional Tax" in employee_text
@@ -1503,7 +1504,7 @@ def test_pdf_reports_download(client, app):
     # One slip to a page, because each is handed to a different person.
     assert len(final_reader.pages) == 2
     assert "Final Payroll Report" not in final_text
-    assert "Pay Slip: July 2026" in final_text
+    assert "Pay Slip for July 2026" in final_text
     assert "SMARTfill Payroll" not in final_text
     assert "Net Pay" in final_text
     assert "Worker Two" in final_text

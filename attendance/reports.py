@@ -773,7 +773,19 @@ def display_attendance_status(status):
 def pdf_money(value):
     if value is None:
         return "N/A"
-    return f"{Decimal(value):,.2f}"
+    amount = Decimal(value)
+    whole, fraction = f"{abs(amount):.2f}".split(".")
+    if len(whole) > 3:
+        leading = whole[:-3]
+        groups = []
+        while len(leading) > 2:
+            groups.insert(0, leading[-2:])
+            leading = leading[:-2]
+        if leading:
+            groups.insert(0, leading)
+        whole = ",".join([*groups, whole[-3:]])
+    sign = "-" if amount < 0 else ""
+    return f"{sign}{whole}.{fraction}"
 
 
 def pdf_minutes_money(minutes, amount):
@@ -1742,6 +1754,35 @@ def slip_other_deductions(result):
     ]
 
 
+def yearly_ctc(salary_record, employee, result=None):
+    """Yearly employer cost plus one plain monthly salary when bonus is enabled."""
+    monthly_salary = Decimal(salary_record.salary or 0) if salary_record else Decimal("0")
+    employer_pf = Decimal(getattr(result, "pf_employer", 0) or 0) if result else Decimal("0")
+    employer_esi = Decimal(getattr(result, "esi_employer", 0) or 0) if result else Decimal("0")
+    annual_cost = (monthly_salary + employer_pf + employer_esi) * Decimal("12")
+    bonus = monthly_salary if employee and employee.annual_ctc_bonus_enabled else Decimal("0")
+    return money(annual_cost + bonus)
+
+
+def slip_attendance_metrics(month, result):
+    """Compact attendance totals shown above the earnings and deductions grid."""
+    if not result:
+        return [("Days in Month", str(payroll_month_days(month))),
+                ("Payable Days", "—"), ("Present Days", "—"),
+                ("Loss of Pay Days", "—"), ("Week-Offs & Holidays", "—"),
+                ("Paid-Leave Days", "—")]
+    weekoffs = Decimal(result.week_offs or 0)
+    holidays = Decimal(result.holidays or 0)
+    return [
+        ("Days in Month", str(payroll_month_days(month))),
+        ("Payable Days", str(leave_days(total_paid_days(result)))),
+        ("Present Days", str(leave_days(Decimal(result.paid_working_days or 0)))),
+        ("Loss of Pay Days", str(leave_days(Decimal(result.lop_days or 0)))),
+        ("Week-Offs & Holidays", str(leave_days(weekoffs + holidays))),
+        ("Paid-Leave Days", str(leave_days(Decimal(result.paid_leaves or 0)))),
+    ]
+
+
 def salary_slip_story(month, salary_record, result, styles, available_width):
     """One salary slip in the classic Indian payslip layout.
 
@@ -1760,6 +1801,7 @@ def salary_slip_story(month, salary_record, result, styles, available_width):
                                    fontSize=7.4, leading=9.5, textColor=MUTED, alignment=TA_CENTER)
     band_style = ParagraphStyle("SlipBand", parent=styles["Normal"], fontName="Helvetica-Bold",
                                 fontSize=9, leading=11.5, textColor=INK)
+    band_center_style = ParagraphStyle("SlipBandCenter", parent=band_style, alignment=TA_CENTER)
     words_style = ParagraphStyle("SlipWords", parent=styles["Normal"], fontName="Helvetica-Bold",
                                  fontSize=8, leading=10.5, textColor=TINT_TEXT)
 
@@ -1773,23 +1815,27 @@ def salary_slip_story(month, salary_record, result, styles, available_width):
     ]
 
     # Masthead: logo, then the registered address.
-    masthead = Table([[_brand_logo(width=46 * mm, height=16 * mm)], [Paragraph(COMPANY_ADDRESS, address_style)]],
+    masthead = Table([
+        [_brand_logo(width=46 * mm, height=16 * mm)],
+        [Paragraph(COMPANY_ADDRESS, address_style)],
+        [Paragraph("Phone: +91 79 4008 5357&nbsp;&nbsp;&nbsp;Email: hr@smartfill.in", address_style)],
+    ],
                      colWidths=[available_width])
-    masthead.setStyle(TableStyle(hairline + [
+    masthead.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.5, SEPARATOR),
+        ("LINEBELOW", (0, 0), (0, 0), 0.5, SEPARATOR),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("ALIGN", (0, 0), (0, 0), "CENTER"),
         ("TOPPADDING", (0, 0), (0, 0), 8),
         ("BOTTOMPADDING", (0, 0), (0, 0), 8),
     ]))
 
-    lop_days = Decimal(result.lop_days or 0) if result else Decimal("0")
-    # Widths sized against the longest month name so no cell wraps.
-    band = Table([[
-        Paragraph(f"Pay Slip: {display_month(month)}", band_style),
-        Paragraph(f"Days in this Month: {payroll_month_days(month)}", band_style),
-        Paragraph(f"Payable days: {total_paid_days(result) if result else '—'}", band_style),
-        Paragraph(f"Loss of pay days: {leave_days(lop_days)}", band_style),
-    ]], colWidths=[available_width * 0.26, available_width * 0.24,
-                   available_width * 0.24, available_width * 0.26])
+    band = Table([[Paragraph(f"Pay Slip for {display_month(month)}", band_center_style)]],
+                 colWidths=[available_width])
     band.setStyle(TableStyle(hairline + [("BACKGROUND", (0, 0), (-1, -1), SURFACE_SOFT)]))
 
     # Bank, PF, UAN and PAN are deliberately absent: the slip identifies the employee
@@ -1801,6 +1847,24 @@ def salary_slip_story(month, salary_record, result, styles, available_width):
          Paragraph("Designation", label_style), Paragraph((employee.designation if employee else "") or "—", value_style)],
     ], colWidths=[available_width * 0.17, available_width * 0.33, available_width * 0.17, available_width * 0.33])
     details.setStyle(TableStyle(hairline))
+
+    attendance_metrics = slip_attendance_metrics(month, result)
+    if len(attendance_metrics) % 2:
+        attendance_metrics.append(("", ""))
+    metric_rows = [attendance_metrics[index:index + 2] for index in range(0, len(attendance_metrics), 2)]
+    attendance = Table([
+        [Paragraph("ATTENDANCE", band_style), "", "", ""],
+        *[[Paragraph(left_label, label_style), Paragraph(left_value, value_style),
+           Paragraph(right_label, label_style), Paragraph(right_value, value_style)]
+          for (left_label, left_value), (right_label, right_value) in metric_rows],
+    ], colWidths=[available_width * 0.32, available_width * 0.18,
+                  available_width * 0.32, available_width * 0.18])
+    attendance.setStyle(TableStyle(hairline + [
+        ("SPAN", (0, 0), (3, 0)),
+        ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+        ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+        ("BACKGROUND", (0, 0), (-1, 0), SURFACE_SOFT),
+    ]))
 
     earnings = slip_earning_rows(employee, salary_record, result)
     deductions = [
@@ -1865,6 +1929,9 @@ def salary_slip_story(month, salary_record, result, styles, available_width):
                  Paragraph(f"{pdf_money(net)} INR", value_style)])
     words_row = len(rows)
     rows.append([Paragraph(f"In words: {money_in_words(net)}", words_style), "", "", "", ""])
+    yearly_ctc_row = len(rows)
+    rows.append([Paragraph("Yearly Cost to Company", band_style), "", "", "",
+                 Paragraph(f"{pdf_money(yearly_ctc(salary_record, employee, result))} INR", value_style)])
 
     column_widths = [available_width * 0.22, available_width * 0.16, available_width * 0.16,
                      available_width * 0.28, available_width * 0.18]
@@ -1874,12 +1941,14 @@ def salary_slip_story(month, salary_record, result, styles, available_width):
         ("SPAN", (0, others_row), (2, others_row)), ("SPAN", (3, others_row), (4, others_row)),
         ("SPAN", (0, net_row), (3, net_row)),
         ("SPAN", (0, words_row), (4, words_row)),
+        ("SPAN", (0, yearly_ctc_row), (3, yearly_ctc_row)),
         ("ALIGN", (1, 1), (2, -1), "RIGHT"), ("ALIGN", (4, 1), (4, -1), "RIGHT"),
         ("BACKGROUND", (0, 0), (-1, 1), SURFACE_SOFT),
         ("BACKGROUND", (0, subtotal_row), (-1, subtotal_row), SURFACE_SOFT),
         ("BACKGROUND", (0, other_subtotal_row), (-1, other_subtotal_row), SURFACE_SOFT),
         ("BACKGROUND", (0, gross_row), (-1, gross_row), SURFACE_SOFT),
         ("BACKGROUND", (0, net_row), (-1, net_row), TINT_WASH),
+        ("BACKGROUND", (0, yearly_ctc_row), (-1, yearly_ctc_row), TINT_WASH),
     ]))
 
     # Employer side. Kept apart from the deduction grid so it can never read as money
@@ -1928,7 +1997,7 @@ def salary_slip_story(month, salary_record, result, styles, available_width):
         ("BACKGROUND", (0, 0), (-1, 1), SURFACE_SOFT),
     ]))
 
-    story = [masthead, band, details, grid, Spacer(1, 6), contributions]
+    story = [masthead, band, details, attendance, grid, Spacer(1, 6), contributions]
     # Daily wage employees have no leave, so the block is monthly only.
     if result and result.payroll_rule_type != "DAILY":
         story.extend([Spacer(1, 6), leave_block])
