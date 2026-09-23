@@ -1,8 +1,14 @@
 # Version History
 
-## V1.07
+## V1.08
 
 Current version.
+
+- Revised Yearly Cost to Company so monthly employer cost includes salary, employer PF, PF Admin/EDLI charges, and employer ESIC for all 12 months.
+- Revised the annual bonus to equal monthly salary less employee PF, employee ESIC, and Professional Tax; TDS is not deducted from the bonus.
+- Added a regression example for Bijal that produces a Yearly CTC of `3,13,357.00`.
+
+## V1.07
 
 - Added an employee-level Annual CTC Bonus option for Monthly wage employees, including Employee Master forms, CSV import/export, schema migration, and audit details.
 - Added Yearly Cost to Company to salary slips using `(monthly salary + employer PF + employer ESIC) x 12`, plus one plain monthly salary when the annual bonus option is enabled.

@@ -1755,12 +1755,19 @@ def slip_other_deductions(result):
 
 
 def yearly_ctc(salary_record, employee, result=None):
-    """Yearly employer cost plus one plain monthly salary when bonus is enabled."""
+    """Twelve months of employer cost plus the enabled net annual bonus."""
     monthly_salary = Decimal(salary_record.salary or 0) if salary_record else Decimal("0")
     employer_pf = Decimal(getattr(result, "pf_employer", 0) or 0) if result else Decimal("0")
     employer_esi = Decimal(getattr(result, "esi_employer", 0) or 0) if result else Decimal("0")
-    annual_cost = (monthly_salary + employer_pf + employer_esi) * Decimal("12")
-    bonus = monthly_salary if employee and employee.annual_ctc_bonus_enabled else Decimal("0")
+    pf_admin = Decimal(getattr(result, "pf_admin", 0) or 0) if result else Decimal("0")
+    pf_edli = Decimal(getattr(result, "pf_edli", 0) or 0) if result else Decimal("0")
+    annual_cost = (monthly_salary + employer_pf + pf_admin + pf_edli + employer_esi) * Decimal("12")
+    bonus = Decimal("0")
+    if employee and employee.annual_ctc_bonus_enabled:
+        employee_pf = Decimal(getattr(result, "pf_employee", 0) or 0) if result else Decimal("0")
+        employee_esi = Decimal(getattr(result, "esi_employee", 0) or 0) if result else Decimal("0")
+        professional_tax = Decimal(getattr(result, "professional_tax", 0) or 0) if result else Decimal("0")
+        bonus = monthly_salary - employee_pf - employee_esi - professional_tax
     return money(annual_cost + bonus)
 
 

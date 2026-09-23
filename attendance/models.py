@@ -46,7 +46,7 @@ class Employee(db.Model):
     ot_ignored = db.Column(db.Boolean, default=False, nullable=False)
     less_hours_ignored = db.Column(db.Boolean, default=False, nullable=False)
     # Monthly wage only. When enabled, yearly CTC includes one additional month's
-    # contracted salary as an annual bonus (13 months instead of 12).
+    # salary after employee PF, ESIC, and Professional Tax are deducted.
     annual_ctc_bonus_enabled = db.Column(db.Boolean, default=False, nullable=False)
     # Daily wage only: excludes the employee from the monthly attendance bonus.
     bonus_ignored = db.Column(db.Boolean, default=False, nullable=False)

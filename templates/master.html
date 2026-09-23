@@ -182,7 +182,7 @@
             <input class="form-check-input" type="checkbox" name="annual_ctc_bonus_enabled">
             <span>Include annual bonus in CTC</span>
           </label>
-          <div class="status-detail mb-3">Adds one contracted monthly salary to yearly CTC. Monthly take-home pay is unchanged.</div>
+          <div class="status-detail mb-3">Adds monthly salary less employee PF, ESIC, and Professional Tax to yearly CTC. Monthly take-home pay is unchanged.</div>
         </div>
         <p class="text-muted mb-0">Once an active employee is set as Monthly or Daily, wage type cannot be changed. Mark the employee as left or terminated first, then add the same employee under a new Employee ID with the updated wage group.</p>
       </section>
@@ -296,7 +296,7 @@
             <input class="form-check-input" type="checkbox" name="annual_ctc_bonus_enabled" {% if employee.annual_ctc_bonus_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
             <span>Include annual bonus in CTC</span>
           </label>
-          <div class="status-detail mb-3">Adds one contracted monthly salary to yearly CTC. Monthly take-home pay is unchanged.</div>
+          <div class="status-detail mb-3">Adds monthly salary less employee PF, ESIC, and Professional Tax to yearly CTC. Monthly take-home pay is unchanged.</div>
         </div>
         <p class="text-muted mb-0">Wage type cannot be changed for an active employee once set. Mark the employee as left or terminated before adding a new Employee ID with another wage group.</p>
       </section>

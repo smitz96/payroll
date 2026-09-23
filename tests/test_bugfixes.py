@@ -3675,26 +3675,45 @@ def test_salary_slip_shows_yearly_ctc_with_one_salary_bonus(client, app):
     login(client)
     text = slip_text(client, app)
     normalized_text = " ".join(text.split())
-    # (30,000 salary + 1,800 employer PF + 0 employer ESIC) x 12
-    # + one 30,000 salary bonus. Employer contributions are not repeated in the bonus.
+    # Monthly employer cost includes salary, employer PF, and PF Admin/EDLI.
+    # Bonus is salary less employee PF, employee ESIC, and Professional Tax.
     assert "Yearly Cost to Company" in normalized_text
-    assert "4,11,600.00 INR" in text
+    assert "4,11,400.00 INR" in text
     assert "Annual CTC Bonus" not in text
     assert normalized_text.index("In words:") < normalized_text.index("Yearly Cost to Company")
     assert normalized_text.index("Yearly Cost to Company") < normalized_text.index("PF & ESIC Contributions")
 
 
-def test_yearly_ctc_counts_employer_pf_and_esic_for_twelve_months_only(app):
+def test_yearly_ctc_counts_employer_cost_and_net_bonus(app):
     from attendance.reports import yearly_ctc
 
     with app.app_context():
         salary = SalaryRecord(salary=Decimal("30000"))
         employee = Employee(annual_ctc_bonus_enabled=True)
-        result = PayrollResult(pf_employer=Decimal("1800"), esi_employer=Decimal("975"))
-        # (30,000 + 1,800 + 975) x 12 + one plain 30,000 salary bonus.
-        assert yearly_ctc(salary, employee, result) == Decimal("423300.00")
+        result = PayrollResult(
+            pf_employer=Decimal("1800"), pf_admin=Decimal("75"), pf_edli=Decimal("75"),
+            esi_employer=Decimal("975"), pf_employee=Decimal("1800"),
+            esi_employee=Decimal("150"), professional_tax=Decimal("200"),
+        )
+        # (30,000 + 1,800 + 75 + 75 + 975) x 12
+        # + (30,000 - 1,800 - 150 - 200).
+        assert yearly_ctc(salary, employee, result) == Decimal("422950.00")
         employee.annual_ctc_bonus_enabled = False
-        assert yearly_ctc(salary, employee, result) == Decimal("393300.00")
+        assert yearly_ctc(salary, employee, result) == Decimal("395100.00")
+
+
+def test_yearly_ctc_matches_bijal_example(app):
+    from attendance.reports import yearly_ctc
+
+    with app.app_context():
+        salary = SalaryRecord(salary=Decimal("22500"))
+        employee = Employee(annual_ctc_bonus_enabled=True)
+        result = PayrollResult(
+            pf_employer=Decimal("1755"), pf_admin=Decimal("146"), pf_edli=Decimal("0"),
+            esi_employer=Decimal("0"), pf_employee=Decimal("1755"),
+            esi_employee=Decimal("0"), professional_tax=Decimal("200"),
+        )
+        assert yearly_ctc(salary, employee, result) == Decimal("313357.00")
 
 
 def test_salary_slip_adds_attendance_totals_and_stays_on_one_a4_page(app):
