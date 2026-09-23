@@ -116,7 +116,7 @@
         <input class="form-check-input" type="checkbox" name="annual_ctc_bonus_enabled" {% if employee.annual_ctc_bonus_enabled %}checked{% endif %} {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
         <span>Include annual bonus in CTC</span>
       </label>
-      <div class="status-detail">Adds monthly salary less employee PF, ESIC, and Professional Tax to yearly CTC. Monthly take-home pay is unchanged.</div>
+      <div class="status-detail">Uses full contracted salary for CTC, regardless of attendance. Bonus is salary less employee PF, ESIC, and Professional Tax. Monthly take-home pay is unchanged.</div>
     </div>
     <div class="col-md-12 adjustment-actions">
       <button class="btn btn-primary">Save Employee Details</button>

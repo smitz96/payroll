@@ -22,7 +22,13 @@ from attendance.holidays import holiday_dates_for_records
 from attendance.models import AttendanceOverride, AttendanceRecord, Employee, Loan, PayrollMonth, PayrollResult, SalaryRecord
 from attendance.payroll_rules import classify_daily_attendance, classify_monthly_attendance
 from attendance.settings import COMPANY_ADDRESS
-from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
+from attendance.statutory import (
+    PROFESSIONAL_TAX_SLABS,
+    STATUTORY_RULES,
+    esi_contributions,
+    pf_contributions,
+    professional_tax,
+)
 from attendance.utils import format_percent, is_valid_payroll_month, leave_days, minutes_to_duration, minutes_to_working_day_shortage, money
 from attendance.weekoffs import is_week_off_for_date
 
@@ -1755,19 +1761,23 @@ def slip_other_deductions(result):
 
 
 def yearly_ctc(salary_record, employee, result=None):
-    """Twelve months of employer cost plus the enabled net annual bonus."""
+    """CTC from contracted wages, independent of attendance-paid payroll values."""
     monthly_salary = Decimal(salary_record.salary or 0) if salary_record else Decimal("0")
-    employer_pf = Decimal(getattr(result, "pf_employer", 0) or 0) if result else Decimal("0")
-    employer_esi = Decimal(getattr(result, "esi_employer", 0) or 0) if result else Decimal("0")
-    pf_admin = Decimal(getattr(result, "pf_admin", 0) or 0) if result else Decimal("0")
-    pf_edli = Decimal(getattr(result, "pf_edli", 0) or 0) if result else Decimal("0")
-    annual_cost = (monthly_salary + employer_pf + pf_admin + pf_edli + employer_esi) * Decimal("12")
+    pf = pf_contributions(Decimal(employee.basic_salary or 0)) if employee and employee.pf_enabled else {
+        "employee": Decimal("0"), "employer": Decimal("0"),
+        "admin": Decimal("0"), "edli": Decimal("0"),
+    }
+    # CTC uses the contracted monthly salary as the ESI wage. Attendance and LOP
+    # continue to control the separate statutory values used in actual payroll.
+    esi = esi_contributions(monthly_salary, monthly_salary) if employee and employee.esic_enabled else {
+        "employee": Decimal("0"), "employer": Decimal("0"),
+    }
+    annual_cost = (
+        monthly_salary + pf["employer"] + pf["admin"] + pf["edli"] + esi["employer"]
+    ) * Decimal("12")
     bonus = Decimal("0")
     if employee and employee.annual_ctc_bonus_enabled:
-        employee_pf = Decimal(getattr(result, "pf_employee", 0) or 0) if result else Decimal("0")
-        employee_esi = Decimal(getattr(result, "esi_employee", 0) or 0) if result else Decimal("0")
-        professional_tax = Decimal(getattr(result, "professional_tax", 0) or 0) if result else Decimal("0")
-        bonus = monthly_salary - employee_pf - employee_esi - professional_tax
+        bonus = monthly_salary - pf["employee"] - esi["employee"] - professional_tax(monthly_salary)
     return money(annual_cost + bonus)
 
 

@@ -1,8 +1,15 @@
 # Version History
 
-## V1.08
+## V1.09
 
 Current version.
+
+- Changed Yearly CTC statutory amounts to use full contracted wages rather than attendance-paid payroll values.
+- CTC PF now uses full contracted Basic, while CTC ESIC uses full contracted monthly salary; PF Admin/EDLI and the annual bonus use the corresponding full-salary statutory amounts.
+- Kept actual monthly payroll PF, ESIC, Professional Tax, deductions, and net salary attendance-based and unchanged.
+- Added regression coverage for the updated August CTC figures for Jayesh, Narendra, Sunil, and Bhavesh.
+
+## V1.08
 
 - Revised Yearly Cost to Company so monthly employer cost includes salary, employer PF, PF Admin/EDLI charges, and employer ESIC for all 12 months.
 - Revised the annual bonus to equal monthly salary less employee PF, employee ESIC, and Professional Tax; TDS is not deducted from the bonus.

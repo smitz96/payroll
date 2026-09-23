@@ -3688,18 +3688,22 @@ def test_yearly_ctc_counts_employer_cost_and_net_bonus(app):
     from attendance.reports import yearly_ctc
 
     with app.app_context():
-        salary = SalaryRecord(salary=Decimal("30000"))
-        employee = Employee(annual_ctc_bonus_enabled=True)
-        result = PayrollResult(
-            pf_employer=Decimal("1800"), pf_admin=Decimal("75"), pf_edli=Decimal("75"),
-            esi_employer=Decimal("975"), pf_employee=Decimal("1800"),
-            esi_employee=Decimal("150"), professional_tax=Decimal("200"),
+        salary = SalaryRecord(salary=Decimal("18000"))
+        employee = Employee(
+            basic_salary=Decimal("11700"), hra=Decimal("6300"),
+            pf_enabled=True, esic_enabled=True, annual_ctc_bonus_enabled=True,
         )
-        # (30,000 + 1,800 + 75 + 75 + 975) x 12
-        # + (30,000 - 1,800 - 150 - 200).
-        assert yearly_ctc(salary, employee, result) == Decimal("422950.00")
+        # These attendance-paid amounts are deliberately lower; CTC must ignore them.
+        result = PayrollResult(
+            pf_employer=Decimal("1165"), pf_admin=Decimal("49"), pf_edli=Decimal("49"),
+            esi_employer=Decimal("486"), pf_employee=Decimal("1165"),
+            esi_employee=Decimal("113"), professional_tax=Decimal("200"),
+        )
+        # (18,000 + 1,404 + 59 + 59 + 585) x 12
+        # + (18,000 - 1,404 - 135 - 200).
+        assert yearly_ctc(salary, employee, result) == Decimal("257545.00")
         employee.annual_ctc_bonus_enabled = False
-        assert yearly_ctc(salary, employee, result) == Decimal("395100.00")
+        assert yearly_ctc(salary, employee, result) == Decimal("241284.00")
 
 
 def test_yearly_ctc_matches_bijal_example(app):
@@ -3707,13 +3711,43 @@ def test_yearly_ctc_matches_bijal_example(app):
 
     with app.app_context():
         salary = SalaryRecord(salary=Decimal("22500"))
-        employee = Employee(annual_ctc_bonus_enabled=True)
+        employee = Employee(
+            basic_salary=Decimal("14625"), hra=Decimal("7875"),
+            pf_enabled=True, esic_enabled=True, annual_ctc_bonus_enabled=True,
+        )
         result = PayrollResult(
             pf_employer=Decimal("1755"), pf_admin=Decimal("146"), pf_edli=Decimal("0"),
             esi_employer=Decimal("0"), pf_employee=Decimal("1755"),
             esi_employee=Decimal("0"), professional_tax=Decimal("200"),
         )
         assert yearly_ctc(salary, employee, result) == Decimal("313357.00")
+
+
+def test_yearly_ctc_uses_full_contract_values_for_affected_august_employees(app):
+    from attendance.reports import yearly_ctc
+
+    cases = (
+        ("22300", "14495", "7805", True, "310557.00"),   # Jayesh
+        ("16000", "10400", "5600", True, "228896.00"),   # Narendra
+        ("18000", "11700", "6300", True, "257545.00"),   # Sunil
+        ("15000", "9750", "5250", False, "201072.00"),    # Bhavesh
+    )
+    with app.app_context():
+        for salary_amount, basic, hra, bonus_enabled, expected in cases:
+            salary = SalaryRecord(salary=Decimal(salary_amount))
+            employee = Employee(
+                basic_salary=Decimal(basic), hra=Decimal(hra),
+                pf_enabled=True, esic_enabled=True,
+                annual_ctc_bonus_enabled=bonus_enabled,
+            )
+            # A finalized month's attendance-paid values must not affect CTC.
+            attendance_result = PayrollResult(
+                pf_employee=Decimal("1"), pf_employer=Decimal("1"),
+                pf_admin=Decimal("1"), pf_edli=Decimal("1"),
+                esi_employee=Decimal("1"), esi_employer=Decimal("1"),
+                professional_tax=Decimal("0"),
+            )
+            assert yearly_ctc(salary, employee, attendance_result) == Decimal(expected)
 
 
 def test_salary_slip_adds_attendance_totals_and_stays_on_one_a4_page(app):
