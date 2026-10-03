@@ -52,6 +52,8 @@
   <div class="metric"><span>Leave carried forward</span><strong>{{ result.closing_leave }}</strong><small>Redeemable as leave: {{ redeemable_closing_leave }}</small></div>
   <div class="metric"><span>Leave encashment</span><strong>{{ result.leave_encashment_days or 0 }} day(s)</strong><small>{{ result.leave_encashment_amount|money }}</small></div>
   {% endif %}
+  <div class="metric"><span>Late in minutes</span><strong>{{ result.late_in_minutes or 0 }}</strong></div>
+  <div class="metric"><span>Early out minutes</span><strong>{{ result.early_out_minutes or 0 }}</strong></div>
   <div class="metric"><span>Less-hours minutes</span><strong>{{ result.less_hours_minutes }}</strong></div>
   <div class="metric"><span>OT payable minutes</span><strong>{{ result.payable_ot_minutes }}</strong></div>
   {% if has_loan %}
@@ -207,7 +209,7 @@
       <span class="calendar-date">{{ cell.day }}<small class="calendar-weekday">{{ cell.date.strftime("%a") }}</small></span>
       <span class="status-badge status-{{ row.status_tone }}">{{ row.display_status }}</span>
       {% if row.is_shortage %}
-      <span class="status-badge status-shortage">Less hours{% if row.shortage_minutes %}: {{ row.shortage_minutes }}m{% endif %}</span>
+      <span class="status-badge status-shortage" title="Late in {{ row.late_in_minutes }}m, early out {{ row.early_out_minutes }}m">Less hours{% if row.shortage_minutes %}: {{ row.shortage_minutes }}m{% endif %}</span>
       {% endif %}
       {% for session in row.sessions %}
       <span class="calendar-punch">{{ session }}</span>
@@ -242,9 +244,9 @@
 <h2 class="section-title">Calculation detail</h2>
 <div class="table-responsive">
 <table class="table table-sm smart-table">
-  <thead><tr><th>Date</th><th>Actual</th><th>Rounded</th><th>Status</th><th>Paid Day</th><th>Shortage</th>{% if is_daily_wage %}<th>Attendance bonus</th>{% endif %}<th>Raw OT</th><th>Payable OT</th><th>Explanation</th></tr></thead>
+  <thead><tr><th>Date</th><th>Actual</th><th>Rounded</th><th>Status</th><th>Paid Day</th><th>Late In</th><th>Early Out</th><th>Shortage</th>{% if is_daily_wage %}<th>Attendance bonus</th>{% endif %}<th>Raw OT</th><th>Payable OT</th><th>Explanation</th></tr></thead>
   <tbody>{% for row in result.detail_json %}
-  <tr><td>{{ row.date }}</td><td>{{ row.actual_duration }}</td><td>{{ row.rounded_duration }}</td><td>{{ row.attendance_status }}</td><td>{{ row.paid_day_value }}</td><td>{{ row.shortage_minutes }}</td>{% if is_daily_wage %}<td>{{ row.bonus_absence_minutes or 0 }}</td>{% endif %}<td>{{ row.raw_ot }}</td><td>{{ row.payable_ot }}</td><td>{% if row.attendance_status not in ["Full Day Present", "Half Day Present", "Week Off", "Holiday", "Week Off Worked"] or row.shortage_minutes|int > 0 %}{{ row.explanation }}{% endif %}</td></tr>
+  <tr><td>{{ row.date }}</td><td>{{ row.actual_duration }}</td><td>{{ row.rounded_duration }}</td><td>{{ row.attendance_status }}</td><td>{{ row.paid_day_value }}</td><td>{{ row.late_in_minutes or 0 }}</td><td>{{ row.early_out_minutes or 0 }}</td><td>{{ row.shortage_minutes }}</td>{% if is_daily_wage %}<td>{{ row.bonus_absence_minutes or 0 }}</td>{% endif %}<td>{{ row.raw_ot }}</td><td>{{ row.payable_ot }}</td><td>{% if row.attendance_status not in ["Full Day Present", "Half Day Present", "Week Off", "Holiday", "Week Off Worked"] or row.shortage_minutes|int > 0 %}{{ row.explanation }}{% endif %}</td></tr>
   {% endfor %}</tbody>
 </table>
 </div>

@@ -19,7 +19,7 @@ from attendance.loans import active_loans_for_employee, employee_has_loan, loan_
 from attendance.master import employee_active_for_payroll_month, employees_left_out_of_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv, import_employee_attendance
-from attendance.payroll_rules import calculate_monthly_shortage, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave, salary_days_for_month
+from attendance.payroll_rules import calculate_less_hours, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave, salary_days_for_month
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
 from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
 from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
@@ -198,25 +198,27 @@ def employee_attendance_rows(records, result=None, salary=None, overrides=None):
         if detail:
             raw_status = detail.get("attendance_status")
             explanation = detail.get("explanation") or ""
+            late_in = int(detail.get("late_in_minutes") or 0)
+            early_out = int(detail.get("early_out_minutes") or 0)
             shortage_minutes = int(detail.get("shortage_minutes") or 0)
         elif salary and salary.normalized_salary_type == "MONTHLY":
             classified = classify_monthly_attendance(record, holidays, overrides.get(record.date), record.employee_id)
             raw_status = classified["status"]
             explanation = classified["explanation"]
-            shortage_minutes = calculate_monthly_shortage(record.actual_minutes)
+            late_in, early_out, shortage_minutes = calculate_less_hours(record)
         elif salary and salary.normalized_salary_type == "DAILY":
             classified = classify_daily_attendance(record, holidays, overrides.get(record.date), record.employee_id)
             raw_status = classified["status"]
             explanation = classified["explanation"]
-            shortage_minutes = calculate_monthly_shortage(record.actual_minutes)
+            late_in, early_out, shortage_minutes = calculate_less_hours(record)
         elif salary and salary.normalized_salary_type not in {"MONTHLY", "DAILY"}:
             raw_status = "Payroll Rules Not Configured"
             explanation = "Salary type rules not configured."
-            shortage_minutes = 0
+            late_in = early_out = shortage_minutes = 0
         else:
             raw_status = "Pending Calculation" if record.parse_status == "OK" else "Needs Review"
             explanation = record.warning or ""
-            shortage_minutes = 0
+            late_in = early_out = shortage_minutes = 0
         error = is_attendance_error(record, raw_status)
         display_status = attendance_display_status(raw_status)
         is_shortage = raw_status == "Full Day Present" and shortage_minutes > 0
@@ -229,6 +231,8 @@ def employee_attendance_rows(records, result=None, salary=None, overrides=None):
             "sessions": punch_sessions(record.punches_json, record.first_punch or "", record.last_punch or ""),
             "is_error": error,
             "is_shortage": is_shortage,
+            "late_in_minutes": late_in,
+            "early_out_minutes": early_out,
             "shortage_minutes": shortage_minutes,
             "status_tone": attendance_status_tone(display_status, error, is_shortage),
             "sort_key": (0 if error else 1, record.date),

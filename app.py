@@ -137,6 +137,10 @@ def ensure_schema_columns():
             ("esi_employer", "NUMERIC(12, 2) DEFAULT 0"),
             ("professional_tax", "NUMERIC(12, 2) DEFAULT 0"),
             ("tds", "NUMERIC(12, 2) DEFAULT 0"),
+            # Less hours split into late check-in and early check-out. Months calculated
+            # before the split keep 0 in both; their total stays in less_hours_minutes.
+            ("late_in_minutes", "INTEGER DEFAULT 0"),
+            ("early_out_minutes", "INTEGER DEFAULT 0"),
         ):
             if column not in payroll_columns:
                 db.session.execute(db.text(f"ALTER TABLE payroll_result ADD COLUMN {column} {definition}"))

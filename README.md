@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.09
+Current version: V1.10
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -74,14 +74,15 @@ Wage type is normalized with `strip().upper()`. `MONTHLY` and `DAILY` resolve to
 
 ## Monthly Rules
 
-- Full day: 9 hours / 540 minutes.
-- Grace: no short-hours deduction at or above 8h50m / 530 minutes.
-- Short-hours rule: applies only from 6h00m to below 8h50m.
-- Short-hours rounding: the shortfall is rounded **up** to the next 15 minutes. 48 minutes short is charged as 60.
-- Half day: 3h00m through below 6h00m.
+- Full day: 6h00m or more worked. Half day: 3h00m through below 6h00m.
+- Shift: 9:30 AM to 6:30 PM. Less hours on a full day is the sum of two parts, each rounded **up** to the next 15 minutes on its own:
+  - **Late in**: checking in up to 9:40 AM is free (10-minute grace). After that the time from 9:30 is charged: 9:41 is 15 minutes, 9:50 is 30.
+  - **Early out**: checking out before 6:30 PM is charged, with no grace: 6:29 PM is 15 minutes, 6:00-6:14 PM is 30.
+  - Example: in 9:50 AM, out 6:10 PM = 30 late + 30 early = 60 minutes less hours.
+- A day with working hours but no readable punch times falls back to the shortfall against 9 hours, with no deduction at or above 8h50m.
 - Less than 3h00m: the day earns no pay of its own. Available leave covers it; with no leave it is a full-day LOP.
-- OT threshold: only at or after 9h30m / 570 minutes.
-- OT rounding: the excess is floored to complete 15-minute blocks, the opposite of short hours and deliberately so.
+- OT on a full day: counted from 6:30 PM, only once checkout is 7:00 PM or later, floored to complete 15-minute blocks. 7:40 PM is paid as 1 hour. Arriving early earns no OT, and a late check-in does not cancel OT: in 9:50 AM and out 7:40 PM is 30 minutes less hours and 1 hour OT.
+- OT on a week off or holiday worked: total work at or after 9h30m, the excess over 9 hours floored to 15-minute blocks.
 - OT rate: the ordinary hourly rate. `Overtime multiplier` in Settings pays a premium if it is set above 1.
 - Sunday: default week off, configurable per employee, and awaiting confirmation until someone confirms it.
 - A day is worth the month's salary divided by **the days in that month**, so February pays more per day than July. `Salary days per month` in Settings overrides this with a fixed figure if set to anything other than 0.
@@ -106,7 +107,7 @@ Every value above lives in `attendance/settings.py` and is shown, with its effec
 - Present days are paid at the daily rate; holidays are paid, week offs are not.
 - Working a week off counts as a normal paid working day.
 - No leave balance, leave earned, or leave encashment.
-- Short-hours and overtime use the same thresholds as Monthly, against the daily rate.
+- Less hours (late in + early out) and overtime use the same shift times as Monthly, against the daily rate. Less hours is also charged on a week off worked.
 
 ## Working Days With No Punches
 

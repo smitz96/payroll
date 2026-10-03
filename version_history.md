@@ -1,8 +1,16 @@
 # Version History
 
-## V1.09
+## V1.10
 
 Current version.
+
+- Split less hours into Late In and Early Out, measured against a 9:30 AM to 6:30 PM shift. Check-in has a 10-minute grace (9:40 AM); after it, late time is charged from 9:30. Checkout before 6:30 PM is charged with no grace. Each part is rounded up to 15 minutes and the two are added for the total less hours.
+- The 8h50m full-day grace no longer waives less hours. It still decides the daily wage attendance bonus, and less hours for a day that has working hours but no punch times.
+- Overtime on a full day is now counted from 6:30 PM checkout, once checkout is 7:00 PM or later, floored to 15 minutes. Week offs and holidays worked keep overtime on total working hours.
+- Added Late In and Early Out to the Less Hours report (PDF and CSV) and to the employee payroll detail page.
+- New shift settings are listed on the Settings page.
+
+## V1.09
 
 - Changed Yearly CTC statutory amounts to use full contracted wages rather than attendance-paid payroll values.
 - CTC PF now uses full contracted Basic, while CTC ESIC uses full contracted monthly salary; PF Admin/EDLI and the annual bonus use the corresponding full-salary statutory amounts.

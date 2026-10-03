@@ -286,7 +286,7 @@ def overtime_report_csv(month):
 def less_hours_report_csv(month):
     out = StringIO()
     writer = csv.writer(out)
-    writer.writerow(["Employee ID", "Employee Name", "Date", "In Time", "Out Time", "Working Hours", "Less Hours Minutes", "Less Hours Deduction"])
+    writer.writerow(["Employee ID", "Employee Name", "Date", "In Time", "Out Time", "Working Hours", "Late In Minutes", "Early Out Minutes", "Less Hours Minutes", "Less Hours Deduction"])
     names = employee_name_map(month)
     for result in PayrollResult.query.filter_by(payroll_month=month).order_by(PayrollResult.employee_id):
         for item in result.detail_json or []:
@@ -301,6 +301,8 @@ def less_hours_report_csv(month):
                 item.get("first_punch", ""),
                 item.get("last_punch", ""),
                 item.get("rounded_duration") or item.get("actual_duration") or item.get("raw_working_hours", ""),
+                int(item.get("late_in_minutes") or 0),
+                int(item.get("early_out_minutes") or 0),
                 shortage,
                 deduction,
             ])
@@ -663,6 +665,8 @@ def build_less_hours_report_pdf(month):
                 item.get("first_punch", "") or "-",
                 item.get("last_punch", "") or "-",
                 item.get("rounded_duration") or item.get("actual_duration") or item.get("raw_working_hours", ""),
+                pdf_minutes(int(item.get("late_in_minutes") or 0)) if item.get("late_in_minutes") else "-",
+                pdf_minutes(int(item.get("early_out_minutes") or 0)) if item.get("early_out_minutes") else "-",
                 f"{pdf_minutes(shortage)} short",
                 pdf_money(deduction),
             ])
@@ -672,11 +676,11 @@ def build_less_hours_report_pdf(month):
             total_deduction += Decimal(result.less_hours_deduction or 0)
     return report_pdf(
         "Less Hours Report",
-        f"{display_month(month)} · Employee-wise short working hours",
-        ["ID", "Employee", "Date", "In Time", "Out Time", "Worked", "Short Time", "Deduction"],
+        f"{display_month(month)} · Employee-wise late check-in and early check-out",
+        ["ID", "Employee", "Date", "In Time", "Out Time", "Worked", "Late In", "Early Out", "Short Time", "Deduction"],
         rows,
-        col_widths=[14 * mm, 55 * mm, 24 * mm, 25 * mm, 25 * mm, 30 * mm, 39 * mm, 31 * mm],
-        font_size=7.2,
+        col_widths=[13 * mm, 47 * mm, 22 * mm, 22 * mm, 22 * mm, 24 * mm, 23 * mm, 23 * mm, 28 * mm, 26 * mm],
+        font_size=7.0,
         kpis=[
             ("Short days", len(rows)),
             ("Employees", len({row[0] for row in rows})),
@@ -684,7 +688,7 @@ def build_less_hours_report_pdf(month):
             ("Total deduction", pdf_money(total_deduction)),
         ],
         center_from=2,
-        accent_columns={6: RED_TEXT, 7: RED_TEXT},
+        accent_columns={8: RED_TEXT, 9: RED_TEXT},
     )
 
 

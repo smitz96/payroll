@@ -210,6 +210,10 @@ class PayrollResult(db.Model):
     closing_leave = db.Column(db.Numeric(8, 2), default=0)
     actual_working_minutes = db.Column(db.Integer, default=0)
     less_hours_minutes = db.Column(db.Integer, default=0)
+    # The two parts of less_hours_minutes: checking in after the grace and checking
+    # out before the shift ends. Each is rounded up on its own before being added.
+    late_in_minutes = db.Column(db.Integer, default=0)
+    early_out_minutes = db.Column(db.Integer, default=0)
     less_hours_deduction = db.Column(db.Numeric(12, 2), default=0)
     ot_minutes = db.Column(db.Integer, default=0)
     payable_ot_minutes = db.Column(db.Integer, default=0)

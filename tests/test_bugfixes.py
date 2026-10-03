@@ -2098,6 +2098,12 @@ def test_worked_on_site_is_offered_and_shown(client, app):
 
 # --- Daily wage attendance bonus (notice of 08/12/2023) ---
 
+def checkout_after_930(minutes):
+    """The checkout punch for someone who checked in at 09:30 and worked `minutes`."""
+    hours, mins = divmod(9 * 60 + 30 + minutes, 60)
+    return f"{(hours % 12) or 12:02d}:{mins:02d} {'AM' if hours < 12 else 'PM'}"
+
+
 def seed_daily_bonus_month(minutes_by_day, month="2026-07", rate="600"):
     """A daily wage employee with one attendance row per entry in minutes_by_day.
 
@@ -2119,7 +2125,7 @@ def seed_daily_bonus_month(minutes_by_day, month="2026-07", rate="600"):
             continue
         db.session.add(AttendanceRecord(payroll_month=month, employee_id="6", employee_name="Day Worker",
                                         date=when, day=when.strftime("%A"), first_punch="09:30 AM",
-                                        last_punch="06:30 PM", raw_working_hours=f"{minutes // 60}h {minutes % 60:02d}m",
+                                        last_punch=checkout_after_930(minutes), raw_working_hours=f"{minutes // 60}h {minutes % 60:02d}m",
                                         actual_minutes=minutes, parse_status="OK"))
     db.session.commit()
 
@@ -2142,12 +2148,17 @@ def test_full_attendance_earns_the_ten_percent_bonus(app):
 
 
 def test_days_inside_the_full_day_grace_carry_no_absence(app):
-    """8h55m is a full day with no short hours, so it is not absence either."""
+    """8h55m is inside the full-day grace, so it is not bonus absence.
+
+    Less hours is measured on the shift clock instead: in at 09:30 and out at
+    06:25 PM or 06:23 PM is 15 minutes early out each, grace or not.
+    """
     with app.app_context():
         result = daily_bonus_result({1: 535, 2: 533, 3: 540, 4: 545})
         assert result.absence_minutes == 0
         assert Decimal(result.paid_working_days) == Decimal("4")
-        assert Decimal(result.less_hours_minutes) == 0
+        assert result.early_out_minutes == 30 and result.late_in_minutes == 0
+        assert Decimal(result.less_hours_minutes) == 30
         assert Decimal(result.attendance_bonus_percent) == Decimal("10")
 
 
@@ -4016,6 +4027,7 @@ def offsite_before_and_after(day, minutes, status):
     record = AttendanceRecord.query.filter_by(employee_id="5", date=date(2026, 7, day)).one()
     record.actual_minutes = minutes
     record.raw_working_hours = f"{minutes // 60}h {minutes % 60:02d}m"
+    record.last_punch = checkout_after_930(minutes)
     db.session.commit()
 
     def calculate():
@@ -4053,6 +4065,27 @@ def test_offsite_day_attracts_no_short_hours_deduction(app):
         assert day["shortage_minutes"] == 0
         assert result.less_hours_minutes == 0
         assert Decimal(result.less_hours_deduction) == 0
+
+
+def test_monthly_less_hours_is_split_into_late_in_and_early_out(app):
+    with app.app_context():
+        seed_leave_month(opening=Decimal("0"))
+        add_july_attendance(set())
+        late = AttendanceRecord.query.filter_by(employee_id="5", date=date(2026, 7, 6)).one()
+        late.first_punch, late.last_punch = "09:50 AM", "06:30 PM"
+        late.punches_json, late.actual_minutes = [late.first_punch, late.last_punch], 520
+        early = AttendanceRecord.query.filter_by(employee_id="5", date=date(2026, 7, 7)).one()
+        early.first_punch, early.last_punch = "09:30 AM", "06:10 PM"
+        early.punches_json, early.actual_minutes = [early.first_punch, early.last_punch], 520
+        db.session.commit()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
+        days = {x["date"]: x for x in result.detail_json}
+        assert (days["2026-07-06"]["late_in_minutes"], days["2026-07-06"]["early_out_minutes"]) == (30, 0)
+        assert (days["2026-07-07"]["late_in_minutes"], days["2026-07-07"]["early_out_minutes"]) == (0, 30)
+        assert result.late_in_minutes == 30 and result.early_out_minutes == 30
+        assert result.less_hours_minutes == 60
+        assert Decimal(result.less_hours_deduction) > 0
 
 
 def test_daily_wage_offsite_day_is_also_exempt(app):

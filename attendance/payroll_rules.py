@@ -1,6 +1,6 @@
 import calendar
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, ROUND_DOWN
 
 from attendance import db
@@ -66,6 +66,8 @@ class MonthlyPayrollRule(PayrollRule):
         lop_days = Decimal("0")
         actual_total = 0
         less_minutes = 0
+        late_in_total = 0
+        early_out_total = 0
         less_deduction = Decimal("0")
         ot_minutes = 0
         payable_ot = 0
@@ -187,15 +189,17 @@ class MonthlyPayrollRule(PayrollRule):
                 needs_review.append(f"{rec.date}: {row['status']}")
 
             off_site = worked_elsewhere(row)
-            shortage = 0 if (less_hours_ignored or off_site) else calculate_monthly_shortage(actual)
+            late_in, early_out, shortage = (0, 0, 0) if (less_hours_ignored or off_site) else calculate_less_hours(rec)
             shortage_amount = Decimal("0")
             rounded = row["rounded_minutes"]
             if shortage and row["status"] == "Full Day Present":
                 shortage_amount = quarter_rate * Decimal(shortage // CFG["ROUNDING_INTERVAL_MINUTES"])
                 less_minutes += shortage
+                late_in_total += late_in
+                early_out_total += early_out
                 less_deduction += shortage_amount
             raw_ot, rounded_ot, ot_value = (
-                (0, 0, Decimal("0")) if off_site else calculate_monthly_overtime(actual, quarter_rate)
+                (0, 0, Decimal("0")) if off_site else calculate_day_overtime(rec, row["status"], quarter_rate)
             )
             ot_minutes += raw_ot
             if ot_ignored:
@@ -216,6 +220,8 @@ class MonthlyPayrollRule(PayrollRule):
                 "rounded_duration": minutes_to_duration(rounded),
                 "attendance_status": row["status"],
                 "paid_day_value": str(row["paid_day"]),
+                "late_in_minutes": late_in,
+                "early_out_minutes": early_out,
                 "shortage_minutes": shortage,
                 "shortage_deduction": str(money(shortage_amount)),
                 "raw_ot": raw_ot,
@@ -309,6 +315,8 @@ class MonthlyPayrollRule(PayrollRule):
             closing_leave=closing_leave,
             actual_working_minutes=actual_total,
             less_hours_minutes=less_minutes,
+            late_in_minutes=late_in_total,
+            early_out_minutes=early_out_total,
             less_hours_deduction=money(less_deduction),
             ot_minutes=ot_minutes,
             payable_ot_minutes=payable_ot,
@@ -353,6 +361,8 @@ class DailyPayrollRule(PayrollRule):
         holiday_count = 0
         actual_total = 0
         less_minutes = 0
+        late_in_total = 0
+        early_out_total = 0
         less_deduction = Decimal("0")
         ot_minutes = 0
         payable_ot = 0
@@ -388,15 +398,17 @@ class DailyPayrollRule(PayrollRule):
                 needs_review.append(f"{rec.date}: {row['status']}")
 
             off_site = worked_elsewhere(row)
-            shortage = 0 if (less_hours_ignored or off_site) else calculate_monthly_shortage(actual)
+            late_in, early_out, shortage = (0, 0, 0) if (less_hours_ignored or off_site) else calculate_less_hours(rec)
             shortage_amount = Decimal("0")
             rounded = row["rounded_minutes"]
             if shortage and row["status"] in {"Full Day Present", "Week Off Worked"}:
                 shortage_amount = quarter_rate * Decimal(shortage // CFG["ROUNDING_INTERVAL_MINUTES"])
                 less_minutes += shortage
+                late_in_total += late_in
+                early_out_total += early_out
                 less_deduction += shortage_amount
             raw_ot, rounded_ot, ot_value = (
-                (0, 0, Decimal("0")) if off_site else calculate_monthly_overtime(actual, quarter_rate)
+                (0, 0, Decimal("0")) if off_site else calculate_day_overtime(rec, row["status"], quarter_rate)
             )
             ot_minutes += raw_ot
             if ot_ignored:
@@ -417,6 +429,8 @@ class DailyPayrollRule(PayrollRule):
                 "rounded_duration": minutes_to_duration(rounded),
                 "attendance_status": row["status"],
                 "paid_day_value": str(row["paid_day"]),
+                "late_in_minutes": late_in,
+                "early_out_minutes": early_out,
                 "shortage_minutes": shortage,
                 "shortage_deduction": str(money(shortage_amount)),
                 "raw_ot": raw_ot,
@@ -471,6 +485,8 @@ class DailyPayrollRule(PayrollRule):
             closing_leave=Decimal("0"),
             actual_working_minutes=actual_total,
             less_hours_minutes=less_minutes,
+            late_in_minutes=late_in_total,
+            early_out_minutes=early_out_total,
             less_hours_deduction=money(less_deduction),
             ot_minutes=ot_minutes,
             payable_ot_minutes=payable_ot,
@@ -528,10 +544,10 @@ def classify_monthly_attendance(record, holidays=None, override=None, employee_i
     if actual is None:
         return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "No working duration was imported."}
     if actual >= CFG["FULL_DAY_REQUIRED_MINUTES"]:
-        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Actual duration meets 8h50m grace threshold."}
+        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Full day; late check-in and early check-out are charged as less hours."}
     if actual >= CFG["LESS_HOURS_RULE_MINIMUM_MINUTES"]:
         rounded = floor_to_interval(actual, CFG["ROUNDING_INTERVAL_MINUTES"])
-        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": rounded, "explanation": "Short-hours rule applies with 15-minute floor."}
+        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": rounded, "explanation": "Full day; late check-in and early check-out are charged as less hours."}
     if actual >= CFG["HALF_DAY_MINIMUM_MINUTES"]:
         return {"status": "Half Day Present", "paid_day": Decimal("0.5"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Under 6 hours, valid half-day duration."}
     if has_split_punches(record):
@@ -573,10 +589,10 @@ def classify_daily_attendance(record, holidays=None, override=None, employee_id=
     if actual is None:
         return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": 0, "explanation": "No working duration was imported."}
     if actual >= CFG["FULL_DAY_REQUIRED_MINUTES"]:
-        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Daily full-day working duration."}
+        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Daily wage full day; late check-in and early check-out are charged as less hours."}
     if actual >= CFG["LESS_HOURS_RULE_MINIMUM_MINUTES"]:
         rounded = floor_to_interval(actual, CFG["ROUNDING_INTERVAL_MINUTES"])
-        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": rounded, "explanation": "Daily wage short-hours rule applies with 15-minute floor."}
+        return {"status": "Full Day Present", "paid_day": Decimal("1"), "leave_used": Decimal("0"), "rounded_minutes": rounded, "explanation": "Daily wage full day; late check-in and early check-out are charged as less hours."}
     if actual >= CFG["HALF_DAY_MINIMUM_MINUTES"]:
         return {"status": "Half Day Present", "paid_day": Decimal("0.5"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": "Daily half-day working duration."}
     if has_split_punches(record):
@@ -927,6 +943,96 @@ def calculate_monthly_overtime(actual_minutes, quarter_rate=Decimal("0"), multip
     rounded_ot = max(0, rounded_work - CFG["FULL_DAY_MINUTES"])
     amount = quarter_rate * Decimal(rounded_ot // CFG["ROUNDING_INTERVAL_MINUTES"]) * Decimal(multiplier)
     return raw, rounded_ot, amount
+
+
+PUNCH_CLOCK_FORMATS = ("%I:%M %p", "%I:%M:%S %p", "%H:%M", "%H:%M:%S")
+
+
+def punch_clock_minutes(value):
+    """Minutes after midnight for a punch such as "09:41 AM" or "18:29", else None."""
+    text = str(value or "").strip().upper()
+    if not text or text == "-":
+        return None
+    for punch_format in PUNCH_CLOCK_FORMATS:
+        try:
+            parsed = datetime.strptime(text, punch_format)
+        except ValueError:
+            continue
+        return parsed.hour * 60 + parsed.minute
+    return None
+
+
+def check_in_out_minutes(record):
+    """First and last punch as minutes after midnight, or (None, None).
+
+    A checkout earlier on the clock than the check-in rolled past midnight, so it is
+    moved into the next day rather than read as leaving before arriving.
+    """
+    punches = list(getattr(record, "punches_json", None) or [])
+    first = punch_clock_minutes(record.first_punch or (punches[0] if punches else ""))
+    last = punch_clock_minutes(record.last_punch or (punches[-1] if punches else ""))
+    if first is None or last is None:
+        return None, None
+    if last < first:
+        last += 24 * 60
+    return first, last
+
+
+def calculate_less_hours(record):
+    """Less hours for a day as (late check-in, early check-out, total) minutes.
+
+    Late check-in is charged only after the grace, and then from the shift start:
+    9:40 is free, 9:41 is charged 15 minutes and 9:50 is charged 30. Early check-out
+    is charged from the shift end: 6:29 PM is 15 minutes, 6:00 PM is 30. Each part is
+    rounded up on its own and the total is their sum. Days under the short-hours floor
+    are half days or unpaid and carry none. A day with working hours but no readable
+    punch times cannot be placed on the clock, so it falls back to the shortfall
+    against a full working day.
+    """
+    actual = record.actual_minutes
+    if actual is None or actual < CFG["LESS_HOURS_RULE_MINIMUM_MINUTES"]:
+        return 0, 0, 0
+    first, last = check_in_out_minutes(record)
+    if first is None:
+        return 0, 0, calculate_monthly_shortage(actual)
+    interval = CFG["ROUNDING_INTERVAL_MINUTES"]
+    late_in = 0
+    if first > CFG["SHIFT_START_TIME"] + CFG["LATE_IN_GRACE_MINUTES"]:
+        late_in = ceil_to_interval(first - CFG["SHIFT_START_TIME"], interval)
+    early_out = 0
+    if last < CFG["SHIFT_END_TIME"]:
+        early_out = ceil_to_interval(CFG["SHIFT_END_TIME"] - last, interval)
+    return late_in, early_out, late_in + early_out
+
+
+def calculate_shift_overtime(record, quarter_rate=Decimal("0"), multiplier=None):
+    """Raw, payable and paid overtime on a full working day, counted from shift end.
+
+    Paid only once checkout is OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES past the shift
+    end, then floored to the rounding interval: 7:40 PM is paid as 1 hour. Arriving
+    early earns nothing. A day without readable punch times falls back to overtime
+    on total working time.
+    """
+    _first, last = check_in_out_minutes(record)
+    if last is None:
+        return calculate_monthly_overtime(record.actual_minutes, quarter_rate, multiplier)
+    if multiplier is None:
+        multiplier = CFG["OVERTIME_MULTIPLIER"]
+    raw = last - CFG["SHIFT_END_TIME"]
+    if raw < CFG["OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES"]:
+        return 0, 0, Decimal("0")
+    rounded_ot = floor_to_interval(raw, CFG["ROUNDING_INTERVAL_MINUTES"])
+    amount = quarter_rate * Decimal(rounded_ot // CFG["ROUNDING_INTERVAL_MINUTES"]) * Decimal(multiplier)
+    return raw, rounded_ot, amount
+
+
+def calculate_day_overtime(record, status, quarter_rate=Decimal("0")):
+    """Overtime for one day: from the shift end on a full working day, otherwise
+    (week off or holiday worked) on total working time."""
+    actual = record.actual_minutes
+    if status == "Full Day Present" and actual is not None and actual >= CFG["LESS_HOURS_RULE_MINIMUM_MINUTES"]:
+        return calculate_shift_overtime(record, quarter_rate)
+    return calculate_monthly_overtime(actual, quarter_rate)
 
 
 def days_in_payroll_month(payroll_month):
