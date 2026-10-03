@@ -29,7 +29,7 @@ from attendance.reports import (
     overtime_report_csv,
     payroll_summary_csv,
 )
-from attendance.utils import display_month, is_valid_payroll_month
+from attendance.utils import money_text, display_month, is_valid_payroll_month
 from attendance.wage_groups import GROUP_LABELS, MONTHLY, is_group_finalized
 
 bp = Blueprint("reports", __name__, url_prefix="/reports")
@@ -44,7 +44,7 @@ def validate_month_value(endpoint, values):
 
 
 def money(value):
-    return f"{Decimal(value or 0):,.2f}"
+    return money_text(value)
 
 
 def scoped_salaries(month):

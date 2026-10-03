@@ -2,47 +2,72 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1 class="page-title">Week Offs</h1>
-    <p class="text-muted mb-0">Which weekdays are off, and the shift worked on each, per employee. Recalculate the payroll month after saving.</p>
+    <h1 class="page-title">Week Offs &amp; Shifts</h1>
+    <p class="text-muted mb-0">Which weekdays are off, and the shift worked on each, per employee.</p>
   </div>
 </div>
 
-<form method="post" action="{{ url_for('weekoffs.save_shifts') }}" class="tool-panel shift-panel mb-4" id="shiftForm">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <h2 class="section-title mt-0">Shifts</h2>
-  <p class="text-muted">Late check-in is charged after a 10-minute grace from the shift start, and early check-out from the shift end with no grace. A full day needs 2/3 of the shift and a half day 1/3. Weekdays without a shift of their own work the default shift.</p>
-  <div class="table-responsive">
-    <table class="table table-sm smart-table shift-table">
-      <thead><tr><th>Name</th><th>Start</th><th>End</th><th>Length</th><th>Full day from</th><th>Half day from</th><th>Assigned to</th><th></th></tr></thead>
-      <tbody>
-        {% for row in shift_rows %}
-        <tr>
-          <td><input class="form-control form-control-sm" name="shift_{{ row.shift.id }}_name" value="{{ row.shift.name }}" maxlength="80" required aria-label="Shift name"></td>
-          <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_start" value="{{ row.start }}" required aria-label="{{ row.shift.name }} start time"></td>
-          <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_end" value="{{ row.end }}" required aria-label="{{ row.shift.name }} end time"></td>
-          <td>{{ row.length }}</td>
-          <td>{{ row.full_day }}</td>
-          <td>{{ row.half_day }}</td>
-          <td>{% if row.used_by is none %}<span class="status-badge status-other">Default</span>{% else %}{{ row.used_by }} employee(s){% endif %}</td>
-          <td>
-            {% if row.used_by is not none %}
-            {# Submits its own form below, so Enter in a field above saves rather than deletes. #}
-            <button class="btn btn-sm btn-outline-danger" form="deleteShift{{ row.shift.id }}" {% if row.used_by %}disabled title="Move its employees to another shift first"{% endif %} onclick='return confirm({{ ("Delete " ~ row.shift.name ~ "?")|tojson }});'>Delete</button>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-        <tr class="shift-new-row">
-          <td><input class="form-control form-control-sm" name="new_name" placeholder="New shift name" maxlength="80" aria-label="New shift name"></td>
-          <td><input class="form-control form-control-sm" type="time" name="new_start" aria-label="New shift start time"></td>
-          <td><input class="form-control form-control-sm" type="time" name="new_end" aria-label="New shift end time"></td>
-          <td colspan="5" class="text-muted">Fill in to add a shift. Day shifts only: the end must be later the same day.</td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-  <div class="d-flex justify-content-end"><button class="btn btn-primary">Save shifts</button></div>
-</form>
+{% if stale_months %}
+{# Week offs and shifts only reach payroll on recalculation, which used to rest on
+   the user remembering to go and do it. #}
+<div class="alert alert-warning recalc-banner">
+  <span><strong>Recalculate to apply these changes.</strong>
+  {% for month, label in stale_months %}{{ label }}{% if not loop.last %}, {% endif %}{% endfor %}
+  {{ 'was' if stale_months|length == 1 else 'were' }} calculated before the latest week off or shift change.</span>
+  <span class="recalc-banner-links">
+    {% for month, label in stale_months %}
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('payroll.month', month=month) }}">Open {{ label }}</a>
+    {% endfor %}
+  </span>
+</div>
+{% endif %}
+
+{# Shifts are set up once and then rarely touched, so the panel stays folded and the
+   grid people use every month comes first. #}
+<details class="tool-panel shift-panel mb-4" {% if open_shift_panel %}open{% endif %}>
+  <summary class="shift-panel-summary">
+    <span class="section-title mt-0 mb-0">Shifts</span>
+    <span class="shift-summary-list">
+      {% for shift in shifts %}<span class="shift-chip{{ ' is-default' if shift.id == default_shift_id }}">{{ shift.name }} · {{ shift.hours_label }}</span>{% endfor %}
+    </span>
+    <span class="shift-panel-toggle">Manage shifts</span>
+  </summary>
+  <form method="post" action="{{ url_for('weekoffs.save_shifts') }}" id="shiftForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <p class="text-muted mt-3">Late check-in is charged after a 10-minute grace from the shift start, and early check-out from the shift end with no grace. A full day needs 2/3 of the shift and a half day 1/3. Weekdays without a shift of their own work the default shift. Changes apply to open months when they are recalculated.</p>
+    <div class="table-responsive">
+      <table class="table table-sm smart-table shift-table">
+        <thead><tr><th>Name</th><th>Start</th><th>End</th><th>Length</th><th>Full day from</th><th>Half day from</th><th>Assigned to</th><th></th></tr></thead>
+        <tbody>
+          {% for row in shift_rows %}
+          <tr>
+            <td><input class="form-control form-control-sm" name="shift_{{ row.shift.id }}_name" value="{{ row.shift.name }}" maxlength="80" required aria-label="Shift name"></td>
+            <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_start" value="{{ row.start }}" required aria-label="{{ row.shift.name }} start time"></td>
+            <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_end" value="{{ row.end }}" required aria-label="{{ row.shift.name }} end time"></td>
+            <td>{{ row.length }}</td>
+            <td>{{ row.full_day }}</td>
+            <td>{{ row.half_day }}</td>
+            <td>{% if row.used_by is none %}<span class="status-badge status-other">Default</span>{% else %}{{ row.used_by }} employee(s){% endif %}</td>
+            <td>
+              {% if row.used_by is not none %}
+              {# Submits its own form below, so Enter in a field above saves rather than deletes. #}
+              <button class="btn btn-sm btn-outline-danger" form="deleteShift{{ row.shift.id }}" {% if row.used_by %}disabled title="Move its employees to another shift first"{% endif %} onclick='return confirm({{ ("Delete " ~ row.shift.name ~ "?")|tojson }});'>Delete</button>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          <tr class="shift-new-row">
+            <td><input class="form-control form-control-sm" name="new_name" placeholder="New shift name" maxlength="80" aria-label="New shift name"></td>
+            <td><input class="form-control form-control-sm" type="time" name="new_start" aria-label="New shift start time"></td>
+            <td><input class="form-control form-control-sm" type="time" name="new_end" aria-label="New shift end time"></td>
+            <td colspan="5" class="text-muted">Fill in to add a shift. Day shifts only: the end must be later the same day.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="d-flex justify-content-end"><button class="btn btn-primary">Save shifts</button></div>
+  </form>
+</details>
 {% for row in shift_rows if row.used_by is not none %}
 <form method="post" action="{{ url_for('weekoffs.delete_shift', shift_id=row.shift.id) }}" id="deleteShift{{ row.shift.id }}" hidden>
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -57,13 +82,40 @@
      is the difference between finding someone and hunting for them. #}
   <div class="table-filter-bar">
     <input class="form-control" id="weekoffSearch" type="search" placeholder="Search by name or employee ID" autocomplete="off" aria-label="Search employees">
+    {% if shifts|length > 1 %}
+    <select class="form-select weekoff-shift-filter" id="weekoffShiftFilter" aria-label="Show employees on a shift">
+      <option value="">All shifts</option>
+      {% for shift in shifts %}<option value="{{ shift.id }}">On {{ shift.name }}</option>{% endfor %}
+    </select>
+    {% endif %}
     <span class="table-filter-count" id="weekoffCount">{{ rows|length }} employee(s)</span>
   </div>
+  {% if shifts|length > 1 %}
+  {# Setting a shift one dropdown at a time is 7 clicks per employee. This fills the
+     dropdowns for the ticked rows; nothing is stored until the page is saved. #}
+  <div class="bulk-shift-bar" id="bulkShiftBar">
+    <span class="bulk-shift-label"><strong id="bulkSelectedCount">0</strong> selected</span>
+    <label class="bulk-shift-field">Set
+      <select class="form-select form-select-sm" id="bulkShift" aria-label="Shift to apply">
+        {% for shift in shifts %}<option value="{{ shift.id }}">{{ shift.name }} ({{ shift.hours_label }})</option>{% endfor %}
+      </select>
+    </label>
+    <span class="bulk-shift-field">on
+      <span class="bulk-day-list">
+        {% for field, label in weekdays %}
+        <label class="bulk-day"><input type="checkbox" value="{{ field }}" data-bulk-day {% if field != 'sunday' %}checked{% endif %}><span>{{ label[:3] }}</span></label>
+        {% endfor %}
+      </span>
+    </span>
+    <button class="btn btn-sm btn-outline-primary" type="button" id="bulkApply" disabled>Apply to selected</button>
+  </div>
+  {% endif %}
   <div class="table-responsive weekoff-table-wrap">
-    <table class="table table-sm smart-table weekoff-table sticky-id-name-table" style="--sticky-id-width: 120px; --sticky-name-width: 230px;">
+    <table class="table table-sm smart-table weekoff-table sticky-id-name-table" style="--sticky-id-width: {{ 150 if shifts|length > 1 else 120 }}px; --sticky-name-width: 230px;">
       <thead>
         <tr>
           <th>
+            {% if shifts|length > 1 %}<input class="form-check-input weekoff-row-check" type="checkbox" id="weekoffSelectAll" aria-label="Select all shown employees">{% endif %}
             <a class="sort-link" href="{{ url_for('weekoffs.index', sort='id', order='desc' if sort == 'id' and order == 'asc' else 'asc') }}">Employee ID{% if sort == 'id' %}<span class="sort-arrow" aria-label="{{ 'Ascending' if order == 'asc' else 'Descending' }}">{{ '↑' if order == 'asc' else '↓' }}</span>{% endif %}</a>
           </th>
           <th>
@@ -76,10 +128,10 @@
       </thead>
       <tbody>
         {% for row in rows %}
-        <tr>
+        <tr data-weekoff-row>
           {# Marks this employee as carried by the form. A row that is not submitted
              is left alone rather than being read as "works every day". #}
-          <td><input type="hidden" name="{{ row.employee.id }}_present" value="1">{{ row.employee.id }}</td>
+          <td>{% if shifts|length > 1 %}<input class="form-check-input weekoff-row-check" type="checkbox" data-row-select aria-label="Select {{ row.employee.name }}">{% endif %}<input type="hidden" name="{{ row.employee.id }}_present" value="1">{{ row.employee.id }}</td>
           <td>{{ row.employee.name }}</td>
           {% for field, label in weekdays %}
           <td>
@@ -104,7 +156,7 @@
                 {% endfor %}
               </div>
             </div>
-            <select class="form-select form-select-sm weekoff-shift-select" name="{{ row.employee.id }}_{{ field }}_shift" aria-label="{{ row.employee.name }} {{ label }} shift">
+            <select class="form-select form-select-sm weekoff-shift-select" name="{{ row.employee.id }}_{{ field }}_shift" data-shift-select data-day="{{ field }}" aria-label="{{ row.employee.name }} {{ label }} shift">
               {% for shift in shifts %}
               <option value="{{ shift.id }}" title="{{ shift.hours_label }}" {% if shift.id == row.shift_ids[field] %}selected{% endif %}>{{ shift.name }}</option>
               {% endfor %}
@@ -118,30 +170,122 @@
   </div>
 </div>
 <div class="sticky-actions">
-  <span class="sticky-actions-hint">Every employee on this page is saved together.</span>
+  <span class="sticky-actions-hint" id="weekoffDirtyHint">Every employee on this page is saved together.</span>
   <button class="btn btn-primary">Save week offs</button>
 </div>
 </form>
 <script>
   const weekoffSearch = document.getElementById('weekoffSearch');
   const weekoffCount = document.getElementById('weekoffCount');
-  if (weekoffSearch) {
-    const bodyRows = Array.from(document.querySelectorAll('.weekoff-table tbody tr'));
-    const haystack = bodyRows.map((row) => {
+  const weekoffShiftFilter = document.getElementById('weekoffShiftFilter');
+  const bodyRows = Array.from(document.querySelectorAll('[data-weekoff-row]'));
+  const defaultShiftId = {{ (default_shift_id or '')|string|tojson }};
+
+  // Search and the shift filter narrow the same rows, so they are applied together.
+  const applyRowFilters = () => {
+    const term = (weekoffSearch?.value || '').trim().toLowerCase();
+    const shiftId = weekoffShiftFilter?.value || '';
+    let shown = 0;
+    bodyRows.forEach((row) => {
       const cells = row.querySelectorAll('td');
-      return ((cells[0]?.textContent || '') + ' ' + (cells[1]?.textContent || '')).toLowerCase();
+      const text = ((cells[0]?.textContent || '') + ' ' + (cells[1]?.textContent || '')).toLowerCase();
+      const onShift = !shiftId || Array.from(row.querySelectorAll('[data-shift-select]')).some((select) => select.value === shiftId);
+      const match = (!term || text.includes(term)) && onShift;
+      row.hidden = !match;
+      if (match) shown += 1;
     });
-    weekoffSearch.addEventListener('input', () => {
-      const term = weekoffSearch.value.trim().toLowerCase();
-      let shown = 0;
-      bodyRows.forEach((row, index) => {
-        const match = !term || haystack[index].includes(term);
-        row.hidden = !match;
-        if (match) shown += 1;
-      });
-      weekoffCount.textContent = shown + ' employee(s)' + (term ? ' of ' + bodyRows.length : '');
-    });
+    const filtered = term || shiftId;
+    weekoffCount.textContent = shown + ' employee(s)' + (filtered ? ' of ' + bodyRows.length : '');
+    syncSelection();
+  };
+  weekoffSearch?.addEventListener('input', applyRowFilters);
+  weekoffShiftFilter?.addEventListener('change', applyRowFilters);
+
+  // A shift other than the default is marked, so who works what reads at a glance.
+  // On a day that is off every week the shift has nothing to measure, so it fades.
+  const refreshDayCell = (cell) => {
+    const select = cell.querySelector('[data-shift-select]');
+    if (!select) return;
+    select.classList.toggle('is-custom', select.value !== defaultShiftId);
+    const alwaysOff = cell.querySelector('[data-weekoff-input][value="WEEK_OFF_ALL"]')?.checked;
+    select.classList.toggle('is-week-off', Boolean(alwaysOff));
+  };
+  document.querySelectorAll('[data-shift-select]').forEach((select) => {
+    refreshDayCell(select.closest('td'));
+    select.addEventListener('change', () => refreshDayCell(select.closest('td')));
+  });
+  document.querySelectorAll('[data-weekoff-input]').forEach((input) => {
+    input.addEventListener('change', () => refreshDayCell(input.closest('td')));
+  });
+
+  // Bulk shift assignment for the ticked rows.
+  const selectAll = document.getElementById('weekoffSelectAll');
+  const bulkApply = document.getElementById('bulkApply');
+  const bulkCount = document.getElementById('bulkSelectedCount');
+  const rowChecks = () => bodyRows.map((row) => row.querySelector('[data-row-select]')).filter(Boolean);
+  function syncSelection() {
+    if (!bulkApply) return;
+    const visible = rowChecks().filter((check) => !check.closest('tr').hidden);
+    const picked = visible.filter((check) => check.checked);
+    bulkCount.textContent = picked.length;
+    bulkApply.disabled = picked.length === 0;
+    if (selectAll) {
+      selectAll.checked = visible.length > 0 && picked.length === visible.length;
+      selectAll.indeterminate = picked.length > 0 && picked.length < visible.length;
+    }
   }
+  selectAll?.addEventListener('change', () => {
+    rowChecks().forEach((check) => {
+      // Only rows the filters show: ticking "all" must not reach hidden employees.
+      if (!check.closest('tr').hidden) check.checked = selectAll.checked;
+    });
+    syncSelection();
+  });
+  rowChecks().forEach((check) => check.addEventListener('change', syncSelection));
+  bulkApply?.addEventListener('click', () => {
+    const shiftId = document.getElementById('bulkShift').value;
+    const days = Array.from(document.querySelectorAll('[data-bulk-day]:checked')).map((input) => input.value);
+    if (!days.length) {
+      alert('Tick at least one weekday to set the shift on.');
+      return;
+    }
+    let changed = 0;
+    rowChecks().forEach((check) => {
+      const row = check.closest('tr');
+      if (!check.checked || row.hidden) return;
+      days.forEach((day) => {
+        const select = row.querySelector(`[data-shift-select][data-day="${day}"]`);
+        if (select && select.value !== shiftId) {
+          select.value = shiftId;
+          refreshDayCell(select.closest('td'));
+          changed += 1;
+        }
+      });
+    });
+    markDirty(changed > 0);
+    document.getElementById('weekoffDirtyHint').textContent =
+      changed ? `${changed} day(s) updated. Save week offs to keep them.` : 'Those days were already on that shift.';
+  });
+
+  // Leaving with unsaved edits loses them silently, and this page is all edits.
+  const weekoffForm = document.getElementById('weekoffForm');
+  let weekoffDirty = false;
+  function markDirty(value = true) {
+    if (!value) return;
+    weekoffDirty = true;
+    weekoffForm.classList.add('is-dirty');
+  }
+  weekoffForm.addEventListener('change', (event) => {
+    if (event.target.closest('[data-row-select], #weekoffSelectAll, #bulkShiftBar, #weekoffShiftFilter, #weekoffSearch')) return;
+    markDirty();
+    document.getElementById('weekoffDirtyHint').textContent = 'Unsaved changes. Save week offs to keep them.';
+  });
+  weekoffForm.addEventListener('submit', () => { weekoffDirty = false; });
+  window.addEventListener('beforeunload', (event) => {
+    if (!weekoffDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
 
   document.querySelectorAll('[data-weekoff-picker]').forEach((picker) => {
     const toggle = picker.querySelector('.weekoff-picker-toggle');

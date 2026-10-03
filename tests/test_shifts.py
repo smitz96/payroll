@@ -275,3 +275,60 @@ def test_master_import_sets_and_rejects_shift_patterns(client, app):
     response = client.post("/master/import", data={"employee_master_csv": (BytesIO(bad.encode()), "master.csv")},
                            content_type="multipart/form-data", follow_redirects=True)
     assert b"there is no shift named" in response.data
+
+
+# --- Week Offs flow ---
+
+def test_bulk_shift_bar_appears_once_there_is_a_second_shift(client, app):
+    with app.app_context():
+        seed_employee()
+    login(client)
+    page = client.get("/weekoffs").data.decode()
+    assert 'id="bulkShiftBar"' not in page
+    with app.app_context():
+        add_shift("Late Shift", "10:00 AM", "06:30 PM")
+        db.session.commit()
+    page = client.get("/weekoffs").data.decode()
+    assert 'id="bulkShiftBar"' in page
+    assert 'id="weekoffShiftFilter"' in page
+    assert "data-row-select" in page
+
+
+def test_open_month_calculated_before_a_change_is_flagged_for_recalculation(client, app):
+    from datetime import timedelta
+    from attendance.weekoffs import months_needing_recalculation
+
+    with app.app_context():
+        seed_employee()
+        db.session.add(PayrollMonth(month="2026-09"))
+        db.session.add(PayrollResult(payroll_month="2026-09", employee_id="5", payroll_rule_type="MONTHLY",
+                                     calculation_status="Calculated",
+                                     created_at=datetime.utcnow() - timedelta(hours=1)))
+        db.session.commit()
+        assert months_needing_recalculation() == []
+    login(client)
+    form = {"5_present": "1", "5_sunday": "WEEK_OFF_ALL", "5_saturday": "WEEK_OFF_ALL"}
+    page = client.post("/weekoffs", data=form, follow_redirects=True).data.decode()
+    assert "Recalculate to apply these changes." in page
+    assert "September 2026" in page
+    with app.app_context():
+        assert months_needing_recalculation() == ["2026-09"]
+        # Recalculating writes fresh results, which clears the flag.
+        PayrollResult.query.filter_by(payroll_month="2026-09").one().created_at = datetime.utcnow() + timedelta(seconds=1)
+        db.session.commit()
+        assert months_needing_recalculation() == []
+
+
+def test_finalized_month_is_never_flagged(client, app):
+    from datetime import timedelta
+    from attendance.weekoffs import months_needing_recalculation
+
+    with app.app_context():
+        seed_employee()
+        db.session.add(PayrollMonth(month="2026-08", status="FINALIZED", monthly_finalized_at=datetime.utcnow()))
+        db.session.add(PayrollResult(payroll_month="2026-08", employee_id="5", payroll_rule_type="MONTHLY",
+                                     calculation_status="Calculated",
+                                     created_at=datetime.utcnow() - timedelta(days=30)))
+        db.session.add(AuditLog(actor="admin", action="Shifts Changed", detail="x"))
+        db.session.commit()
+        assert months_needing_recalculation() == []

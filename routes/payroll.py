@@ -23,7 +23,7 @@ from attendance.payroll_rules import calculate_less_hours, classify_daily_attend
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
 from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
 from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
-from attendance.utils import LEAVE_DAY_PRECISION, decimal_money, display_month, is_valid_payroll_month, minutes_to_duration, minutes_to_working_day_shortage, money
+from attendance.utils import LEAVE_DAY_PRECISION, money_text, review_items, decimal_money, display_month, is_valid_payroll_month, minutes_to_duration, minutes_to_working_day_shortage, money
 from attendance.wage_groups import (
     GROUP_LABELS,
     any_group_finalized,
@@ -60,6 +60,52 @@ def salary_sort_value(salary, sort):
     if sort == "name":
         return (str(salary.name or "").lower(), employee_id_sort_value(salary.employee_id))
     return employee_id_sort_value(salary.employee_id)
+
+
+def explained_review_items(result):
+    """Review days with the calculation's own explanation of what is wrong.
+
+    The stored message only says "Needs Review"; the day's detail says why, such as
+    an odd punch count or split punches under three hours.
+    """
+    if not result or result.calculation_status == "Calculated":
+        return []
+    explanations = {row.get("date"): row.get("explanation") for row in (result.detail_json or [])}
+    items = review_items(result)
+    for item in items:
+        explanation = explanations.get(item["date"])
+        if explanation and explanation not in {"Attendance needs review.", item["reason"]}:
+            item["reason"] = f'{item["reason"]} - {explanation}'
+    return items
+
+
+def employees_needing_review(month):
+    """Employee IDs whose result for the month is not cleanly calculated, in ID order."""
+    ids = [
+        r.employee_id for r in PayrollResult.query.filter_by(payroll_month=month).all()
+        if r.calculation_status != "Calculated"
+        and employee_active_for_payroll_month(db.session.get(Employee, r.employee_id), month)
+    ]
+    return sorted(ids, key=employee_id_sort_value)
+
+
+def review_navigation(month, employee_id):
+    """Previous and next employee needing review, so a reviewer can step through
+    the month without going back to the list each time."""
+    queue = employees_needing_review(month)
+    if not queue:
+        return None
+    ordered = sorted(set(queue) | {employee_id}, key=employee_id_sort_value)
+    position = ordered.index(employee_id)
+    previous_id = next((item for item in reversed(ordered[:position]) if item in queue), None)
+    next_id = next((item for item in ordered[position + 1:] if item in queue), None)
+    names = {s.employee_id: s.name for s in SalaryRecord.query.filter_by(payroll_month=month).all()}
+    return {
+        "total": len(queue),
+        "index": queue.index(employee_id) + 1 if employee_id in queue else None,
+        "previous": (previous_id, names.get(previous_id, "")) if previous_id else None,
+        "next": (next_id, names.get(next_id, "")) if next_id else None,
+    }
 
 
 def audit_money(value):
@@ -514,6 +560,26 @@ def clear_manual_payroll_modifications(month, wage_group=None):
     return override_count, salary_reset_count, loan_skip_count
 
 
+@bp.route("/")
+@login_required
+def index():
+    """Payroll in the menu goes straight to the month being worked on.
+
+    That is the oldest month not yet finalized, since a later month cannot start
+    until it is; with every month finalized it is the latest one. The month picker
+    is still one click away for starting the next month.
+    """
+    open_month = (
+        PayrollMonth.query.filter(PayrollMonth.status != "FINALIZED")
+        .order_by(PayrollMonth.month)
+        .first()
+    )
+    latest = open_month or PayrollMonth.query.order_by(PayrollMonth.month.desc()).first()
+    if latest:
+        return redirect(url_for("payroll.month", month=latest.month))
+    return redirect(url_for("payroll.new"))
+
+
 @bp.route("/new", methods=["GET", "POST"])
 @login_required
 def new():
@@ -763,6 +829,11 @@ def month(month):
     left_out = employees_left_out_of_month(month)
     wage_types = sorted({s.normalized_salary_type or "MISSING" for s in salaries})
     wage_filter = normalize_group(request.args.get("wage")) if request.args.get("wage") else None
+    review_only = request.args.get("review") == "1"
+    review_ids = {
+        s.employee_id for s in salaries
+        if not results.get(s.employee_id) or results[s.employee_id].calculation_status != "Calculated"
+    }
     groups = group_summary(month, payroll_month)
     steps = payroll_workflow_steps(month, payroll_month, attendance_count, len(salaries), results,
                                    locked=any_group_finalized(payroll_month), wage_filter=wage_filter)
@@ -776,6 +847,11 @@ def month(month):
         salaries=salaries,
         monthly_salaries=monthly_salaries,
         daily_salaries=daily_salaries,
+        monthly_rows=[s for s in monthly_salaries if not review_only or s.employee_id in review_ids],
+        daily_rows=[s for s in daily_salaries if not review_only or s.employee_id in review_ids],
+        review_only=review_only,
+        review_ids=review_ids,
+        review_items=review_items,
         other_salaries=other_salaries,
         results=results,
         attendance_count=attendance_count,
@@ -789,7 +865,7 @@ def month(month):
         any_finalized=any_group_finalized(payroll_month),
         bonus_allowance_duration=minutes_to_duration(DAILY_BONUS_RULES["PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES"]),
         bonus_excluded_ids={employee.id for employee in Employee.query.filter_by(bonus_ignored=True).all()},
-        total_payable=f"{total_payable:,.2f}",
+        total_payable=money_text(total_payable),
         review_count=len([r for r in results.values() if r.calculation_status != "Calculated"]) + len(missing_salary),
         sort=sort,
         order=order,
@@ -860,6 +936,8 @@ def employee(month, employee_id):
     attendance_rows = employee_attendance_rows(records, result, salary, overrides)
     return render_template(
         "employee_detail.html",
+        review_nav=review_navigation(month, employee_id),
+        review_reasons=explained_review_items(result),
         calendar_weeks=attendance_calendar(month, attendance_rows),
         month_label=display_month(month),
         weekday_headings=WEEKDAY_HEADINGS,

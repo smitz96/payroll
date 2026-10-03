@@ -21,6 +21,25 @@
     {% endif %}
   </div>
 </div>
+{% if review_nav %}
+{# Reviewing a month means visiting every flagged employee in turn; going back to
+   the list between each one was most of the clicking. #}
+<nav class="review-nav" aria-label="Employees needing review">
+  {% if review_nav.previous %}<a class="btn btn-sm btn-outline-secondary" href="{{ url_for('payroll.employee', month=month, employee_id=review_nav.previous[0]) }}">&larr; {{ review_nav.previous[0] }} {{ review_nav.previous[1] }}</a>{% else %}<span></span>{% endif %}
+  <span class="review-nav-position">{% if review_nav.index %}<strong>{{ review_nav.index }} of {{ review_nav.total }}</strong> needing review{% else %}{{ review_nav.total }} employee{{ 's' if review_nav.total != 1 }} still need review{% endif %} &middot; <a href="{{ url_for('payroll.month', month=month, review='1') }}">See list</a></span>
+  {% if review_nav.next %}<a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.employee', month=month, employee_id=review_nav.next[0]) }}">{{ review_nav.next[0] }} {{ review_nav.next[1] }} &rarr;</a>{% else %}<span></span>{% endif %}
+</nav>
+{% endif %}
+{% if review_reasons %}
+<div class="alert alert-warning" id="review">
+  <strong>{{ review_reasons|length }} day{{ 's' if review_reasons|length != 1 }} to review.</strong> Set each day in the calendar below, then <strong>Save &amp; recalculate</strong>.
+  <ul class="review-reasons">
+    {% for item in review_reasons %}
+    <li>{% if item.date %}<a href="#day-{{ item.date }}">{{ item.label }}</a>: {% endif %}{{ item.reason }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 {% if is_finalized %}
 <div class="alert alert-warning mt-3">Payroll is finalized and locked. Unlock payroll from the month page before making changes.</div>
 {% endif %}
@@ -37,6 +56,7 @@
    leave position, then hours, then money. PF and ESIC live in the Payroll
    compliance panel below rather than being repeated here. #}
 <div class="summary-grid mb-4">
+  <div class="metric is-primary"><span>Final payable salary</span><strong>{{ result.final_salary|money if result.final_salary is not none else "Not Calculated" }}</strong></div>
   <div class="metric"><span>Status</span><strong>{{ result.calculation_status }}</strong></div>
   <div class="metric"><span>Days in month</span><strong>{{ month_days }}</strong></div>
   <div class="metric"><span>Paid working days</span><strong>{{ result.paid_working_days }}</strong></div>
@@ -62,7 +82,6 @@
   {% if payroll_advances or result.advance_deduction %}
   <div class="metric"><span>Advance salary deduction</span><strong>{{ result.advance_deduction|money }}</strong></div>
   {% endif %}
-  <div class="metric"><span>Final payable salary</span><strong>{{ result.final_salary|money if result.final_salary is not none else "Not Calculated" }}</strong></div>
 </div>
 {% endif %}
 {# Statutory position for the month. PF and ESIC are switched on per employee in
@@ -105,37 +124,15 @@
     <div class="compliance-card is-total">
       <header><strong>Totals</strong></header>
       <dl>
-        <div><dt>Deducted from employee</dt><dd>{{ compliance_employee_total }}</dd></div>
-        <div><dt>Paid by company</dt><dd>{{ compliance_employer_total }}</dd></div>
+        <div><dt>Deducted from employee</dt><dd>{{ compliance_employee_total|money }}</dd></div>
+        <div><dt>Paid by company</dt><dd>{{ compliance_employer_total|money }}</dd></div>
       </dl>
       <p class="compliance-note">Only the employee side reduces the final payable salary.</p>
     </div>
   </div>
 </div>
 {% endif %}
-{% if can_edit_payroll %}
-<form method="post" enctype="multipart/form-data" class="tool-panel mb-4">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <input type="hidden" name="action" value="reimport_attendance">
-  <h2 class="section-title">Re-import this employee attendance</h2>
-  <div class="adjust-grid">
-    <div class="adjust-field">
-      <label class="form-label" for="employeeAttendanceFile">Punch data file</label>
-      <input class="form-control" id="employeeAttendanceFile" name="employee_attendance_file" type="file" accept=".csv,.xlsx" required>
-      <small>Only rows for employee ID {{ employee_id }} are imported. Other employees remain unchanged.</small>
-    </div>
-    <div class="adjust-field is-readonly">
-      <span class="form-label">What changes</span>
-      <strong class="adjust-readonly-value">Attendance and payroll</strong>
-      <small>Existing day overrides for this employee are cleared, then payroll is recalculated for this employee only.</small>
-    </div>
-  </div>
-  <div class="mt-3">
-    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.employee_attendance_csv', month=month, employee_id=employee_id) }}">Download current attendance</a>
-    <button class="btn btn-outline-primary" type="submit">Re-import &amp; recalculate</button>
-  </div>
-</form>
-{% endif %}
+
 <form method="post" id="employeeDetailForm">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <div class="tool-panel mb-4">
@@ -205,7 +202,7 @@
     {% else %}
     {% set row = cell.row %}
     {% set rec = row.record %}
-    <div class="calendar-day tone-{{ row.status_tone }}{{ ' is-error' if row.is_error }}">
+    <div class="calendar-day tone-{{ row.status_tone }}{{ ' is-error' if row.is_error }}" id="day-{{ cell.date.isoformat() }}">
       <span class="calendar-date">{{ cell.day }}<small class="calendar-weekday">{{ cell.date.strftime("%a") }}</small></span>
       <span class="status-badge status-{{ row.status_tone }}">{{ row.display_status }}</span>
       {% if row.is_shortage %}
@@ -264,4 +261,30 @@
     });
   }
 </script>
+{% if can_edit_payroll %}
+{# Rarely needed, so it sits folded below the month rather than above it. #}
+<details class="tool-panel panel-fold mt-4">
+<summary><h2 class="section-title">Re-import this employee attendance</h2></summary>
+<form method="post" enctype="multipart/form-data">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="reimport_attendance">
+  <div class="adjust-grid">
+    <div class="adjust-field">
+      <label class="form-label" for="employeeAttendanceFile">Punch data file</label>
+      <input class="form-control" id="employeeAttendanceFile" name="employee_attendance_file" type="file" accept=".csv,.xlsx" required>
+      <small>Only rows for employee ID {{ employee_id }} are imported. Other employees remain unchanged.</small>
+    </div>
+    <div class="adjust-field is-readonly">
+      <span class="form-label">What changes</span>
+      <strong class="adjust-readonly-value">Attendance and payroll</strong>
+      <small>Existing day overrides for this employee are cleared, then payroll is recalculated for this employee only.</small>
+    </div>
+  </div>
+  <div class="mt-3">
+    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.employee_attendance_csv', month=month, employee_id=employee_id) }}">Download current attendance</a>
+    <button class="btn btn-outline-primary" type="submit">Re-import &amp; recalculate</button>
+  </div>
+</form>
+</details>
+{% endif %}
 {% endblock %}

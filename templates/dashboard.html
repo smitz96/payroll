@@ -52,7 +52,11 @@
       </div>
       <div>
         <span class="health-label">Needs attention</span>
-        <strong class="{{ 'text-danger' if payroll_health.review_count else '' }}">{{ payroll_health.review_count }}</strong>
+        {% if payroll_health.review_count and month %}
+        <a class="health-attention-link" href="{{ url_for('payroll.month', month=month, review='1') }}"><strong class="text-danger">{{ payroll_health.review_count }}</strong> <span>Review now &rarr;</span></a>
+        {% else %}
+        <strong>{{ payroll_health.review_count }}</strong>
+        {% endif %}
       </div>
     </div>
 
@@ -229,10 +233,17 @@
       {% if review_items %}
       <div class="review-list">
         {% for item in review_items %}
+        {% if item.href %}
+        <a class="review-item review-{{ item.tone }} review-item-link" href="{{ item.href }}">
+          <strong>{{ item.label }}</strong>
+          <span>{{ item.detail }}</span>
+        </a>
+        {% else %}
         <div class="review-item review-{{ item.tone }}">
           <strong>{{ item.label }}</strong>
           <span>{{ item.detail }}</span>
         </div>
+        {% endif %}
         {% endfor %}
       </div>
       {% else %}

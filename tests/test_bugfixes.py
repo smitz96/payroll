@@ -2892,8 +2892,8 @@ def test_payroll_month_table_shows_paid_ot_and_less_hours_for_both_groups(client
     html = client.get("/payroll/2026-07").data.decode()
     for label in ("Monthly wage employees", "Daily wage employees"):
         section = html[html.index(label):html.index(label) + 1400]
-        assert "<th>Paid OT</th>" in section, label
-        assert "<th>Less Hours Deduction</th>" in section, label
+        assert "<th class=\"num\">Paid OT</th>" in section, label
+        assert "<th class=\"num\">Less Hours</th>" in section, label
 
 
 def test_daily_calculation_detail_column_is_named_attendance_bonus(client, app):
@@ -3103,7 +3103,7 @@ def test_statutory_contributions_are_shown_on_the_employee_page(client, app):
     # PF and ESIC live in the compliance panel, not in the metric cards.
     assert b"PF (employee)" not in page
     assert b"Payroll compliance" in page
-    assert b"1800.00" in page
+    assert b"1,800.00" in page
 
 
 # --- Gujarat professional tax and the salary register ---
@@ -3209,17 +3209,17 @@ def test_payroll_compliance_panel_shows_both_sides_of_each_contribution(client, 
     page = client.get("/payroll/2026-07/employee/5").data.decode()
     assert "Payroll compliance" in page
     figures = dict(re.findall(r"<dt>([^<]+)</dt><dd>([^<]+)</dd>", page))
-    assert figures["Employee PF"] == "1800.00"
-    assert figures["Employer PF"] == "1800.00"
+    assert figures["Employee PF"] == "1,800.00"
+    assert figures["Employer PF"] == "1,800.00"
     # The employer 12% splits into pension and fund, and both are shown.
-    assert figures["Pension (EPS)"] == "1250.00"
+    assert figures["Pension (EPS)"] == "1,250.00"
     assert figures["Fund (EPF)"] == "550.00"
     assert figures["EDLI"] == "75.00"
     assert figures["Admin charges"] == "75.00"
     assert figures["Professional tax"] == "200.00"
     # Deducted 1800 PF + 200 PT; company pays 1800 + 75 EDLI + 75 admin.
-    assert figures["Deducted from employee"] == "2000.00"
-    assert figures["Paid by company"] == "1950.00"
+    assert figures["Deducted from employee"] == "2,000.00"
+    assert figures["Paid by company"] == "1,950.00"
 
 
 def test_uncovered_contributions_read_as_zero_not_a_bare_digit(client, app):
@@ -4255,9 +4255,9 @@ def test_tds_appears_in_the_compliance_panel(client, app):
     login(client)
     page = client.get("/payroll/2026-07/employee/5").data.decode()
     figures = dict(re.findall(r"<dt>([^<]+)</dt><dd>([^<]+)</dd>", page))
-    assert figures["TDS"] == "2500.00"
+    assert figures["TDS"] == "2,500.00"
     # It is an employee-side deduction, so it belongs in that total.
-    assert figures["Deducted from employee"] == "4500.00"
+    assert figures["Deducted from employee"] == "4,500.00"
 
 
 # --- Daily sheet states time and a band, never an amount ---

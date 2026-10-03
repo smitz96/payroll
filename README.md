@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.12
+Current version: V1.13
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -77,6 +77,8 @@ Wage type is normalized with `strip().upper()`. `MONTHLY` and `DAILY` resolve to
 Shifts are set up in the **Shifts** panel at the top of the Week Offs page: a name, a start time and an end time. Day shifts only: the end must be later the same day. `Normal Shift` (9:30 AM to 6:30 PM) is created automatically and is the default; it can be renamed or retimed but not deleted. Any other shift can be deleted once no employee is on it.
 
 Each weekday of each employee has its own shift, chosen under that weekday on the Week Offs grid, so Monday to Friday can be `Normal Shift` and Saturday a shorter one. A weekday without a shift of its own works the default shift.
+
+To put several people on a shift at once, tick their rows on the Week Offs grid, pick the shift and the weekdays in the bar above it, and press **Apply to selected**; then **Save week offs**. Days on a shift other than the default are highlighted, the **All shifts** filter shows who works a given shift, and a shift on a day that is off every week is faded because it has nothing to measure. The page warns before leaving with unsaved changes, and shows a **Recalculate** reminder, with a link, for any open payroll month calculated before the latest week off or shift change.
 
 Every day is measured against its own shift:
 

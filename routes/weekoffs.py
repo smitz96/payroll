@@ -17,7 +17,8 @@ from attendance.shifts import (
     validate_shift,
     weekday_shift_field,
 )
-from attendance.weekoffs import WEEKDAY_DISPLAY_FIELDS, WEEKDAY_FIELDS, WEEK_OFF_OPTIONS, get_or_create_weekoff_rule, normalize_weekoff_codes, selected_weekoff_codes
+from attendance.utils import display_month
+from attendance.weekoffs import WEEKDAY_DISPLAY_FIELDS, WEEKDAY_FIELDS, WEEK_OFF_OPTIONS, get_or_create_weekoff_rule, months_needing_recalculation, normalize_weekoff_codes, selected_weekoff_codes
 
 bp = Blueprint("weekoffs", __name__, url_prefix="/weekoffs")
 
@@ -115,6 +116,9 @@ def index():
         "weekoffs.html", rows=rows, weekdays=WEEKDAY_DISPLAY_FIELDS, options=WEEK_OFF_OPTIONS,
         selected_weekoff_codes=selected_weekoff_codes, sort=sort, order=order,
         shifts=[shift_times(shift) for shift in shifts], shift_rows=shift_rows,
+        default_shift_id=next((shift.id for shift in shifts if shift.is_default), None),
+        stale_months=[(month, display_month(month)) for month in months_needing_recalculation()],
+        open_shift_panel=request.args.get("shifts") == "open",
     )
 
 
@@ -146,7 +150,7 @@ def save_shifts():
     except ValueError as exc:
         db.session.rollback()
         flash(str(exc), "danger")
-        return redirect(url_for("weekoffs.index"))
+        return redirect(url_for("weekoffs.index", shifts="open"))
     for shift, name, start, end in pending:
         before = shift_times(shift)
         if (shift.name, shift.start_minutes, shift.end_minutes) != (name, start, end):
@@ -162,10 +166,10 @@ def save_shifts():
         db.session.add(AuditLog(actor=current_username(), action="Shifts Changed", detail=" | ".join(details)))
         db.session.commit()
         clear_shift_cache()
-        flash("Shifts saved. Recalculate open payroll months to apply the new times.", "success")
+        flash("Shifts saved.", "success")
     else:
         flash("No shift changes to save.", "info")
-    return redirect(url_for("weekoffs.index"))
+    return redirect(url_for("weekoffs.index", shifts="open"))
 
 
 @bp.route("/shifts/<int:shift_id>/delete", methods=["POST"])

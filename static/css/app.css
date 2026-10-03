@@ -670,6 +670,28 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
 .weekoff-table th,.weekoff-table td { min-width:160px; }
 .weekoff-picker { position:relative; min-width:210px; }
 .weekoff-shift-select { margin-top:6px; min-width:210px; font-size:.78rem; }
+.weekoff-shift-select.is-custom { border-color:var(--ios-blue); color:var(--ios-blue-text); font-weight:600; background-color:color-mix(in srgb, var(--ios-blue) 8%, transparent); }
+.weekoff-shift-select.is-week-off { opacity:.45; }
+.weekoff-shift-filter { max-width:220px; }
+.weekoff-row-check { margin:0 8px 0 0; vertical-align:middle; }
+.bulk-shift-bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; padding:10px 16px; border-bottom:1px solid var(--smartfill-line); }
+.bulk-shift-field { display:flex; align-items:center; gap:8px; margin:0; color:var(--smartfill-muted); }
+.bulk-shift-field select { min-width:220px; }
+.bulk-day-list { display:flex; flex-wrap:wrap; gap:4px; }
+.bulk-day { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:999px; background:var(--ios-fill); font-size:.8rem; cursor:pointer; margin:0; }
+.bulk-day:has(input:checked) { background:color-mix(in srgb, var(--ios-blue) 16%, transparent); color:var(--ios-blue-text); }
+.bulk-day input { margin:0; }
+.shift-panel-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; cursor:pointer; list-style:none; }
+.shift-panel-summary::-webkit-details-marker { display:none; }
+.shift-summary-list { display:flex; flex-wrap:wrap; gap:6px; flex:1 1 auto; }
+.shift-chip { padding:3px 10px; border-radius:999px; background:var(--ios-fill); font-size:.8rem; color:var(--smartfill-muted); }
+.shift-chip.is-default { color:var(--ios-blue-text); }
+.shift-panel-toggle { color:var(--ios-blue-text); font-weight:600; font-size:.85rem; }
+.shift-panel[open] .shift-panel-toggle::after { content:" ▴"; }
+.shift-panel:not([open]) .shift-panel-toggle::after { content:" ▾"; }
+.recalc-banner { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
+.recalc-banner-links { display:flex; flex-wrap:wrap; gap:6px; }
+#weekoffForm.is-dirty .sticky-actions-hint { color:var(--ios-orange-text); font-weight:600; }
 .shift-table td, .shift-table th { vertical-align:middle; white-space:nowrap; }
 .shift-table input[type="time"] { min-width:120px; }
 .shift-table input[name$="_name"] { min-width:160px; }
@@ -1837,3 +1859,37 @@ html[data-theme="dark"] .missing-punch-cell .punch-placeholder { color:var(--ios
 /* Days marked present by override rather than by punches */
 .status-offsite { background:color-mix(in srgb, var(--ios-teal) 18%, transparent); color:color-mix(in srgb, var(--ios-teal) 78%, var(--ios-label)); }
 .calendar-day.tone-offsite { border-color:color-mix(in srgb, var(--ios-teal) 38%, transparent); }
+
+/* ---- Flow and readability pass (V1.13) ---- */
+.smart-table th.num, .smart-table td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.review-cell { min-width:150px; max-width:240px; }
+.review-cell .status-badge { text-decoration:none; white-space:nowrap; }
+.review-note { display:block; margin-top:4px; font-size:.78rem; color:var(--smartfill-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.employee-link { color:inherit; text-decoration:none; }
+.employee-link:hover strong { color:var(--ios-blue-text); text-decoration:underline; }
+.wage-filter-option.is-review { color:var(--ios-orange-text); }
+.wage-filter-option.is-review.is-active { background:color-mix(in srgb, var(--ios-orange) 18%, transparent); color:var(--ios-orange-text); }
+.review-nav { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; padding:10px 14px; margin-bottom:16px; border-radius:14px; background:color-mix(in srgb, var(--ios-orange) 12%, var(--sticky-head-bg)); }
+.review-nav-position { color:var(--ios-orange-text); }
+.review-nav a { white-space:nowrap; }
+.review-reasons { margin:8px 0 0; padding-left:18px; }
+.review-reasons a { color:inherit; }
+.metric.is-primary { background:color-mix(in srgb, var(--ios-blue) 10%, var(--sticky-head-bg)); }
+.metric.is-primary strong { color:var(--ios-blue-text); }
+.panel-fold { margin-bottom:16px; }
+.panel-fold > summary { cursor:pointer; list-style:none; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.panel-fold > summary::-webkit-details-marker { display:none; }
+.panel-fold > summary .section-title { margin:0; }
+.panel-fold > summary::after { content:"Show ▾"; color:var(--ios-blue-text); font-weight:600; font-size:.85rem; }
+.panel-fold[open] > summary::after { content:"Hide ▴"; }
+.panel-fold[open] > summary { margin-bottom:12px; }
+.calendar-day:target { outline:3px solid var(--ios-orange); outline-offset:2px; }
+.review-item-link { text-decoration:none; color:inherit; transition:transform .12s ease, box-shadow .12s ease; }
+.review-item-link:hover { transform:translateY(-1px); box-shadow:var(--ios-shadow-1, 0 2px 8px rgba(0,0,0,.08)); }
+.review-muted { background:var(--ios-fill); }
+.health-attention-link { display:inline-flex; align-items:baseline; gap:10px; text-decoration:none; }
+.health-attention-link span { font-size:.85rem; font-weight:600; color:var(--ios-blue-text); }
+/* The hero kept two columns down to 900px, which left each KPI tile about 140px
+   wide on a 1024px screen and cut its label and amount. */
+@media (max-width: 1280px) { .dashboard-hero { grid-template-columns:1fr; } }
+.smart-table .badge, .smart-table .status-badge { white-space:nowrap; }

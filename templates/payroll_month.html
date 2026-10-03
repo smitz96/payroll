@@ -13,6 +13,7 @@
      names it, so the header is not three red buttons of very different weight. #}
   {%- if has_permission('payroll') %}
   <div class="d-flex gap-2 flex-wrap">
+    <a class="btn btn-outline-secondary" href="{{ url_for('payroll.new') }}">Other months</a>
     <button type="button" class="btn btn-outline-danger" id="openDeletePayroll">Delete payroll</button>
   </div>
   {%- endif %}
@@ -139,31 +140,40 @@
       </th>
       <th>Wage Type</th>
       <th>Status</th>
-      <th>Base Salary</th>
-      <th>Paid OT</th>
-      <th>Less Hours Deduction</th>
-      {% if show_bonus %}<th>Attendance Bonus</th>{% endif %}
-      <th>Final payable salary</th>
-      <th>Warnings</th>
+      <th class="num">Base Salary</th>
+      <th class="num">Paid OT</th>
+      <th class="num">Less Hours</th>
+      {% if show_bonus %}<th class="num">Attendance Bonus</th>{% endif %}
+      <th class="num">Final payable</th>
+      <th>Review</th>
       <th>Action</th>
     </tr>
   </thead>
   <tbody>
     {% for s in records %}
     {% set r = results.get(s.employee_id) %}
-    <tr>
+    {% set issues = review_items(r) if r else [] %}
+    <tr class="{{ 'is-review-row' if s.employee_id in review_ids }}">
       <td>{{ s.employee_id }}</td>
-      <td class="employee-cell"><strong>{{ s.name }}</strong></td>
+      <td class="employee-cell"><a class="employee-link" href="{{ url_for('payroll.employee', month=month, employee_id=s.employee_id) }}"><strong>{{ s.name }}</strong></a></td>
       <td>{{ s.salary_type or "Missing" }}</td>
       <td><span class="badge text-bg-{{ 'success' if r and r.calculation_status == 'Calculated' else 'warning' }}">{{ r.calculation_status if r else 'Not Calculated' }}</span></td>
-      <td>{{ s.salary }}</td>
+      <td class="num">{{ s.salary|money }}</td>
       {# Paid OT is the amount actually payable, so an employee with Ignore OT set
          reads 0.00 here even though raw overtime minutes were recorded. #}
-      <td>{% if r and r.final_salary is not none %}{{ r.ot_amount or 0 }}{% else %}-{% endif %}</td>
-      <td>{% if r and r.final_salary is not none %}{{ r.less_hours_deduction or 0 }}{% else %}-{% endif %}</td>
-      {% if show_bonus %}<td>{% if s.employee_id in bonus_excluded_ids %}<span class="text-muted">Excluded</span>{% elif not r or r.final_salary is none %}-{% elif not r.attendance_bonus_percent %}<span class="text-muted">Not earned</span>{% else %}{{ r.attendance_bonus_percent|percent }}% / {{ r.attendance_bonus_amount }}{% endif %}</td>{% endif %}
-      <td>{% if r and r.final_salary is not none %}{{ r.final_salary }}{% else %}<strong>Not Calculated</strong>{% endif %}</td>
-      <td>{{ s.warning }} {{ r.message if r else "" }}</td>
+      <td class="num">{% if r and r.final_salary is not none %}{{ r.ot_amount|money }}{% else %}-{% endif %}</td>
+      <td class="num">{% if r and r.final_salary is not none %}{{ r.less_hours_deduction|money }}{% else %}-{% endif %}</td>
+      {% if show_bonus %}<td class="num">{% if s.employee_id in bonus_excluded_ids %}<span class="text-muted">Excluded</span>{% elif not r or r.final_salary is none %}-{% elif not r.attendance_bonus_percent %}<span class="text-muted">Not earned</span>{% else %}{{ r.attendance_bonus_percent|percent }}% / {{ r.attendance_bonus_amount|money }}{% endif %}</td>{% endif %}
+      <td class="num"><strong>{% if r and r.final_salary is not none %}{{ r.final_salary|money }}{% else %}Not Calculated{% endif %}</strong></td>
+      {# A count, with every day in the tooltip. The full text used to sit in this
+         cell and stretched rows to a dozen lines. #}
+      <td class="review-cell">
+        {% if issues %}
+        <a class="status-badge status-shortage" href="{{ url_for('payroll.employee', month=month, employee_id=s.employee_id) }}" title="{% for item in issues %}{{ item.label }} {{ item.reason }}{% if not loop.last %}; {% endif %}{% endfor %}">{{ issues|length }} day{{ 's' if issues|length != 1 }} to review</a>
+        {% endif %}
+        {% if s.warning %}<span class="review-note" title="{{ s.warning }}">{{ s.warning|truncate(48) }}</span>{% endif %}
+        {% if not issues and not s.warning %}<span class="text-muted">—</span>{% endif %}
+      </td>
       <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('payroll.employee', month=month, employee_id=s.employee_id) }}">Details</a></td>
     </tr>
     {% else %}
@@ -182,12 +192,15 @@
   <a class="wage-filter-option{{ ' is-active' if not wage_filter }}" href="{{ url_for('payroll.month', month=month) }}">All ({{ salaries|length }})</a>
   <a class="wage-filter-option{{ ' is-active' if wage_filter == 'MONTHLY' }}" href="{{ url_for('payroll.month', month=month, wage='monthly') }}">Monthly ({{ monthly_salaries|length }})</a>
   <a class="wage-filter-option{{ ' is-active' if wage_filter == 'DAILY' }}" href="{{ url_for('payroll.month', month=month, wage='daily') }}">Daily ({{ daily_salaries|length }})</a>
+  {% if review_ids %}
+  <a class="wage-filter-option is-review{{ ' is-active' if review_only }}" href="{{ url_for('payroll.month', month=month, wage=request.args.get('wage'), review=None if review_only else '1') }}">Needs review ({{ review_ids|length }})</a>
+  {% endif %}
 </div>
 {% if wage_filter in (none, "MONTHLY") %}
-{{ payroll_employee_table("Monthly wage employees", monthly_salaries, "Monthly wage calculation includes working days, week offs, paid leave, leave earned, leave encashment, loan, advance, overtime, and less-hours rules.") }}
+{{ payroll_employee_table("Monthly wage employees", monthly_rows, "Monthly wage calculation includes working days, week offs, paid leave, leave earned, leave encashment, loan, advance, overtime, and less-hours rules.") }}
 {% endif %}
 {% if wage_filter in (none, "DAILY") %}
-{{ payroll_employee_table("Daily wage employees", daily_salaries, "Daily wage calculation pays working days plus holidays only. Week offs and leave balance are not included; loan, advance, overtime, and less-hours rules still apply. In place of leave, a monthly attendance bonus is added: 10% of the earned wage with no absence at all, 5% with absence up to " ~ bonus_allowance_duration ~ ", and nothing beyond that. Absence counts short days as well as full days off.", show_bonus=true) }}
+{{ payroll_employee_table("Daily wage employees", daily_rows, "Daily wage calculation pays working days plus holidays only. Week offs and leave balance are not included; loan, advance, overtime, and less-hours rules still apply. In place of leave, a monthly attendance bonus is added: 10% of the earned wage with no absence at all, 5% with absence up to " ~ bonus_allowance_duration ~ ", and nothing beyond that. Absence counts short days as well as full days off.", show_bonus=true) }}
 {% endif %}
 {% if other_salaries and not wage_filter %}
 {{ payroll_employee_table("Other wage employees", other_salaries, "These wage types are not configured for automatic payroll calculation.") }}

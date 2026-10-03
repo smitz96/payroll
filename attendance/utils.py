@@ -1,6 +1,6 @@
 import calendar
 import re
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, ROUND_DOWN
 from zoneinfo import ZoneInfo
 
@@ -121,10 +121,31 @@ def money(value):
     return Decimal(value).quantize(Decimal("0.01"))
 
 
+def indian_number(value, places=2):
+    """A number with Indian digit grouping: 811000 reads as 8,11,000.00.
+
+    Lakhs and crores are how amounts are read here, and the PDFs already group this
+    way, so the screens do too rather than showing 811,000.00 beside them.
+    """
+    amount = Decimal(value or 0)
+    whole, _, fraction = f"{abs(amount):.{places}f}".partition(".")
+    if len(whole) > 3:
+        leading, last_three = whole[:-3], whole[-3:]
+        groups = []
+        while len(leading) > 2:
+            groups.insert(0, leading[-2:])
+            leading = leading[:-2]
+        if leading:
+            groups.insert(0, leading)
+        whole = ",".join([*groups, last_three])
+    sign = "-" if amount < 0 else ""
+    return f"{sign}{whole}.{fraction}" if places else f"{sign}{whole}"
+
+
 def money_text(value):
-    """Amount for display, always two decimals. Decimal("0.00") is falsy, so a
-    template writing `value or 0` would otherwise print a bare 0."""
-    return f"{Decimal(value or 0):.2f}"
+    """Amount for display, always two decimals, in Indian grouping. Decimal("0.00")
+    is falsy, so a template writing `value or 0` would otherwise print a bare 0."""
+    return indian_number(value)
 
 
 # Leave is tracked to two decimals. Pro-rated accrual rarely lands on a clean
@@ -183,3 +204,24 @@ def financial_year_months(start_year):
     start_year = int(start_year)
     return [f"{start_year}-{number:02d}" for number in range(4, 13)] + \
            [f"{start_year + 1}-{number:02d}" for number in range(1, 4)]
+
+
+def review_items(result):
+    """The days a result flags for review, readable: [{date, label, reason}].
+
+    The message is stored as "2026-09-09: Needs Review; 2026-09-12: Punch Error",
+    which is precise but reads as a wall of ISO dates in a table cell.
+    """
+    items = []
+    for part in str(getattr(result, "message", "") or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        day, _separator, reason = part.partition(": ")
+        try:
+            label = date.fromisoformat(day).strftime("%a %d %b")
+        except ValueError:
+            items.append({"date": "", "label": "", "reason": part})
+            continue
+        items.append({"date": day, "label": label, "reason": reason or "Needs Review"})
+    return items

@@ -1,8 +1,22 @@
 # Version History
 
-## V1.12
+## V1.13
 
 Current version.
+
+- Week Offs page renamed Week Offs & Shifts. The Shifts panel is folded into a one-line summary of every shift, so the employee grid comes first.
+- Bulk shift assignment: tick employees, choose a shift and weekdays, and apply in one step before saving.
+- Days on a non-default shift are highlighted, a shift filter lists who works each shift, and the shift on an always-off day is faded.
+- A banner names any open payroll month calculated before the latest week off or shift change, with a link to recalculate it.
+- The page warns before leaving with unsaved changes.
+- Amounts on every screen use Indian digit grouping (8,11,000.00), matching the PDFs, and money columns are right-aligned.
+- Payroll month table: the warnings column is replaced by a "N days to review" badge with the days in its tooltip, employee names link to their page, and a "Needs review" filter sits beside All / Monthly / Daily.
+- Employee payroll page: a review stepper moves to the previous or next employee needing review, the days to review are listed at the top with the reason for each and a link to that day in the calendar, Final payable salary leads the summary, and the rarely used re-import panel is folded at the bottom.
+- Payroll in the menu opens the month being worked on; "Other months" on that page opens the month picker.
+- Dashboard: "Needs attention" links to the review list, review queue entries show the employee name and readable dates and open the employee, and the summary tiles no longer crush on 1024px screens.
+- Attendance Manager: once a month is imported, the re-import panel is folded so the punch grid comes first.
+
+## V1.12
 
 - Added multiple shifts. Shifts (name, start time, end time) are managed in a new Shifts panel on the Week Offs page; `Normal Shift` 9:30 AM to 6:30 PM is created automatically as the default.
 - Each weekday of each employee can work a different shift, chosen on the Week Offs grid. Weekdays without one work the default shift, so existing employees are unchanged.

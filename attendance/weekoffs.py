@@ -1,7 +1,9 @@
 from flask import has_app_context
 
+from sqlalchemy import func
+
 from attendance import db
-from attendance.models import WeekOffRule
+from attendance.models import AuditLog, PayrollMonth, PayrollResult, WeekOffRule
 
 WEEKDAY_FIELDS = [
     ("monday", "Monday"),
@@ -175,3 +177,35 @@ def parse_weekoff_pattern(text, label="Week Off Pattern"):
             occurrences.append(f"WEEK_OFF_{int(number)}")
         fields[field] = normalize_weekoff_codes(occurrences)
     return fields
+
+
+# Audit actions that change how attendance is read, so an open month calculated
+# before the latest one no longer matches the rules on screen.
+RULE_CHANGE_ACTIONS = ("Week Off Rules Changed", "Shifts Changed", "Shift Deleted")
+
+
+def months_needing_recalculation():
+    """Open payroll months last calculated before the latest week off or shift change.
+
+    Only the wage groups still open are looked at: a finalized group is never
+    recalculated, so its older results would otherwise flag the month for good.
+    """
+    from attendance.wage_groups import finalized_groups
+
+    last_change = (
+        AuditLog.query.filter(AuditLog.action.in_(RULE_CHANGE_ACTIONS))
+        .order_by(AuditLog.created_at.desc())
+        .first()
+    )
+    if not last_change:
+        return []
+    stale = []
+    for payroll_month in PayrollMonth.query.filter(PayrollMonth.status != "FINALIZED").order_by(PayrollMonth.month):
+        query = db.session.query(func.min(PayrollResult.created_at)).filter(PayrollResult.payroll_month == payroll_month.month)
+        closed = finalized_groups(payroll_month)
+        if closed:
+            query = query.filter(PayrollResult.payroll_rule_type.notin_(closed))
+        calculated = query.scalar()
+        if calculated and calculated < last_change.created_at:
+            stale.append(payroll_month.month)
+    return stale

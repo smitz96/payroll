@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from flask import Blueprint, render_template, request
+from flask import Blueprint, render_template, request, url_for
 
 from attendance import db
 from attendance.authentication import login_required
@@ -8,7 +8,7 @@ from attendance.calculator import attendance_missing_salary
 from attendance.master import employee_active_for_payroll_month
 from attendance.models import AuditLog, AttendanceRecord, Employee, PayrollMonth, PayrollResult, SalaryRecord, WeekOffRule
 from attendance.payroll_rules import PAYROLL_RULES
-from attendance.utils import display_month
+from attendance.utils import money_text, display_month, review_items as review_items_for
 from attendance.wage_groups import MONTHLY, is_group_finalized
 
 bp = Blueprint("dashboard", __name__)
@@ -16,7 +16,7 @@ SUPPORTED_WAGE_TYPES = set(PAYROLL_RULES)
 
 
 def money(value):
-    return f"{Decimal(value or 0):,.2f}"
+    return money_text(value)
 
 
 def scoped_salaries(month):
@@ -185,8 +185,28 @@ def index():
         review_items.append({"tone": "warning", "label": f"{employee_id} - {name}", "detail": "Attendance exists but salary data is missing."})
     for salary in unconfirmed_weekoff[:5]:
         review_items.append({"tone": "warning", "label": f"{salary.employee_id} - {salary.name}", "detail": "Week off must be confirmed before first payroll."})
+    names = {salary.employee_id: salary.name for salary in salaries}
     for result in review_results[:5]:
-        review_items.append({"tone": "danger", "label": f"{result.employee_id}", "detail": result.message or result.calculation_status})
+        days = review_items_for(result)
+        if days:
+            shown = ", ".join(item["label"] or item["reason"] for item in days[:4])
+            more = f" and {len(days) - 4} more" if len(days) > 4 else ""
+            detail = f"{len(days)} day{'s' if len(days) != 1 else ''} to review: {shown}{more}"
+        else:
+            detail = result.message or result.calculation_status
+        review_items.append({
+            "tone": "danger",
+            "label": f"{result.employee_id} - {names.get(result.employee_id, '')}".rstrip(" -"),
+            "detail": detail,
+            "href": url_for("payroll.employee", month=selected, employee_id=result.employee_id),
+        })
+    if len(review_results) > 5:
+        review_items.append({
+            "tone": "muted",
+            "label": f"{len(review_results) - 5} more employee{'s' if len(review_results) - 5 != 1 else ''} need review",
+            "detail": "Open the payroll month filtered to review.",
+            "href": url_for("payroll.month", month=selected, review="1"),
+        })
     payroll_health = {
         "selected": selected or "Not started",
         "selected_label": display_month(selected) if selected else "Not started",
