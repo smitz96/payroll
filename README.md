@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.10
+Current version: V1.11
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -154,6 +154,8 @@ Monthly wage employees additionally have:
 
 - **Salary breakup** - `Basic`, `HRA`, `Allowance`. All three must add up to `Salary` exactly. Leaving all three at zero means the breakup has not been captured yet and is allowed; once any one is filled in, the total has to reconcile. The form shows a running total and the shortfall or excess as you type.
 - **Compliance** - `PF` and `ESIC` yes/no flags.
+  - PF is 12% employee and 12% employer on earned Basic, up to the PF wage ceiling. The ceiling is ₹25,000 from the September 2026 payroll month (S.O. 5109(E), effective 17 September 2026) and ₹15,000 for earlier months, so finalized months keep the figures they were paid on. Pension (EPS 8.33%), EDLI and admin charges use the same ceiling.
+  - ESIC is 0.75% employee and 3.25% employer, for employees whose monthly salary is ₹21,000 or less.
 - **Annual CTC bonus** - yearly cost to company on the salary slip is monthly salary
   plus employer PF, PF Admin/EDLI charges, and employer ESIC, multiplied by 12. These
   statutory amounts use the full contracted Basic and monthly salary, regardless of

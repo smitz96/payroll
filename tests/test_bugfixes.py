@@ -2926,9 +2926,10 @@ def test_long_designation_wraps_instead_of_overrunning_its_column(client, app):
 # --- PF and ESIC statutory contributions ---
 
 def test_pf_is_capped_at_the_statutory_wage_ceiling(app):
-    from attendance.statutory import pf_contributions
-    # Basic well above the ceiling contributes on the ceiling only.
-    pf = pf_contributions(Decimal("43614.52"))
+    from attendance.statutory import pf_contributions, statutory_rules_for
+    # Basic well above the ceiling contributes on the ceiling only. August 2026 is
+    # before the ceiling was raised, so it is still 15,000.
+    pf = pf_contributions(Decimal("43614.52"), statutory_rules_for("2026-08"))
     assert pf["wage"] == Decimal("15000.00")
     assert pf["employee"] == Decimal("1800")
     assert pf["employer"] == Decimal("1800")
@@ -2938,6 +2939,46 @@ def test_pf_is_capped_at_the_statutory_wage_ceiling(app):
     assert pf["pension"] + pf["fund"] == pf["employer"]
     assert pf["edli"] == Decimal("75")
     assert pf["admin"] == Decimal("75")
+
+
+def test_pf_ceiling_is_25000_from_september_2026(app):
+    from attendance.statutory import pf_contributions, pf_wage_ceiling_for, statutory_rules_for
+    assert pf_wage_ceiling_for("2014-09") == Decimal("15000")
+    assert pf_wage_ceiling_for("2026-08") == Decimal("15000")
+    # S.O. 5109(E) took effect on 17 September; the whole September month uses it.
+    assert pf_wage_ceiling_for("2026-09") == Decimal("25000")
+    assert pf_wage_ceiling_for("2027-04") == Decimal("25000")
+    pf = pf_contributions(Decimal("43614.52"), statutory_rules_for("2026-09"))
+    assert pf["wage"] == Decimal("25000.00")
+    assert pf["employee"] == Decimal("3000")
+    assert pf["employer"] == Decimal("3000")
+    # Pension, EDLI and admin are all capped at the same ceiling.
+    assert pf["pension"] == Decimal("2083")
+    assert pf["fund"] == Decimal("917")
+    assert pf["edli"] == Decimal("125")
+    assert pf["admin"] == Decimal("125")
+    # Between the old and new ceilings, the full earned basic now counts.
+    assert pf_contributions(Decimal("18000"), statutory_rules_for("2026-09"))["employee"] == Decimal("2160")
+
+
+def test_payroll_uses_the_pf_ceiling_of_its_own_month(app):
+    from attendance.payroll_rules import MonthlyPayrollRule
+    with app.app_context():
+        db.session.add(Employee(
+            id="5", name="PF Ceiling Worker", salary_type="Monthly", normalized_salary_type="MONTHLY",
+            salary=Decimal("40000"), basic_salary=Decimal("30000"), hra=Decimal("10000"),
+            allowance=Decimal("0"), pf_enabled=True,
+        ))
+        db.session.commit()
+        figures = {}
+        for month in ("2026-08", "2026-09"):
+            record = SalaryRecord(payroll_month=month, employee_id="5", name="PF Ceiling Worker",
+                                  salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("40000"),
+                                  adjustment=Decimal("0"))
+            result = MonthlyPayrollRule().calculate_employee_month(record, [])
+            figures[month] = (Decimal(result.pf_wage), Decimal(result.pf_employee))
+        assert figures["2026-08"] == (Decimal("15000.00"), Decimal("1800.00"))
+        assert figures["2026-09"] == (Decimal("25000.00"), Decimal("3000.00"))
 
 
 def test_pf_follows_earned_basic_below_the_ceiling(app):

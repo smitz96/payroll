@@ -18,8 +18,9 @@ from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 # Rates and ceilings as notified. Percentages are of the respective wage.
 STATUTORY_RULES = {
-    # EPF & MP Act 1952
-    "PF_WAGE_CEILING": Decimal("15000"),
+    # EPF & MP Act 1952. The current ceiling; earlier payroll months use the one in
+    # force at the time, from PF_WAGE_CEILING_HISTORY below.
+    "PF_WAGE_CEILING": Decimal("25000"),
     "PF_EMPLOYEE_PERCENT": Decimal("12"),
     "PF_EMPLOYER_PERCENT": Decimal("12"),
     # The employer 12% splits into pension and provident fund. Pension is capped at
@@ -36,6 +37,35 @@ STATUTORY_RULES = {
     "ESI_WAGE_CEILING": Decimal("21000"),
 }
 
+# PF wage ceiling by the first payroll month it applies to, newest first. S.O.
+# 5109(E) raised it from 15,000 to 25,000 with effect from 17 September 2026; the
+# whole of the September 2026 payroll month is calculated on the new ceiling. Pension
+# (EPS), EDLI and admin charges are all capped at the same ceiling.
+PF_WAGE_CEILING_HISTORY = (
+    ("2026-09", Decimal("25000")),
+    ("0000-00", Decimal("15000")),
+)
+
+
+def pf_wage_ceiling_for(payroll_month):
+    """PF wage ceiling in force for a YYYY-MM payroll month."""
+    if not payroll_month:
+        return STATUTORY_RULES["PF_WAGE_CEILING"]
+    for first_month, ceiling in PF_WAGE_CEILING_HISTORY:
+        if str(payroll_month) >= first_month:
+            return ceiling
+    return PF_WAGE_CEILING_HISTORY[-1][1]
+
+
+def statutory_rules_for(payroll_month):
+    """The statutory rules as they stood for a payroll month.
+
+    A finalized month keeps the ceiling it was paid on, including on salary slips
+    that recompute figures when they are opened.
+    """
+    return {**STATUTORY_RULES, "PF_WAGE_CEILING": pf_wage_ceiling_for(payroll_month)}
+
+
 # Gujarat professional tax, as notified from 1 April 2022: nil up to 12,000 a month
 # and 200 above it. Slabs are (monthly wage above which the amount applies, amount),
 # highest first, and are charged on the wage actually earned in the month.
@@ -44,7 +74,7 @@ PROFESSIONAL_TAX_SLABS = (
 )
 
 STATUTORY_RULE_LABELS = {
-    "PF_WAGE_CEILING": ("PF wage ceiling", "Contribution is calculated on earned basic up to this figure."),
+    "PF_WAGE_CEILING": ("PF wage ceiling", "Contribution is calculated on earned basic up to this figure. Pension, EDLI and admin charges use the same ceiling. Payroll months before September 2026 use 15,000."),
     "PF_EMPLOYEE_PERCENT": ("PF employee share", "Deducted from the employee's salary."),
     "PF_EMPLOYER_PERCENT": ("PF employer share", "Paid by the company on top of salary, split into pension and fund."),
     "EPS_PERCENT": ("Pension (EPS) share", "Part of the employer 12%, capped at the PF wage ceiling."),

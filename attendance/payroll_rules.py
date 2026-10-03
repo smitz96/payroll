@@ -8,7 +8,7 @@ from attendance.models import AttendanceOverride, AttendanceRecord, Employee, Ho
 from attendance.advances import advance_deduction_for_employee
 from attendance.loans import loan_installment_for_employee, loan_pending_after_month_for_employee
 from attendance.settings import DAILY_BONUS_RULES as BONUS_CFG
-from attendance.statutory import professional_tax, statutory_for_employee
+from attendance.statutory import professional_tax, statutory_for_employee, statutory_rules_for
 from attendance.settings import MONTHLY_RULES as CFG
 from attendance.utils import LEAVE_DAY_PRECISION, ceil_to_interval, floor_to_interval, minutes_to_duration, minutes_to_working_day_shortage, money, truncate_leave_days
 from attendance.weekoffs import is_week_off_for_date
@@ -282,6 +282,7 @@ class MonthlyPayrollRule(PayrollRule):
             # enrol an employee above the ceiling for any month they took enough
             # unpaid leave, and drop them again the month after.
             esi_eligibility_wage=salary,
+            cfg=statutory_rules_for(salary_record.payroll_month),
         )
         # Gujarat professional tax is charged on the wage actually earned, so a month
         # short enough to drop below the slab threshold attracts none.

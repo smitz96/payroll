@@ -28,6 +28,7 @@ from attendance.statutory import (
     esi_contributions,
     pf_contributions,
     professional_tax,
+    statutory_rules_for,
 )
 from attendance.utils import format_percent, is_valid_payroll_month, leave_days, minutes_to_duration, minutes_to_working_day_shortage, money
 from attendance.weekoffs import is_week_off_for_date
@@ -1767,13 +1768,14 @@ def slip_other_deductions(result):
 def yearly_ctc(salary_record, employee, result=None):
     """CTC from contracted wages, independent of attendance-paid payroll values."""
     monthly_salary = Decimal(salary_record.salary or 0) if salary_record else Decimal("0")
-    pf = pf_contributions(Decimal(employee.basic_salary or 0)) if employee and employee.pf_enabled else {
+    rules = statutory_rules_for(salary_record.payroll_month if salary_record else None)
+    pf = pf_contributions(Decimal(employee.basic_salary or 0), rules) if employee and employee.pf_enabled else {
         "employee": Decimal("0"), "employer": Decimal("0"),
         "admin": Decimal("0"), "edli": Decimal("0"),
     }
     # CTC uses the contracted monthly salary as the ESI wage. Attendance and LOP
     # continue to control the separate statutory values used in actual payroll.
-    esi = esi_contributions(monthly_salary, monthly_salary) if employee and employee.esic_enabled else {
+    esi = esi_contributions(monthly_salary, monthly_salary, rules) if employee and employee.esic_enabled else {
         "employee": Decimal("0"), "employer": Decimal("0"),
     }
     annual_cost = (

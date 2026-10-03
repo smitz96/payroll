@@ -1,8 +1,14 @@
 # Version History
 
-## V1.10
+## V1.11
 
 Current version.
+
+- Raised the PF wage ceiling from ₹15,000 to ₹25,000 per S.O. 5109(E), effective 17 September 2026. The whole September 2026 payroll month onwards uses ₹25,000; August 2026 and earlier keep ₹15,000.
+- Pension (EPS), EDLI and PF admin charges are capped at the same ceiling: maximum employee and employer PF ₹3,000, EPS ₹2,083, EDLI and admin ₹125 each.
+- The PF ceiling now depends on the payroll month, so salary slip Yearly CTC for finalized months is unchanged.
+
+## V1.10
 
 - Split less hours into Late In and Early Out, measured against a 9:30 AM to 6:30 PM shift. Check-in has a 10-minute grace (9:40 AM); after it, late time is charged from 9:30. Checkout before 6:30 PM is charged with no grace. Each part is rounded up to 15 minutes and the two are added for the total less hours.
 - The 8h50m full-day grace no longer waives less hours. It still decides the daily wage attendance bonus, and less hours for a day that has working hours but no punch times.
