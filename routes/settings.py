@@ -16,10 +16,9 @@ from attendance.models import AuditLog, User
 from attendance.settings import daily_bonus_rule_rows, leave_rule_rows, monthly_rule_rows
 from attendance.shifts import all_shifts, shift_times
 from attendance.statutory import statutory_rule_rows
-from attendance.utils import format_ist_datetime
+from attendance.utils import app_version, format_ist_datetime
 
 bp = Blueprint("settings", __name__, url_prefix="/settings")
-APP_VERSION = "V1.09"
 RESET_CONFIRMATION_TEXT = "permanently delete"
 RESTORE_CONFIRMATION_TEXT = "restore backup"
 
@@ -108,7 +107,7 @@ def selected_permissions():
 def index():
     require_permission("settings")
     about = {
-        "version": APP_VERSION,
+        "version": app_version(),
         "release_at": latest_git_release_datetime(Path(current_app.root_path)) or "Not available",
     }
     return render_template(

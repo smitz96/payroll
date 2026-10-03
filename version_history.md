@@ -1,8 +1,12 @@
 # Version History
 
-## V1.13
+## V1.14
 
 Current version.
+
+- The Settings About panel showed V1.09 because the version was a fixed value in the code. It, and the version stamped into backup files (which still said V1.05), now read version.md, so they follow every release.
+
+## V1.13
 
 - Week Offs page renamed Week Offs & Shifts. The Shifts panel is folded into a one-line summary of every shift, so the employee grid comes first.
 - Bulk shift assignment: tick employees, choose a shift and weekdays, and apply in one step before saving.

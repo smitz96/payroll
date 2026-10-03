@@ -9,6 +9,7 @@ from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 from flask import current_app
 
 from attendance import db
+from attendance.utils import app_version
 
 BACKUP_FORMAT = "smartfill-full-backup"
 BACKUP_FORMAT_VERSION = 1
@@ -51,7 +52,7 @@ def build_full_backup_archive(target_path):
         "format": BACKUP_FORMAT,
         "format_version": BACKUP_FORMAT_VERSION,
         "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "app_version": "V1.05",
+        "app_version": app_version(),
         "includes": ["database", *FILE_DIRECTORIES],
     }
     with TemporaryDirectory() as temp_dir:

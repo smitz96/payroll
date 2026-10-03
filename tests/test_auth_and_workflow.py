@@ -15,7 +15,7 @@ from attendance.models import AdvanceSalary, AuditLog, AttendanceOverride, Atten
 from attendance.parser import import_attendance_csv, import_salary_csv
 from attendance.reports import build_attendance_summary_pdf, build_employee_pdf
 from attendance.utils import parse_duration
-from routes.settings import APP_VERSION
+from attendance.utils import app_version
 from attendance.loans import loan_installment_for_employee
 from routes.payroll import attendance_display_status, employee_attendance_rows, previous_calendar_month
 
@@ -196,7 +196,7 @@ def test_settings_app_update_requires_admin_password_and_logs(client, app, monke
     page = client.get("/settings")
     assert b"About" in page.data
     # Read the version rather than pinning it, so a release does not fail the suite.
-    assert APP_VERSION.encode() in page.data
+    assert app_version().encode() in page.data
     assert b"08-08-2026 15:12:30" in page.data
     assert b"Update app" in page.data
     assert b'name="admin_password"' in page.data

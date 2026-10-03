@@ -1,4 +1,5 @@
 import calendar
+from pathlib import Path
 import re
 from datetime import date, datetime, time, timezone
 from decimal import Decimal, ROUND_DOWN
@@ -225,3 +226,22 @@ def review_items(result):
             continue
         items.append({"date": day, "label": label, "reason": reason or "Needs Review"})
     return items
+
+
+APP_ROOT = Path(__file__).resolve().parent.parent
+VERSION_FILE = APP_ROOT / "version.md"
+
+
+def app_version():
+    """The released version, read from version.md.
+
+    Each release updates that file, so the About panel and backup manifests follow
+    it rather than a constant that has to be remembered separately and fell behind.
+    Read on each call so a git pull is reflected without depending on a restart.
+    """
+    try:
+        text = VERSION_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return "Unknown"
+    match = re.search(r"\bV\d+(?:\.\d+)+\b", text)
+    return match.group(0) if match else "Unknown"
