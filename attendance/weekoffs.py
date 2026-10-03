@@ -26,7 +26,9 @@ WEEKDAY_DISPLAY_FIELDS = [
 # on Saturday is the second Saturday. The labels used to read "2nd day of the month",
 # which is a different thing entirely.
 WEEK_OFF_OPTIONS = [
-    ("WORKING", "Normal Shift"),
+    # The shift worked on a working day is chosen separately, so this only says the
+    # day is worked. It read "Normal Shift" before there was more than one shift.
+    ("WORKING", "Working day"),
     ("WEEK_OFF_ALL", "Week Off every week"),
     ("WEEK_OFF_1", "Week Off on the 1st of this weekday"),
     ("WEEK_OFF_2", "Week Off on the 2nd of this weekday"),
@@ -111,13 +113,13 @@ def is_week_off_for_date(employee_id, day):
 def describe_week_off(employee_id, day):
     if not has_app_context():
         code = "WEEK_OFF_ALL" if day.weekday() == 6 else "WORKING"
-        return OPTION_LABELS.get(code, "Normal Shift")
+        return OPTION_LABELS.get(code, "Working day")
     rule = WeekOffRule.query.filter_by(employee_id=employee_id).first()
     if not rule:
         code = "WEEK_OFF_ALL" if day.weekday() == 6 else "WORKING"
     else:
         code = getattr(rule, WEEKDAY_FIELDS[day.weekday()][0])
-    labels = [OPTION_LABELS.get(item, "Normal Shift") for item in selected_weekoff_codes(code)]
+    labels = [OPTION_LABELS.get(item, "Working day") for item in selected_weekoff_codes(code)]
     return ", ".join(labels)
 
 

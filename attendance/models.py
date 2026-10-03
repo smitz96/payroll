@@ -133,6 +133,21 @@ class Holiday(db.Model):
     notes = db.Column(db.Text)
 
 
+class Shift(db.Model):
+    """A working shift: when the day starts and ends on the clock.
+
+    Day shifts only, so the end is always later the same day. The default shift is
+    what every weekday without a shift of its own works to.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), unique=True, nullable=False)
+    start_minutes = db.Column(db.Integer, nullable=False)
+    end_minutes = db.Column(db.Integer, nullable=False)
+    is_default = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class WeekOffRule(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     employee_id = db.Column(db.String(64), db.ForeignKey("employee.id"), unique=True, nullable=False, index=True)
@@ -143,6 +158,15 @@ class WeekOffRule(db.Model):
     friday = db.Column(db.String(24), default="WORKING", nullable=False)
     saturday = db.Column(db.String(24), default="WORKING", nullable=False)
     sunday = db.Column(db.String(24), default="WEEK_OFF_ALL", nullable=False)
+    # The shift worked on each weekday. Blank means the default shift, so a rule
+    # written before shifts existed keeps working to the Normal Shift.
+    monday_shift_id = db.Column(db.Integer)
+    tuesday_shift_id = db.Column(db.Integer)
+    wednesday_shift_id = db.Column(db.Integer)
+    thursday_shift_id = db.Column(db.Integer)
+    friday_shift_id = db.Column(db.Integer)
+    saturday_shift_id = db.Column(db.Integer)
+    sunday_shift_id = db.Column(db.Integer)
     confirmed_at = db.Column(db.DateTime)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

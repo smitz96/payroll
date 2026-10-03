@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.11
+Current version: V1.12
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -72,10 +72,30 @@ Adjustment -> Manual Adjustment
 
 Wage type is normalized with `strip().upper()`. `MONTHLY` and `DAILY` resolve to configured payroll rules.
 
+## Shifts
+
+Shifts are set up in the **Shifts** panel at the top of the Week Offs page: a name, a start time and an end time. Day shifts only: the end must be later the same day. `Normal Shift` (9:30 AM to 6:30 PM) is created automatically and is the default; it can be renamed or retimed but not deleted. Any other shift can be deleted once no employee is on it.
+
+Each weekday of each employee has its own shift, chosen under that weekday on the Week Offs grid, so Monday to Friday can be `Normal Shift` and Saturday a shorter one. A weekday without a shift of its own works the default shift.
+
+Every day is measured against its own shift:
+
+- **Late in**: 10-minute grace from the shift start, then charged from the start, rounded up to 15 minutes. On a 10:00 shift, 10:10 is free and 10:11 is 15 minutes.
+- **Early out**: charged from the shift end with no grace, rounded up to 15 minutes. On a 5:30 PM shift, 5:29 PM is 15 minutes.
+- **Overtime** on a full day: from the shift end, once checkout is 30 minutes past it.
+- **Full day / half day**: 2/3 and 1/3 of the shift length, exactly. Normal Shift (9h) stays 6h and 3h; an 8-hour shift needs 5h20m for a full day and 2h40m for a half day.
+- Week off or holiday worked: overtime once total work is 30 minutes past the shift length.
+- Daily wage attendance bonus: absence is measured against the shift length, with a full-day grace 10 minutes short of it.
+- The less-hours and overtime **hourly rate** does not change with the shift: day rate divided by 8 (Monthly) or 8.5 (Daily).
+
+Changing a shift's times, or an employee's shift, applies to open payroll months the next time they are recalculated, for the whole month. Finalized months never change.
+
+The Employee Master export carries a `Shift Pattern` column: the shift most of the week works, then any weekday that differs, for example `Normal Shift; Saturday=Short Shift`. A blank cell leaves the stored shifts alone; anything else replaces all seven weekdays, and an unknown shift name rejects the import.
+
 ## Monthly Rules
 
 - Full day: 6h00m or more worked. Half day: 3h00m through below 6h00m.
-- Shift: 9:30 AM to 6:30 PM. Less hours on a full day is the sum of two parts, each rounded **up** to the next 15 minutes on its own:
+- Shift: 9:30 AM to 6:30 PM for the Normal Shift; see Shifts above for others. Less hours on a full day is the sum of two parts, each rounded **up** to the next 15 minutes on its own:
   - **Late in**: checking in up to 9:40 AM is free (10-minute grace). After that the time from 9:30 is charged: 9:41 is 15 minutes, 9:50 is 30.
   - **Early out**: checking out before 6:30 PM is charged, with no grace: 6:29 PM is 15 minutes, 6:00-6:14 PM is 30.
   - Example: in 9:50 AM, out 6:10 PM = 30 late + 30 early = 60 minutes less hours.

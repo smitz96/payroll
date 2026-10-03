@@ -669,6 +669,10 @@ html[data-theme="dark"] .brand-lockup-mini img { filter:brightness(1.15); }
 .weekoff-table thead th.weekoff-head, .weekoff-table thead th { position:sticky; top:0; z-index:2; background:var(--sticky-head-bg); }
 .weekoff-table th,.weekoff-table td { min-width:160px; }
 .weekoff-picker { position:relative; min-width:210px; }
+.weekoff-shift-select { margin-top:6px; min-width:210px; font-size:.78rem; }
+.shift-table td, .shift-table th { vertical-align:middle; white-space:nowrap; }
+.shift-table input[type="time"] { min-width:120px; }
+.shift-table input[name$="_name"] { min-width:160px; }
 .weekoff-picker-toggle {
   width:100%;
   min-height:40px;
@@ -1681,6 +1685,7 @@ html[data-theme="dark"] .missing-punch-cell .punch-placeholder { color:var(--ios
   .weekoff-table th,
   .weekoff-table td { min-width:132px; }
   .weekoff-picker { min-width:150px; }
+  .weekoff-shift-select { min-width:150px; }
   .weekoff-menu {
     position:fixed;
     left:12px;

@@ -1315,7 +1315,7 @@ def test_master_export_leads_with_sample_rows(client, app):
     login(client)
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
-    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Annual CTC Bonus,Ignore Monthly Bonus,Week Off Pattern,Status,Last Working Day")
+    assert lines[0].endswith("Ignore OT,Ignore Less Hours,Annual CTC Bonus,Ignore Monthly Bonus,Week Off Pattern,Shift Pattern,Status,Last Working Day")
     assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
     assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
     # The sample IDs cannot be mistaken for an employee number, so a reader never
@@ -2384,7 +2384,7 @@ def test_bonus_flag_round_trips_through_export_and_import(client, app):
     # The bonus flag sits just before the week off pattern and the status columns.
     assert ",Yes,," in rows["6"] and rows["6"].endswith("ACTIVE,")
     # Monthly employees leave the column blank, the same way daily leaves Basic blank.
-    assert ",No,,,ACTIVE," in rows["5"] or ",,,ACTIVE," in rows["5"]
+    assert ",No,,,Normal Shift,ACTIVE," in rows["5"] or ",,,Normal Shift,ACTIVE," in rows["5"]
 
     # Re-importing an untouched export is a no-op, not an error.
     assert b"imported" in import_master(client, export.encode()).data
@@ -3595,7 +3595,8 @@ def test_week_offs_has_one_save_and_a_search(client, app):
 
     login(client)
     page = client.get("/weekoffs").data.decode()
-    assert visible_buttons(page) == ["Save week offs"]
+    # The shifts panel above the grid is its own form with its own save.
+    assert visible_buttons(page) == ["Save shifts", "Save week offs"]
     assert 'id="weekoffSearch"' in page
     # The save sits with the rows it applies to, not above a long table.
     assert "sticky-actions" in page

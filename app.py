@@ -7,6 +7,7 @@ from flask_wtf.csrf import CSRFError
 from attendance import db
 from attendance.authentication import init_admin_user
 from attendance.employee_defaults import backfill_default_weekoffs
+from attendance.shifts import ensure_default_shift
 from attendance.utils import format_ist_datetime, format_percent, money_text
 from config import Config
 
@@ -170,6 +171,9 @@ def ensure_schema_columns():
         weekoff_columns = {column["name"] for column in inspector.get_columns("week_off_rule")}
         if "confirmed_at" not in weekoff_columns:
             db.session.execute(db.text("ALTER TABLE week_off_rule ADD COLUMN confirmed_at DATETIME"))
+        for weekday in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"):
+            if f"{weekday}_shift_id" not in weekoff_columns:
+                db.session.execute(db.text(f"ALTER TABLE week_off_rule ADD COLUMN {weekday}_shift_id INTEGER"))
     if "holiday" in tables:
         holiday_columns = {column["name"] for column in inspector.get_columns("holiday")}
         if "holiday_type" not in holiday_columns:
@@ -250,6 +254,7 @@ def create_app(test_config=None):
         db.create_all()
         ensure_schema_columns()
         init_admin_user()
+        ensure_default_shift()
         backfill_default_weekoffs()
         db.session.commit()
     from routes.auth import bp as auth_bp

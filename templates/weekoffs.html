@@ -1,13 +1,56 @@
 {% extends "base.html" %}
 {% block content %}
-<form method="post" id="weekoffForm">
-<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <div class="page-head">
   <div>
     <h1 class="page-title">Week Offs</h1>
-    <p class="text-muted mb-0">Which weekdays are off, per employee. Recalculate the payroll month after saving.</p>
+    <p class="text-muted mb-0">Which weekdays are off, and the shift worked on each, per employee. Recalculate the payroll month after saving.</p>
   </div>
 </div>
+
+<form method="post" action="{{ url_for('weekoffs.save_shifts') }}" class="tool-panel shift-panel mb-4" id="shiftForm">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <h2 class="section-title mt-0">Shifts</h2>
+  <p class="text-muted">Late check-in is charged after a 10-minute grace from the shift start, and early check-out from the shift end with no grace. A full day needs 2/3 of the shift and a half day 1/3. Weekdays without a shift of their own work the default shift.</p>
+  <div class="table-responsive">
+    <table class="table table-sm smart-table shift-table">
+      <thead><tr><th>Name</th><th>Start</th><th>End</th><th>Length</th><th>Full day from</th><th>Half day from</th><th>Assigned to</th><th></th></tr></thead>
+      <tbody>
+        {% for row in shift_rows %}
+        <tr>
+          <td><input class="form-control form-control-sm" name="shift_{{ row.shift.id }}_name" value="{{ row.shift.name }}" maxlength="80" required aria-label="Shift name"></td>
+          <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_start" value="{{ row.start }}" required aria-label="{{ row.shift.name }} start time"></td>
+          <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_end" value="{{ row.end }}" required aria-label="{{ row.shift.name }} end time"></td>
+          <td>{{ row.length }}</td>
+          <td>{{ row.full_day }}</td>
+          <td>{{ row.half_day }}</td>
+          <td>{% if row.used_by is none %}<span class="status-badge status-other">Default</span>{% else %}{{ row.used_by }} employee(s){% endif %}</td>
+          <td>
+            {% if row.used_by is not none %}
+            {# Submits its own form below, so Enter in a field above saves rather than deletes. #}
+            <button class="btn btn-sm btn-outline-danger" form="deleteShift{{ row.shift.id }}" {% if row.used_by %}disabled title="Move its employees to another shift first"{% endif %} onclick='return confirm({{ ("Delete " ~ row.shift.name ~ "?")|tojson }});'>Delete</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        <tr class="shift-new-row">
+          <td><input class="form-control form-control-sm" name="new_name" placeholder="New shift name" maxlength="80" aria-label="New shift name"></td>
+          <td><input class="form-control form-control-sm" type="time" name="new_start" aria-label="New shift start time"></td>
+          <td><input class="form-control form-control-sm" type="time" name="new_end" aria-label="New shift end time"></td>
+          <td colspan="5" class="text-muted">Fill in to add a shift. Day shifts only: the end must be later the same day.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="d-flex justify-content-end"><button class="btn btn-primary">Save shifts</button></div>
+</form>
+{% for row in shift_rows if row.used_by is not none %}
+<form method="post" action="{{ url_for('weekoffs.delete_shift', shift_id=row.shift.id) }}" id="deleteShift{{ row.shift.id }}" hidden>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+</form>
+{% endfor %}
+
+<form method="post" id="weekoffForm">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
 <div class="tool-panel weekoff-panel">
   {# 35 employees x 7 weekdays is a lot of rows to scroll; filtering by name or ID
@@ -61,6 +104,11 @@
                 {% endfor %}
               </div>
             </div>
+            <select class="form-select form-select-sm weekoff-shift-select" name="{{ row.employee.id }}_{{ field }}_shift" aria-label="{{ row.employee.name }} {{ label }} shift">
+              {% for shift in shifts %}
+              <option value="{{ shift.id }}" title="{{ shift.hours_label }}" {% if shift.id == row.shift_ids[field] %}selected{% endif %}>{{ shift.name }}</option>
+              {% endfor %}
+            </select>
           </td>
           {% endfor %}
         </tr>

@@ -6,7 +6,10 @@
   <div class="col-lg-8">
     <div class="tool-panel">
       <h2 class="section-title">Attendance, Salary &amp; Leave Rules</h2>
-      <p class="text-muted">Every rule below is read directly by the payroll calculation.</p>
+      <p class="text-muted">Every rule below is read directly by the payroll calculation. The day thresholds are for the 9-hour Normal Shift; other shifts scale them to their own length.{% if has_permission('weekoffs') %} Shifts are set up on <a href="{{ url_for('weekoffs.index') }}">Week Offs</a>.{% endif %}</p>
+      {% if shifts %}
+      <p class="mb-2"><strong>Shifts:</strong> {% for shift in shifts %}{{ shift.label }}{% if not loop.last %}; {% endif %}{% endfor %}</p>
+      {% endif %}
       <table class="table table-sm smart-table">
         <thead><tr><th>Rule</th><th>Value</th><th>Effect</th></tr></thead>
         <tbody>

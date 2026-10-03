@@ -14,6 +14,7 @@ from attendance.authentication import MODULES, change_password, current_username
 from attendance.backups import build_full_backup_archive, restore_full_backup_archive
 from attendance.models import AuditLog, User
 from attendance.settings import daily_bonus_rule_rows, leave_rule_rows, monthly_rule_rows
+from attendance.shifts import all_shifts, shift_times
 from attendance.statutory import statutory_rule_rows
 from attendance.utils import format_ist_datetime
 
@@ -113,6 +114,7 @@ def index():
     return render_template(
         "settings.html",
         monthly_rules=monthly_rule_rows(),
+        shifts=[shift_times(shift) for shift in all_shifts()],
         leave_rules=leave_rule_rows(),
         daily_bonus_rules=daily_bonus_rule_rows(),
         statutory_rules=statutory_rule_rows(),

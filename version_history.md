@@ -1,8 +1,18 @@
 # Version History
 
-## V1.11
+## V1.12
 
 Current version.
+
+- Added multiple shifts. Shifts (name, start time, end time) are managed in a new Shifts panel on the Week Offs page; `Normal Shift` 9:30 AM to 6:30 PM is created automatically as the default.
+- Each weekday of each employee can work a different shift, chosen on the Week Offs grid. Weekdays without one work the default shift, so existing employees are unchanged.
+- Late in (10-minute grace), early out and overtime are measured from each day's own shift start and end.
+- Full day and half day scale with the shift length at 2/3 and 1/3; the daily wage attendance bonus and week off overtime use the shift length too. The hourly rate divisors (8 and 8.5) are unchanged.
+- Added a `Shift Pattern` column to the Employee Master export and import.
+- The working-day option on the Week Offs grid now reads "Working day" instead of "Normal Shift".
+- Shift is shown on the employee calculation detail and in the Less Hours CSV.
+
+## V1.11
 
 - Raised the PF wage ceiling from ₹15,000 to ₹25,000 per S.O. 5109(E), effective 17 September 2026. The whole September 2026 payroll month onwards uses ₹25,000; August 2026 and earlier keep ₹15,000.
 - Pension (EPS), EDLI and PF admin charges are capped at the same ceiling: maximum employee and employer PF ₹3,000, EPS ₹2,083, EDLI and admin ₹125 each.

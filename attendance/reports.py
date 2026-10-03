@@ -287,7 +287,7 @@ def overtime_report_csv(month):
 def less_hours_report_csv(month):
     out = StringIO()
     writer = csv.writer(out)
-    writer.writerow(["Employee ID", "Employee Name", "Date", "In Time", "Out Time", "Working Hours", "Late In Minutes", "Early Out Minutes", "Less Hours Minutes", "Less Hours Deduction"])
+    writer.writerow(["Employee ID", "Employee Name", "Date", "Shift", "In Time", "Out Time", "Working Hours", "Late In Minutes", "Early Out Minutes", "Less Hours Minutes", "Less Hours Deduction"])
     names = employee_name_map(month)
     for result in PayrollResult.query.filter_by(payroll_month=month).order_by(PayrollResult.employee_id):
         for item in result.detail_json or []:
@@ -299,6 +299,7 @@ def less_hours_report_csv(month):
                 result.employee_id,
                 names.get(result.employee_id, ""),
                 item.get("date", ""),
+                item.get("shift", ""),
                 item.get("first_punch", ""),
                 item.get("last_punch", ""),
                 item.get("rounded_duration") or item.get("actual_duration") or item.get("raw_working_hours", ""),

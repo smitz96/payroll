@@ -7,17 +7,20 @@ COMPANY_ADDRESS = (
     "Ramol, Ahmedabad, India 382445"
 )
 
+# The day thresholds below are written for the 9-hour Normal Shift. A shift of any
+# other length scales them by the same fractions: full day at 2/3 of the shift, half
+# day at 1/3, full-day grace 10 minutes short of it, and total-hours overtime from 30
+# minutes past it. See attendance/shifts.py.
 MONTHLY_RULES = {
     "FULL_DAY_MINUTES": 9 * 60,
     "FULL_DAY_REQUIRED_MINUTES": 8 * 60 + 50,
     "HALF_DAY_MINIMUM_MINUTES": 3 * 60,
     "LESS_HOURS_RULE_MINIMUM_MINUTES": 6 * 60,
-    # Less hours on a full day is measured against the shift clock, in two parts:
-    # checking in after the start grace, and checking out before the shift ends.
-    # Each part is rounded up to the rounding interval and the two are added.
-    "SHIFT_START_TIME": 9 * 60 + 30,
+    # Less hours on a full day is measured against the employee's shift (see
+    # attendance/shifts.py), in two parts: checking in after the start grace, and
+    # checking out before the shift ends. Each part is rounded up to the rounding
+    # interval and the two are added.
     "LATE_IN_GRACE_MINUTES": 10,
-    "SHIFT_END_TIME": 18 * 60 + 30,
     # On a full day overtime is counted from the shift end, once checkout is at
     # least this far past it. Week offs and holidays worked have no shift to
     # measure against, so they still use OVERTIME_START_MINUTES of total work.
@@ -46,15 +49,13 @@ MONTHLY_RULES = {
 # Human-readable labels for the Settings page. Every key here is read by
 # attendance/payroll_rules.py or attendance/parser.py; nothing is display-only.
 MONTHLY_RULE_LABELS = {
-    "FULL_DAY_MINUTES": ("Full working day", "Target hours for overtime on week offs and holidays worked, and for less hours when a day has no punch times."),
-    "FULL_DAY_REQUIRED_MINUTES": ("Full-day grace threshold", "Used for the daily wage attendance bonus, and for less hours only when a day has working hours but no punch times."),
-    "HALF_DAY_MINIMUM_MINUTES": ("Half-day minimum", "Below this a worked day earns no pay of its own. For monthly wage it is covered by available leave, and is loss of pay only if there is none."),
-    "LESS_HOURS_RULE_MINIMUM_MINUTES": ("Short-hours floor", "At or above this the day is paid full, with late check-in and early check-out charged as less hours."),
-    "SHIFT_START_TIME": ("Shift starts", "Late check-in is measured from this time."),
-    "LATE_IN_GRACE_MINUTES": ("Late check-in grace", "Checking in up to this long after the shift starts is not charged. After it, the time from the shift start is charged, rounded up: 9:41 is charged as 15 minutes, 9:50 as 30."),
-    "SHIFT_END_TIME": ("Shift ends", "Checking out before this is charged as less hours, rounded up: 6:29 PM is charged as 15 minutes, 6:00 PM as 30. Overtime on a full day is counted from this time."),
-    "OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES": ("Overtime minimum after shift", "On a full day, overtime is paid only when checkout is at least this long after the shift ends, floored to the rounding interval: 7:40 PM is paid as 1 hour."),
-    "OVERTIME_START_MINUTES": ("Overtime starts at (week off / holiday)", "On a week off or holiday worked, overtime is paid only when rounded work reaches this daily duration."),
+    "FULL_DAY_MINUTES": ("Full working day (Normal Shift)", "The Normal Shift length every other threshold here is written for. Other shifts use their own length and scale the rest. Target for overtime on week offs and holidays worked, and for less hours when a day has no punch times."),
+    "FULL_DAY_REQUIRED_MINUTES": ("Full-day grace threshold", "10 minutes short of the shift. Used for the daily wage attendance bonus, and for less hours only when a day has working hours but no punch times."),
+    "HALF_DAY_MINIMUM_MINUTES": ("Half-day minimum (1/3 of shift)", "Below this a worked day earns no pay of its own. For monthly wage it is covered by available leave, and is loss of pay only if there is none."),
+    "LESS_HOURS_RULE_MINIMUM_MINUTES": ("Full-day minimum (2/3 of shift)", "At or above this the day is paid full, with late check-in and early check-out charged as less hours."),
+    "LATE_IN_GRACE_MINUTES": ("Late check-in grace", "Checking in up to this long after the shift starts is not charged. After it, the time from the shift start is charged, rounded up: on a 9:30 shift, 9:41 is charged as 15 minutes and 9:50 as 30. Checking out before the shift ends has no grace: 6:29 PM on a 6:30 shift is 15 minutes."),
+    "OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES": ("Overtime minimum after shift", "On a full day, overtime is paid only when checkout is at least this long after the shift ends, floored to the rounding interval: 7:40 PM after a 6:30 shift is paid as 1 hour."),
+    "OVERTIME_START_MINUTES": ("Overtime starts at (week off / holiday)", "30 minutes past the shift. On a week off or holiday worked, overtime is paid only when rounded work reaches this daily duration."),
     "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Late check-in and early check-out are each rounded up to this interval; overtime is floored to it."),
     "SALARY_CALCULATION_DAYS": ("Salary days per month", "Monthly salary is divided by this for the daily LOP rate. Set to 0 to divide by the actual days in each month."),
     "MONTHLY_RATE_HOURS_PER_DAY": ("Monthly wage rate divisor", "For less-hours and overtime only: monthly daily rate is divided by this many hours."),
@@ -93,10 +94,6 @@ MINUTE_RULE_KEYS = {
     "OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES",
 }
 
-# Rules that are a time of day rather than a duration.
-CLOCK_RULE_KEYS = {"SHIFT_START_TIME", "SHIFT_END_TIME"}
-
-
 def format_clock_minutes(minutes):
     """Minutes after midnight as a 12-hour clock time: 570 reads as 09:30 AM."""
     hours, mins = divmod(int(minutes) % (24 * 60), 60)
@@ -110,8 +107,6 @@ def monthly_rule_rows():
         label, detail = MONTHLY_RULE_LABELS.get(key, (key, ""))
         if key in MINUTE_RULE_KEYS:
             display = f"{value // 60}h {value % 60:02d}m"
-        elif key in CLOCK_RULE_KEYS:
-            display = format_clock_minutes(value)
         elif key == "ROUNDING_INTERVAL_MINUTES":
             display = f"{value} minutes"
         elif key == "SALARY_CALCULATION_DAYS":
