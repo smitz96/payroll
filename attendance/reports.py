@@ -777,6 +777,7 @@ def display_attendance_status(status):
         "Half Day Present / Half-Day Leave": "Half Day + Half Leave",
         "Worked On-Site": "Worked On-Site",
         "Work From Home": "Work From Home",
+        "Not Employed": "Not Employed",
         "Ignore": "Ignore",
     }
     return mapping.get(status or "", status or "N/A")
@@ -1104,6 +1105,7 @@ CALENDAR_TONES = {
     "Work From Home": (TEAL_WASH, TEAL_TEXT),
     "Week Off": (TINT_WASH, TINT_TEXT),
     "Holiday": (TINT_WASH, TINT_TEXT),
+    "Not Employed": (TINT_WASH, TINT_TEXT),
     "Paid Leave": (ORANGE_WASH, ORANGE_TEXT),
     "Half-Day Paid Leave": (ORANGE_WASH, ORANGE_TEXT),
     "Sandwich Leave": (ORANGE_WASH, ORANGE_TEXT),

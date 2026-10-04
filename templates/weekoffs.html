@@ -28,25 +28,31 @@
   <summary class="shift-panel-summary">
     <span class="section-title mt-0 mb-0">Shifts</span>
     <span class="shift-summary-list">
-      {% for shift in shifts %}<span class="shift-chip{{ ' is-default' if shift.id == default_shift_id }}">{{ shift.name }} · {{ shift.hours_label }}</span>{% endfor %}
+      {% for shift in shifts %}<span class="shift-chip{{ ' is-default' if shift.id == default_shift_id }}" title="{{ shift.grace_label }}">{{ shift.name }} · {{ shift.hours_label }}{% if shift.late_in_grace or shift.early_out_grace %} · grace {{ shift.late_in_grace }}/{{ shift.early_out_grace }}m{% endif %} · OT +{{ shift.overtime_grace }}m</span>{% endfor %}
     </span>
     <span class="shift-panel-toggle">Manage shifts</span>
   </summary>
   <form method="post" action="{{ url_for('weekoffs.save_shifts') }}" id="shiftForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <p class="text-muted mt-3">Late check-in is charged after a 10-minute grace from the shift start, and early check-out from the shift end with no grace. A full day needs 2/3 of the shift and a half day 1/3. Weekdays without a shift of their own work the default shift. Changes apply to open months when they are recalculated.</p>
+    <p class="text-muted mt-3">Each day is judged on working hours against its shift. At or above the shift length less the <strong>check-in</strong> and <strong>check-out grace</strong>, nothing is charged; below that, the shortfall against the full shift is charged as less hours, rounded up to 15 minutes. Overtime is paid once hours reach the shift length plus its <strong>OT grace</strong>, on the time beyond the shift, rounded down to 15 minutes. Check-in and check-out grace are 0 unless set; OT grace starts at 30. A full day needs 2/3 of the shift and a half day 1/3. Weekdays without a shift of their own work the default shift. Changes apply to open months when they are recalculated.</p>
     <div class="table-responsive">
       <table class="table table-sm smart-table shift-table">
-        <thead><tr><th>Name</th><th>Start</th><th>End</th><th>Length</th><th>Full day from</th><th>Half day from</th><th>Assigned to</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Start</th><th>End</th><th>Check-in grace</th><th>Check-out grace</th><th>OT grace</th><th>Works out to</th><th>Assigned to</th><th></th></tr></thead>
         <tbody>
           {% for row in shift_rows %}
           <tr>
             <td><input class="form-control form-control-sm" name="shift_{{ row.shift.id }}_name" value="{{ row.shift.name }}" maxlength="80" required aria-label="Shift name"></td>
             <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_start" value="{{ row.start }}" required aria-label="{{ row.shift.name }} start time"></td>
             <td><input class="form-control form-control-sm" type="time" name="shift_{{ row.shift.id }}_end" value="{{ row.end }}" required aria-label="{{ row.shift.name }} end time"></td>
-            <td>{{ row.length }}</td>
-            <td>{{ row.full_day }}</td>
-            <td>{{ row.half_day }}</td>
+            <td><span class="grace-input"><input class="form-control form-control-sm" type="number" min="0" max="120" step="1" name="shift_{{ row.shift.id }}_in_grace" value="{{ row.in_grace }}" aria-label="{{ row.shift.name }} check-in grace in minutes"><span>min</span></span></td>
+            <td><span class="grace-input"><input class="form-control form-control-sm" type="number" min="0" max="120" step="1" name="shift_{{ row.shift.id }}_out_grace" value="{{ row.out_grace }}" aria-label="{{ row.shift.name }} check-out grace in minutes"><span>min</span></span></td>
+            <td><span class="grace-input"><input class="form-control form-control-sm" type="number" min="0" max="120" step="1" name="shift_{{ row.shift.id }}_ot_grace" value="{{ row.ot_grace }}" aria-label="{{ row.shift.name }} overtime grace in minutes"><span>min</span></span></td>
+            <td class="shift-works-out">
+              <span><strong>{{ row.length }}</strong> shift</span>
+              <span>No less hours from <strong>{{ row.required }}</strong></span>
+              <span>OT from <strong>{{ row.ot_from }}</strong></span>
+              <span>Full day {{ row.full_day }} &middot; half day {{ row.half_day }}</span>
+            </td>
             <td>{% if row.used_by is none %}<span class="status-badge status-other">Default</span>{% else %}{{ row.used_by }} employee(s){% endif %}</td>
             <td>
               {% if row.used_by is not none %}
@@ -60,7 +66,10 @@
             <td><input class="form-control form-control-sm" name="new_name" placeholder="New shift name" maxlength="80" aria-label="New shift name"></td>
             <td><input class="form-control form-control-sm" type="time" name="new_start" aria-label="New shift start time"></td>
             <td><input class="form-control form-control-sm" type="time" name="new_end" aria-label="New shift end time"></td>
-            <td colspan="5" class="text-muted">Fill in to add a shift. Day shifts only: the end must be later the same day.</td>
+            <td><span class="grace-input"><input class="form-control form-control-sm" type="number" min="0" max="120" step="1" name="new_in_grace" placeholder="0" aria-label="New shift check-in grace in minutes"><span>min</span></span></td>
+            <td><span class="grace-input"><input class="form-control form-control-sm" type="number" min="0" max="120" step="1" name="new_out_grace" placeholder="0" aria-label="New shift check-out grace in minutes"><span>min</span></span></td>
+            <td><span class="grace-input"><input class="form-control form-control-sm" type="number" min="0" max="120" step="1" name="new_ot_grace" placeholder="30" aria-label="New shift overtime grace in minutes"><span>min</span></span></td>
+            <td colspan="3" class="text-muted">Fill in to add a shift. Day shifts only: the end must be later the same day.</td>
           </tr>
         </tbody>
       </table>

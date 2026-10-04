@@ -1,6 +1,6 @@
 # SMARTfill Attendance & Payroll Management
 
-Current version: V1.14
+Current version: V1.15
 
 SMARTfill is a local Flask and SQLite web application for importing monthly attendance, maintaining employee wages, calculating Monthly and Daily payroll, preserving leave balances, and opening auditable payroll PDF reports.
 
@@ -74,20 +74,23 @@ Wage type is normalized with `strip().upper()`. `MONTHLY` and `DAILY` resolve to
 
 ## Shifts
 
-Shifts are set up in the **Shifts** panel at the top of the Week Offs page: a name, a start time and an end time. Day shifts only: the end must be later the same day. `Normal Shift` (9:30 AM to 6:30 PM) is created automatically and is the default; it can be renamed or retimed but not deleted. Any other shift can be deleted once no employee is on it.
+Shifts are set up in the **Shifts** panel at the top of the Week Offs page: a name, a start time, an end time, and three grace settings in minutes: check-in grace and check-out grace (0 unless set) and OT grace (30 unless changed). Day shifts only: the end must be later the same day. `Normal Shift` (9:30 AM to 6:30 PM) is created automatically and is the default; it can be renamed or retimed but not deleted. Any other shift can be deleted once no employee is on it.
 
 Each weekday of each employee has its own shift, chosen under that weekday on the Week Offs grid, so Monday to Friday can be `Normal Shift` and Saturday a shorter one. A weekday without a shift of its own works the default shift.
 
 To put several people on a shift at once, tick their rows on the Week Offs grid, pick the shift and the weekdays in the bar above it, and press **Apply to selected**; then **Save week offs**. Days on a shift other than the default are highlighted, the **All shifts** filter shows who works a given shift, and a shift on a day that is off every week is faded because it has nothing to measure. The page warns before leaving with unsaved changes, and shows a **Recalculate** reminder, with a link, for any open payroll month calculated before the latest week off or shift change.
 
-Every day is measured against its own shift:
+Every day is judged on its working hours (the punch sessions added up, so breaks do not count) against its own shift:
 
-- **Late in**: 10-minute grace from the shift start, then charged from the start, rounded up to 15 minutes. On a 10:00 shift, 10:10 is free and 10:11 is 15 minutes.
-- **Early out**: charged from the shift end with no grace, rounded up to 15 minutes. On a 5:30 PM shift, 5:29 PM is 15 minutes.
-- **Overtime** on a full day: from the shift end, once checkout is 30 minutes past it.
-- **Full day / half day**: 2/3 and 1/3 of the shift length, exactly. Normal Shift (9h) stays 6h and 3h; an 8-hour shift needs 5h20m for a full day and 2h40m for a half day.
-- Week off or holiday worked: overtime once total work is 30 minutes past the shift length.
-- Daily wage attendance bonus: absence is measured against the shift length, with a full-day grace 10 minutes short of it.
+1. **No penalty** when hours are at or above the shift length less its check-in and check-out grace. On a 9-hour shift with 10 minutes' check-in grace that is 8h50m, so 9:42 to 6:34 (8h52m) is not charged.
+2. **Less hours** below that: the shortfall against the full shift length, rounded up to 15 minutes. 8h40m is 20 minutes short, charged as 30; a 9:30 to 6:30 day with a 1½-hour break (7h30m) is charged 1h30m.
+3. **Overtime** once hours reach the shift length plus its OT grace: the time beyond the shift length, rounded down to 15 minutes. With 30 minutes' OT grace, 9h29m earns nothing, 9h30m earns 30 minutes and 9h50m earns 45. Week offs and holidays worked follow the same rule.
+
+Late-in and early-out minutes are shown beside the charge for information, in clock minutes past each grace.
+
+Overtime is only earned on days actually worked as such: a full day, a week off worked, or a holiday worked. A day set to leave, LOP, a half day or a week off earns none, whatever its punches say. Payable overtime is always whole 15-minute blocks, even on a shift whose length is not.
+
+- Daily wage attendance bonus: a day at or above the shift's required hours carries no absence; below them, the absence is the shortfall against the shift length.
 - The less-hours and overtime **hourly rate** does not change with the shift: day rate divided by 8 (Monthly) or 8.5 (Daily).
 
 Changing a shift's times, or an employee's shift, applies to open payroll months the next time they are recalculated, for the whole month. Finalized months never change.
@@ -97,28 +100,23 @@ The Employee Master export carries a `Shift Pattern` column: the shift most of t
 ## Monthly Rules
 
 - Full day: 6h00m or more worked. Half day: 3h00m through below 6h00m.
-- Shift: 9:30 AM to 6:30 PM for the Normal Shift; see Shifts above for others. Less hours on a full day is the sum of two parts, each rounded **up** to the next 15 minutes on its own:
-  - **Late in**: checking in up to 9:40 AM is free (10-minute grace). After that the time from 9:30 is charged: 9:41 is 15 minutes, 9:50 is 30.
-  - **Early out**: checking out before 6:30 PM is charged, with no grace: 6:29 PM is 15 minutes, 6:00-6:14 PM is 30.
-  - Example: in 9:50 AM, out 6:10 PM = 30 late + 30 early = 60 minutes less hours.
-- A day with working hours but no readable punch times falls back to the shortfall against 9 hours, with no deduction at or above 8h50m.
+- Shift: 9:30 AM to 6:30 PM for the Normal Shift. Less hours and overtime follow the shift rules above: no penalty at or above the required hours, the shortfall from the shift length below them rounded **up** to 15 minutes, and overtime beyond the shift length once past the OT grace, rounded **down** to 15 minutes.
 - Less than 3h00m: the day earns no pay of its own. Available leave covers it; with no leave it is a full-day LOP.
-- OT on a full day: counted from 6:30 PM, only once checkout is 7:00 PM or later, floored to complete 15-minute blocks. 7:40 PM is paid as 1 hour. Arriving early earns no OT, and a late check-in does not cancel OT: in 9:50 AM and out 7:40 PM is 30 minutes less hours and 1 hour OT.
-- OT on a week off or holiday worked: total work at or after 9h30m, the excess over 9 hours floored to 15-minute blocks.
 - OT rate: the ordinary hourly rate. `Overtime multiplier` in Settings pays a premium if it is set above 1.
 - Sunday: default week off, configurable per employee, and awaiting confirmation until someone confirms it.
 - A day is worth the month's salary divided by **the days in that month**, so February pays more per day than July. `Salary days per month` in Settings overrides this with a fixed figure if set to anything other than 0.
 - Less-hours and OT hourly rate: monthly wage daily rate is divided by 8; daily wage rate is divided by 8.5. Attendance full-day criteria still use the 9-hour target.
 - A single In/Out pair longer than 12 hours is flagged as a punch error, not paid. This catches an Out punch entered before its In punch, which would otherwise roll past midnight and be paid with overtime.
 
-Every value above lives in `attendance/settings.py` and is shown, with its effect, on the Settings page.
+Every value above lives in `attendance/settings.py` and is shown, with its effect, on the Settings page. Shift times and grace live on each shift.
 
 ## Leave
 
 - Earned: 2 days a full month, pro-rated by the days that end up paid and truncated to two decimals. The accrual is settled against the finished month, so leave granted during the month counts towards the days that earn it.
 - Taken in half-day steps: a balance of 1.38 covers 1 day and keeps 0.38; 1.92 covers 1.5.
 - Covers an absent day, the unworked half of a half day, and a day worked under the half-day minimum, oldest day first. A day set to `Unpaid Leave / LOP` by hand is never covered.
-- Sandwich rule: a week off with an unpaid day on either side is charged to leave. With no balance behind it the day is loss of pay, and is shown as loss of pay rather than as leave.
+- Sandwich rule: week offs between two unpaid days are charged to leave. The run between them may include holidays (absent Friday and Monday around a Saturday holiday and a Sunday off is sandwiched), but only the week offs are charged; holidays stay paid, and a holiday that was worked ends the run. With no balance behind it the day is loss of pay, and is shown as loss of pay rather than as leave.
+- Working a week off or a holiday earns compensatory leave by hours: half a day for a half day's hours, a full day for a full day's.
 - Beyond the balance: loss of pay at one day of salary.
 - Carried forward in full once the month is finalized. A payroll month cannot be started until every earlier month is finalized, so a month never opens on a balance that can still move.
 - Encashment is paid at the daily rate and is capped at the balance left after the month's leave has been taken.
@@ -127,9 +125,9 @@ Every value above lives in `attendance/settings.py` and is shown, with its effec
 ## Daily Rules
 
 - Present days are paid at the daily rate; holidays are paid, week offs are not.
-- Working a week off counts as a normal paid working day.
+- Working a week off is paid as a half or full working day by hours, the same thresholds as any other day. Working a holiday is paid on top of the holiday, again as a half or full day by hours.
 - No leave balance, leave earned, or leave encashment.
-- Less hours (late in + early out) and overtime use the same shift times as Monthly, against the daily rate. Less hours is also charged on a week off worked.
+- Less hours and overtime follow the same shift rules as Monthly, against the daily rate. Less hours is also charged on a week off worked.
 
 ## Working Days With No Punches
 
@@ -150,7 +148,7 @@ The payroll month page shows these five steps and highlights the one you are on.
 4. **Calculate Payroll** - two paths:
    - `Recalculate` in the Run calculation panel - re-runs against the current holiday calendar, week offs, loans, and advances while preserving manual overrides, adjustments, manual loan amounts, and leave encashment.
    - `Reset & Recalculate` in the page header, next to `Delete payroll` - clears all of those manual edits for the month first, then recalculates from scratch. It sits with the other destructive actions rather than beside the everyday one.
-5. **Finalize** - Monthly and Daily wage payroll are finalized **separately**. Salary slips and the PF & ESIC salary sheet are only downloadable once the wage group is finalized: they state what someone is paid, and a draft month's figures can still move. The unbranded daily wage attendance summary carries no pay and stays available throughout. Each has its own lock on the payroll month page, and locking one leaves the other open for edits and recalculation. Finalizing writes the summary and attendance CSVs to `output/csv`. Both finalizing and unlocking require the admin password.
+5. **Finalize** - Monthly and Daily wage payroll are finalized **separately**. Salary slips and the PF & ESIC salary sheet are only downloadable once the wage group is finalized: they state what someone is paid, and a draft month's figures can still move. The unbranded daily wage attendance summary carries no pay and stays available throughout. Each has its own lock on the payroll month page, and locking one leaves the other open for edits and recalculation. Finalizing writes the summary and attendance CSVs to `output/csv`. Both finalizing and unlocking require the admin password. A wage group cannot be finalized while any employee in it still needs review or has not been calculated; a day awaiting review is unpaid until someone sets it, for Monthly and Daily wage alike.
 
 The month as a whole only shows `Finalized` once every wage type that has employees is finalized. Recalculation never touches a finalized wage group, so Daily can be re-run after Monthly is signed off. `View monthly only` / `View daily only` filter the page to one wage type and scope both recalculate buttons to that group.
 
@@ -189,6 +187,8 @@ Every employee, monthly or daily, also has a **week off pattern**, a **status**,
 - The week off pattern is set on the Week Offs page and travels in the employee master export as one column, for example `Saturday=2,4; Sunday=All`. The occurrence numbers count that weekday within the month, so `Saturday=2,4` is the second and fourth Saturday.
 - A rule the system created starts **unconfirmed**. Payroll still runs, but the employee is listed for review until someone confirms the pattern, because a Sunday default is a guess and some employees do not work a Sunday week.
 - Marking someone `Left` or `Terminated` asks for their last working day. They stay in payroll for every month up to and including that one, and drop out afterwards. Anyone a month leaves out is named on the payroll page, so a person can never fall out of a run unnoticed.
+- **Date of Joining** (optional, in the employee form and the `Date of Joining` column of the master file) keeps a new starter out of payroll for earlier months.
+- Days before the date of joining or after the last working day show as `Not Employed`. They are deducted at the day rate, counted from the calendar even when the punch sheet has no row for them, and never drawn from leave or sandwiched, so a leaver's balance is left whole to be encashed.
 
 Every employee also has **Payroll exceptions**:
 

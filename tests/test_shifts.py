@@ -44,8 +44,9 @@ def test_normal_shift_keeps_six_and_three_hours():
     assert DEFAULT_SHIFT.length == 540
     assert DEFAULT_SHIFT.full_day_minimum == 360
     assert DEFAULT_SHIFT.half_day_minimum == 180
-    assert DEFAULT_SHIFT.full_day_grace == 530
-    assert DEFAULT_SHIFT.total_hours_overtime_start == 570
+    # No grace: the full 9 hours are required, and overtime starts 30 minutes past.
+    assert DEFAULT_SHIFT.required_minutes == 540
+    assert DEFAULT_SHIFT.overtime_start == 570
 
 
 def test_shorter_shift_scales_full_and_half_day_exactly():
@@ -72,20 +73,46 @@ def test_classification_uses_the_shift_thresholds():
     assert status(159) == "Full Day LOP"
 
 
-# --- Less hours and overtime measured from the shift's own clock ---
+# --- Less hours and overtime judged on hours against the day's shift ---
 
-def test_late_check_in_grace_runs_from_the_shift_start():
-    for first, late in {"10:10 AM": 0, "10:11 AM": 15, "10:15 AM": 15, "10:20 AM": 30}.items():
-        assert calculate_less_hours(day_record(first, "06:30 PM"), TEN_TO_SIX_THIRTY) == (late, 0, late), first
-
-
-def test_early_check_out_runs_from_the_shift_end():
-    # A 5:30 PM shift end: leaving at 5:29 is 15 minutes, 5:00 is 30.
-    for last, early in {"05:30 PM": 0, "05:29 PM": 15, "05:15 PM": 15, "05:00 PM": 30}.items():
-        assert calculate_less_hours(day_record("09:30 AM", last), NINE_THIRTY_TO_FIVE_THIRTY) == (0, early, early), last
+def test_check_in_grace_lowers_the_required_hours():
+    # 10:00-6:30 is 8h30m; with 10 minutes' check-in grace 8h20m is enough.
+    shift = ShiftTimes("Late Shift", clock("10:00 AM"), clock("06:30 PM"), late_in_grace=10)
+    assert shift.required_minutes == 500
+    expected = {"10:10 AM": (0, 0), "10:11 AM": (11, 15), "10:20 AM": (20, 30)}
+    for first, (late, charged) in expected.items():
+        assert calculate_less_hours(day_record(first, "06:30 PM"), shift) == (late, 0, charged), first
 
 
-def test_overtime_counts_from_the_shift_end():
+def test_shifts_have_no_grace_unless_set():
+    assert (TEN_TO_SIX_THIRTY.late_in_grace, TEN_TO_SIX_THIRTY.early_out_grace) == (0, 0)
+    assert TEN_TO_SIX_THIRTY.overtime_grace == 30
+    # Two minutes short of the shift is charged as 15.
+    assert calculate_less_hours(day_record("10:01 AM", "06:29 PM"), TEN_TO_SIX_THIRTY) == (1, 1, 15)
+
+
+def test_check_out_grace_lowers_the_required_hours():
+    shift = ShiftTimes("Late Shift", clock("10:00 AM"), clock("06:30 PM"), early_out_grace=10)
+    expected = {"06:30 PM": (0, 0), "06:20 PM": (0, 0), "06:19 PM": (11, 15), "06:14 PM": (16, 30)}
+    for last, (early, charged) in expected.items():
+        assert calculate_less_hours(day_record("10:00 AM", last), shift) == (0, early, charged), last
+
+
+def test_each_shift_keeps_its_own_grace():
+    strict = ShiftTimes("Strict", clock("09:30 AM"), clock("06:30 PM"))
+    relaxed = ShiftTimes("Relaxed", clock("09:30 AM"), clock("06:30 PM"), late_in_grace=15, early_out_grace=5)
+    day = day_record("09:44 AM", "06:26 PM")  # 8h42m worked
+    assert calculate_less_hours(day, strict) == (14, 4, 30)
+    assert calculate_less_hours(day, relaxed) == (0, 0, 0)
+
+
+def test_short_hours_on_a_shorter_shift():
+    # 9:30-5:30 is 8 hours; leaving at 5:29 is a minute short, charged as 15.
+    for last, (early, charged) in {"05:30 PM": (0, 0), "05:29 PM": (1, 15), "05:15 PM": (15, 15), "05:00 PM": (30, 30)}.items():
+        assert calculate_less_hours(day_record("09:30 AM", last), NINE_THIRTY_TO_FIVE_THIRTY) == (0, early, charged), last
+
+
+def test_overtime_counts_hours_beyond_the_shift():
     shift = NINE_THIRTY_TO_FIVE_THIRTY
     # Leaving at 6:30 PM is a full hour past a 5:30 shift.
     assert calculate_day_overtime(day_record("09:30 AM", "06:30 PM"), "Full Day Present", Decimal("10"), shift)[1] == 60
@@ -332,3 +359,71 @@ def test_finalized_month_is_never_flagged(client, app):
         db.session.add(AuditLog(actor="admin", action="Shifts Changed", detail="x"))
         db.session.commit()
         assert months_needing_recalculation() == []
+
+
+# --- Grace on the Shifts panel ---
+
+def test_grace_is_saved_per_shift_and_new_shifts_default_to_zero(client, app):
+    login(client)
+    client.post("/weekoffs/shifts", data={"new_name": "Late Shift", "new_start": "10:00", "new_end": "18:30"})
+    with app.app_context():
+        late = Shift.query.filter_by(name="Late Shift").one()
+        assert (late.late_in_grace_minutes, late.early_out_grace_minutes) == (0, 0)
+        default = Shift.query.filter_by(is_default=True).one()
+        assert (default.late_in_grace_minutes, default.early_out_grace_minutes) == (0, 0)
+        late_id, default_id = late.id, default.id
+    client.post("/weekoffs/shifts", data={
+        f"shift_{default_id}_name": "Normal Shift", f"shift_{default_id}_start": "09:30", f"shift_{default_id}_end": "18:30",
+        f"shift_{default_id}_in_grace": "10", f"shift_{default_id}_out_grace": "0",
+        f"shift_{late_id}_name": "Late Shift", f"shift_{late_id}_start": "10:00", f"shift_{late_id}_end": "18:30",
+        f"shift_{late_id}_in_grace": "5", f"shift_{late_id}_out_grace": "15",
+    })
+    with app.app_context():
+        assert db.session.get(Shift, default_id).late_in_grace_minutes == 10
+        late = db.session.get(Shift, late_id)
+        assert (late.late_in_grace_minutes, late.early_out_grace_minutes) == (5, 15)
+        assert "Grace: in 5m, out 15m" in AuditLog.query.filter_by(action="Shifts Changed").order_by(AuditLog.id.desc()).first().detail
+        assert shift_for_date("5", date(2026, 7, 6)).late_in_grace == 10
+
+
+def test_grace_must_be_a_sensible_number_of_minutes(client, app):
+    login(client)
+    for bad, message in (("-5", b"whole number of minutes"), ("ten", b"whole number of minutes"), ("200", b"cannot be more than 120")):
+        response = client.post("/weekoffs/shifts", data={"new_name": "Odd", "new_start": "10:00", "new_end": "18:00",
+                                                         "new_in_grace": bad}, follow_redirects=True)
+        assert message in response.data, bad
+    with app.app_context():
+        assert Shift.query.filter_by(name="Odd").count() == 0
+
+
+def test_shifts_panel_shows_grace_fields(client, app):
+    login(client)
+    page = client.get("/weekoffs").data.decode()
+    assert "Check-in grace" in page and "Check-out grace" in page
+    assert 'name="new_in_grace"' in page and 'name="new_out_grace"' in page
+
+
+def test_overtime_grace_defaults_to_30_and_is_saved_per_shift(client, app):
+    login(client)
+    client.post("/weekoffs/shifts", data={"new_name": "Late Shift", "new_start": "10:00", "new_end": "18:30"})
+    with app.app_context():
+        late = Shift.query.filter_by(name="Late Shift").one()
+        assert late.overtime_grace_minutes == 30
+        assert Shift.query.filter_by(is_default=True).one().overtime_grace_minutes == 30
+        late_id = late.id
+    client.post("/weekoffs/shifts", data={
+        f"shift_{late_id}_name": "Late Shift", f"shift_{late_id}_start": "10:00", f"shift_{late_id}_end": "18:30",
+        f"shift_{late_id}_in_grace": "0", f"shift_{late_id}_out_grace": "0", f"shift_{late_id}_ot_grace": "15",
+    })
+    with app.app_context():
+        assert db.session.get(Shift, late_id).overtime_grace_minutes == 15
+    page = client.get("/weekoffs").data.decode()
+    assert "OT grace" in page and 'name="new_ot_grace"' in page
+    assert "No less hours from" in page and "OT from" in page
+
+
+def test_check_in_and_check_out_grace_cannot_cover_the_whole_shift(client, app):
+    login(client)
+    response = client.post("/weekoffs/shifts", data={"new_name": "Short", "new_start": "10:00", "new_end": "11:30",
+                                                      "new_in_grace": "60", "new_out_grace": "60"}, follow_redirects=True)
+    assert b"together must be shorter than the shift" in response.data

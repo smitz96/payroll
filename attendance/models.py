@@ -55,6 +55,9 @@ class Employee(db.Model):
     # button; this records the day the employment actually ended, which is what
     # decides the last payroll month they belong in.
     left_on = db.Column(db.Date)
+    # First day of employment. Days before it in the joining month are not paid and
+    # never draw on leave; blank means employed for the whole of every month.
+    joined_on = db.Column(db.Date)
     inactive_at = db.Column(db.DateTime)
     inactive_reason = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -143,6 +146,13 @@ class Shift(db.Model):
     name = db.Column(db.String(80), unique=True, nullable=False)
     start_minutes = db.Column(db.Integer, nullable=False)
     end_minutes = db.Column(db.Integer, nullable=False)
+    # Minutes after the start a check-in is still on time, and before the end a
+    # check-out is. Past either, the whole time from the start or to the end is
+    # charged. Both 0 unless set for the shift.
+    late_in_grace_minutes = db.Column(db.Integer, default=0, nullable=False)
+    early_out_grace_minutes = db.Column(db.Integer, default=0, nullable=False)
+    # Overtime is paid once a day's working hours pass the shift length by this much.
+    overtime_grace_minutes = db.Column(db.Integer, default=30, nullable=False)
     is_default = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

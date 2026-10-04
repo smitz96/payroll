@@ -104,6 +104,8 @@ def ensure_schema_columns():
             # daily employee in the bonus, which is how it worked before the flag.
             ("bonus_ignored", "BOOLEAN NOT NULL DEFAULT 0"),
             ("tds", "NUMERIC(12, 2) NOT NULL DEFAULT 0"),
+            # Blank for existing employees, which keeps them employed for every day.
+            ("joined_on", "DATE"),
         ):
             if column not in employee_columns:
                 db.session.execute(db.text(f"ALTER TABLE employee ADD COLUMN {column} {definition}"))
@@ -167,6 +169,16 @@ def ensure_schema_columns():
         attendance_columns = {column["name"] for column in inspector.get_columns("attendance_record")}
         if "punches_json" not in attendance_columns:
             db.session.execute(db.text("ALTER TABLE attendance_record ADD COLUMN punches_json JSON"))
+    if "shift" in tables:
+        shift_columns = {column["name"] for column in inspector.get_columns("shift")}
+        # Grace became a per-shift setting. Every shift starts at 0, including the
+        # Normal Shift, which until now had a fixed 10-minute check-in grace.
+        for column in ("late_in_grace_minutes", "early_out_grace_minutes"):
+            if column not in shift_columns:
+                db.session.execute(db.text(f"ALTER TABLE shift ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"))
+        # Overtime grace was a fixed 30 minutes for every shift; existing shifts keep it.
+        if "overtime_grace_minutes" not in shift_columns:
+            db.session.execute(db.text("ALTER TABLE shift ADD COLUMN overtime_grace_minutes INTEGER NOT NULL DEFAULT 30"))
     if "week_off_rule" in tables:
         weekoff_columns = {column["name"] for column in inspector.get_columns("week_off_rule")}
         if "confirmed_at" not in weekoff_columns:

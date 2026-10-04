@@ -98,6 +98,9 @@ def employee_active_for_payroll_month(employee, payroll_month):
     """
     if not employee:
         return True
+    joined_on = getattr(employee, "joined_on", None)
+    if joined_on and is_valid_payroll_month(payroll_month) and payroll_month < joined_on.strftime("%Y-%m"):
+        return False
     if employee.employment_status == ACTIVE_STATUS:
         return True
     left_on = getattr(employee, "left_on", None)
@@ -139,6 +142,7 @@ def employee_master_export_rows():
             "Name": employee.name,
             "Department": employee.department or "",
             "Designation": employee.designation or "",
+            "Date of Joining": employee.joined_on.strftime("%d-%m-%Y") if employee.joined_on else "",
             "Wage Type": employee.salary_type or "",
             "Salary": employee.salary or Decimal("0"),
             # Breakup and compliance apply to monthly wage only; leave them blank for
@@ -166,7 +170,7 @@ def employee_master_export_rows():
 
 
 EMPLOYEE_MASTER_EXPORT_COLUMNS = [
-    "Employee ID", "Name", "Department", "Designation", "Wage Type", "Salary",
+    "Employee ID", "Name", "Department", "Designation", "Date of Joining", "Wage Type", "Salary",
     "Basic", "HRA", "Allowance", "TDS", "PF", "ESIC", "Ignore OT", "Ignore Less Hours",
     "Annual CTC Bonus",
     "Ignore Monthly Bonus", "Week Off Pattern", "Shift Pattern", "Status", "Last Working Day",
@@ -181,7 +185,7 @@ EMPLOYEE_MASTER_EXPORT_COLUMNS = [
 EMPLOYEE_MASTER_SAMPLE_ROWS = [
     {
         "Employee ID": "EXAMPLE-MONTHLY", "Name": "Example Monthly Employee", "Department": "Accounts",
-        "Designation": "Accounts Executive", "Wage Type": "Monthly", "Salary": "50000",
+        "Designation": "Accounts Executive", "Date of Joining": "01-04-2024", "Wage Type": "Monthly", "Salary": "50000",
         "Basic": "35000", "HRA": "10000", "Allowance": "5000", "TDS": "2500",
         "PF": "Yes", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Annual CTC Bonus": "Yes",
@@ -190,7 +194,7 @@ EMPLOYEE_MASTER_SAMPLE_ROWS = [
     },
     {
         "Employee ID": "EXAMPLE-DAILY", "Name": "Example Daily Employee", "Department": "Mechanical Production",
-        "Designation": "Helper", "Wage Type": "Daily", "Salary": "5000",
+        "Designation": "Helper", "Date of Joining": "15-06-2025", "Wage Type": "Daily", "Salary": "5000",
         "Basic": "0", "HRA": "0", "Allowance": "0", "TDS": "",
         "PF": "No", "ESIC": "No", "Ignore OT": "Yes", "Ignore Less Hours": "No",
         "Annual CTC Bonus": "",
@@ -245,6 +249,12 @@ def disabled_row_conflicts(employee, row):
             if wanted != current:
                 conflicts.append("Shift Pattern")
     differs("Designation", employee.designation or "")
+    if clean(row.get("Date of Joining")):
+        try:
+            if parse_csv_date(row.get("Date of Joining")) != employee.joined_on:
+                conflicts.append("Date of Joining")
+        except ValueError:
+            conflicts.append("Date of Joining")
     if clean(row.get("Wage Type")) and normalize_salary_type(row.get("Wage Type")) != normalize_salary_type(employee.salary_type):
         conflicts.append("Wage Type")
     if clean(row.get("Salary")):
@@ -448,6 +458,12 @@ def apply_employee_master_import(rows, actor):
             if new_value != (getattr(employee, field.lower()) or ""):
                 changes.append(f"{label} {getattr(employee, field.lower()) or 'Not Set'} -> {new_value or 'Not Set'}")
                 setattr(employee, field.lower(), new_value)
+        # A blank joining date leaves the stored one alone, like the week off pattern.
+        if clean(row.get("Date of Joining")):
+            joined = parse_joining_date(row.get("Date of Joining"), f"Row {row_number}: Date of Joining", employee.left_on)
+            if joined != employee.joined_on:
+                changes.append(f"Date of Joining {employee.joined_on or 'Not Set'} -> {joined}")
+                employee.joined_on = joined
         if normalized_type and not existing_type:
             changes.append(f"Wage Type {employee.salary_type or 'Not Set'} -> {wage_type}")
             employee.salary_type = wage_type
@@ -595,6 +611,21 @@ def apply_employee_master_import(rows, actor):
     return changed, created_ids, skipped_samples
 
 
+def parse_joining_date(value, label, left_on=None):
+    """A joining date from a form or file: blank clears it, otherwise DD-MM-YYYY or
+    YYYY-MM-DD, and never after the last working day."""
+    text = clean(value)
+    if not text:
+        return None
+    try:
+        joined = parse_csv_date(text)
+    except ValueError as exc:
+        raise ValueError(f"{label}: {exc}") from exc
+    if left_on and joined > left_on:
+        raise ValueError(f"{label} {joined.strftime('%d-%m-%Y')} is after the last working day {left_on.strftime('%d-%m-%Y')}.")
+    return joined
+
+
 def save_master_employee(form, actor):
     employee_id = clean(form.get("employee_id"))
     if not employee_id:
@@ -631,6 +662,7 @@ def save_master_employee(form, actor):
         "department": employee.department or "",
         "designation": employee.designation or "",
         "employment_status": employee.employment_status or ACTIVE_STATUS,
+        "joined_on": employee.joined_on,
         "ot_ignored": bool(employee.ot_ignored),
         "less_hours_ignored": bool(employee.less_hours_ignored),
         **{key: bool(getattr(employee, key)) for key, _ in ANNUAL_CTC_FLAGS},
@@ -696,6 +728,8 @@ def save_master_employee(form, actor):
         employee.department = clean(form.get("department"))
     if "designation" in form:
         employee.designation = clean(form.get("designation"))
+    if "joined_on" in form:
+        employee.joined_on = parse_joining_date(form.get("joined_on"), "Date of Joining", employee.left_on)
     if controls_present or "ot_ignored" in form:
         employee.ot_ignored = form.get("ot_ignored") == "on"
     elif created:
@@ -729,6 +763,8 @@ def save_master_employee(form, actor):
             changes.append(f"Department {old_values['department'] or 'Not Set'} -> {employee.department or 'Not Set'}")
         if old_values["designation"] != (employee.designation or ""):
             changes.append(f"Designation {old_values['designation'] or 'Not Set'} -> {employee.designation or 'Not Set'}")
+        if old_values["joined_on"] != employee.joined_on:
+            changes.append(f"Date of Joining {old_values['joined_on'] or 'Not Set'} -> {employee.joined_on or 'Not Set'}")
         if old_values["ot_ignored"] != employee.ot_ignored:
             changes.append(f"Ignore OT {'Yes' if old_values['ot_ignored'] else 'No'} -> {'Yes' if employee.ot_ignored else 'No'}")
         if old_values["less_hours_ignored"] != employee.less_hours_ignored:
@@ -745,6 +781,7 @@ def save_master_employee(form, actor):
     detail = (
         f"{employee_id} - {name}; Wage Type {salary_type}; Salary {salary}; "
         f"Department {employee.department or 'Not Set'}; Designation {employee.designation or 'Not Set'}; "
+        f"Date of Joining {employee.joined_on or 'Not Set'}; "
         f"Ignore OT {'Yes' if employee.ot_ignored else 'No'}; Ignore Less Hours {'Yes' if employee.less_hours_ignored else 'No'}; "
         f"PF {'Yes' if employee.pf_enabled else 'No'}; ESIC {'Yes' if employee.esic_enabled else 'No'}; "
         f"Annual CTC Bonus {'Yes' if employee.annual_ctc_bonus_enabled else 'No'}; "

@@ -164,11 +164,12 @@ def attendance_display_status(raw_status):
         "Worked On-Site": "Worked On-Site",
         "Work From Home": "Work From Home",
         "Ignore": "Ignore",
+        "Not Employed": "Not Employed",
     }
     return mapping.get(raw_status or "", raw_status or "Pending Calculation")
 
 
-SILENT_EXPLANATION_STATUSES = {"Full Day Present", "Half Day Present", "Week Off", "Holiday", "Week Off Worked", "Worked On-Site", "Work From Home"}
+SILENT_EXPLANATION_STATUSES = {"Full Day Present", "Half Day Present", "Week Off", "Holiday", "Week Off Worked", "Worked On-Site", "Work From Home", "Not Employed"}
 
 
 def attendance_note(record, raw_status, is_shortage, explanation=""):
@@ -188,7 +189,7 @@ def attendance_note(record, raw_status, is_shortage, explanation=""):
 
 
 def is_attendance_error(record, raw_status):
-    if raw_status in {"Full Day Present", "Half Day Present", "Half Day Present / Half-Day Leave", "Paid Leave", "Half-Day Paid Leave", "Holiday", "Week Off", "Week Off Worked", "Sandwich Leave", "Worked On-Site", "Work From Home", "Ignore"}:
+    if raw_status in {"Full Day Present", "Half Day Present", "Half Day Present / Half-Day Leave", "Paid Leave", "Half-Day Paid Leave", "Holiday", "Week Off", "Week Off Worked", "Sandwich Leave", "Worked On-Site", "Work From Home", "Ignore", "Not Employed"}:
         return False
     if record.parse_status != "OK":
         return True

@@ -106,6 +106,11 @@ def index():
         shift_rows.append({
             "shift": shift,
             "start": format_input_clock(shift.start_minutes),
+            "in_grace": int(shift.late_in_grace_minutes or 0),
+            "out_grace": int(shift.early_out_grace_minutes or 0),
+            "ot_grace": times.overtime_grace,
+            "required": format_threshold(times.required_minutes),
+            "ot_from": format_threshold(times.overtime_start),
             "end": format_input_clock(shift.end_minutes),
             "length": format_threshold(times.length),
             "full_day": format_threshold(times.full_day_minimum),
@@ -132,36 +137,50 @@ def save_shifts():
         for shift in Shift.query.all():
             if f"shift_{shift.id}_name" not in request.form:
                 continue
-            name, start, end = validate_shift(
+            # A form from before grace existed carries no grace fields; keep what
+            # is stored rather than reading the missing field as 0.
+            in_key, out_key, ot_key = (f"shift_{shift.id}_{field}" for field in ("in_grace", "out_grace", "ot_grace"))
+            values = validate_shift(
                 request.form.get(f"shift_{shift.id}_name"),
                 request.form.get(f"shift_{shift.id}_start"),
                 request.form.get(f"shift_{shift.id}_end"),
                 shift.id,
+                request.form.get(in_key) if in_key in request.form else shift.late_in_grace_minutes,
+                request.form.get(out_key) if out_key in request.form else shift.early_out_grace_minutes,
+                request.form.get(ot_key) if ot_key in request.form else shift.overtime_grace_minutes,
             )
-            pending.append((shift, name, start, end))
-        new_values = [request.form.get(key, "").strip() for key in ("new_name", "new_start", "new_end")]
+            pending.append((shift, *values))
+        new_fields = ("new_name", "new_start", "new_end", "new_in_grace", "new_out_grace", "new_ot_grace")
+        new_values = [request.form.get(key, "").strip() for key in new_fields]
         new_shift = None
         if any(new_values):
-            name, start, end = validate_shift(*new_values)
-            taken = {pending_name.lower() for _shift, pending_name, _start, _end in pending}
-            if name.lower() in taken:
-                raise ValueError(f'A shift named "{name}" already exists.')
-            new_shift = (name, start, end)
+            new_shift = validate_shift(*new_values[:3], None, *new_values[3:])
+            taken = {item[1].lower() for item in pending}
+            if new_shift[0].lower() in taken:
+                raise ValueError(f'A shift named "{new_shift[0]}" already exists.')
     except ValueError as exc:
         db.session.rollback()
         flash(str(exc), "danger")
         return redirect(url_for("weekoffs.index", shifts="open"))
-    for shift, name, start, end in pending:
+    for shift, name, start, end, in_grace, out_grace, ot_grace in pending:
         before = shift_times(shift)
-        if (shift.name, shift.start_minutes, shift.end_minutes) != (name, start, end):
+        current = (shift.name, shift.start_minutes, shift.end_minutes, shift.late_in_grace_minutes,
+                   shift.early_out_grace_minutes, shift.overtime_grace_minutes)
+        if current != (name, start, end, in_grace, out_grace, ot_grace):
             shift.name, shift.start_minutes, shift.end_minutes = name, start, end
-            details.append(f"{before.label} -> {shift_times(shift).label}")
+            shift.late_in_grace_minutes, shift.early_out_grace_minutes = in_grace, out_grace
+            shift.overtime_grace_minutes = ot_grace
+            after = shift_times(shift)
+            details.append(f"{before.label}, {before.grace_label} -> {after.label}, {after.grace_label}")
     if new_shift:
-        name, start, end = new_shift
-        shift = Shift(name=name, start_minutes=start, end_minutes=end, is_default=False)
+        name, start, end, in_grace, out_grace, ot_grace = new_shift
+        shift = Shift(name=name, start_minutes=start, end_minutes=end, is_default=False,
+                      late_in_grace_minutes=in_grace, early_out_grace_minutes=out_grace,
+                      overtime_grace_minutes=ot_grace)
         db.session.add(shift)
         db.session.flush()
-        details.append(f"Added {shift_times(shift).label}")
+        times = shift_times(shift)
+        details.append(f"Added {times.label}, {times.grace_label}")
     if details:
         db.session.add(AuditLog(actor=current_username(), action="Shifts Changed", detail=" | ".join(details)))
         db.session.commit()

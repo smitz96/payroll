@@ -8,7 +8,7 @@ which is only the roll-up of the groups.
 from datetime import datetime
 
 from attendance import db
-from attendance.models import AuditLog, Employee, PayrollMonth, SalaryRecord
+from attendance.models import AuditLog, Employee, PayrollMonth, PayrollResult, SalaryRecord
 
 MONTHLY = "MONTHLY"
 DAILY = "DAILY"
@@ -60,6 +60,29 @@ def refresh_month_status(payroll_month):
     db.session.add(payroll_month)
 
 
+def unresolved_employees(month, group):
+    """Employees in a wage group whose month is not cleanly calculated.
+
+    A day still awaiting review is unpaid until someone sets it, so finalizing over
+    it would sign off a figure nobody has decided. Anyone with wages but no result
+    has not been calculated at all.
+    """
+    from attendance.master import employee_active_for_payroll_month
+
+    salaries = [
+        salary for salary in SalaryRecord.query.filter_by(payroll_month=month).all()
+        if normalize_group(salary.normalized_salary_type) == group
+        and employee_active_for_payroll_month(db.session.get(Employee, salary.employee_id), month)
+    ]
+    results = {r.employee_id: r for r in PayrollResult.query.filter_by(payroll_month=month).all()}
+    flagged = []
+    for salary in salaries:
+        result = results.get(salary.employee_id)
+        if not result or result.calculation_status != "Calculated":
+            flagged.append(f"{salary.employee_id} {salary.name or ''}".strip())
+    return flagged
+
+
 def finalize_group(payroll_month, group, actor, detail=""):
     group = normalize_group(group)
     if not group:
@@ -68,6 +91,13 @@ def finalize_group(payroll_month, group, actor, detail=""):
         raise ValueError(f"{GROUP_LABELS[group]} payroll is already finalized.")
     if group not in groups_with_employees(payroll_month.month):
         raise ValueError(f"No {GROUP_LABELS[group].lower()} wage employees to finalize for this month.")
+    unresolved = unresolved_employees(payroll_month.month, group)
+    if unresolved:
+        shown = ", ".join(unresolved[:10]) + (f" and {len(unresolved) - 10} more" if len(unresolved) > 10 else "")
+        raise ValueError(
+            f"{GROUP_LABELS[group]} payroll cannot be finalized while {len(unresolved)} employee(s) are not cleanly "
+            f"calculated: {shown}. Set their review days, recalculate, then finalize."
+        )
     setattr(payroll_month, _FIELDS[group], datetime.utcnow())
     refresh_month_status(payroll_month)
     db.session.add(AuditLog(

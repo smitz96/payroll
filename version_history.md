@@ -1,8 +1,30 @@
 # Version History
 
-## V1.14
+## V1.15
 
 Current version.
+
+- Each shift has three grace settings in the Shifts panel on the Week Offs page: check-in grace and check-out grace (0 unless set) and OT grace (30 minutes unless changed).
+- A day is now judged on working hours against its shift, not on the check-in and check-out times:
+  1. Hours at or above the shift length less its check-in and check-out grace carry no less hours. On a 9-hour shift with 10 minutes' check-in grace, 9:42 to 6:34 (8h52m) is not charged.
+  2. Below that, the shortfall against the full shift length is charged, rounded up to 15 minutes: 8h40m is 20 minutes short, charged as 30. A long break is charged the same way.
+  3. Overtime is paid once hours reach the shift length plus its OT grace, on the time beyond the shift length, rounded down to 15 minutes: 9h50m pays 45 minutes. Week offs and holidays worked follow the same rule.
+- Late-in and early-out minutes are still shown on the employee page and in the Less Hours report, in clock minutes past each grace, to show where the time went.
+- The daily wage attendance bonus uses the same required hours, so a day at or above them carries no absence.
+- The fixed 10-minute check-in grace, the fixed 8h50m full-day grace and the fixed 30-minute overtime start are removed from Settings; each shift now carries its own.
+
+Fixes for payroll logic bugs found by testing the rules against scenarios:
+
+- A day still awaiting review was paid in full for Monthly wage but unpaid for Daily wage, and the month could be finalized with it. Such a day is now unpaid for both until someone sets it, and a wage group cannot be finalized while any employee in it needs review or is uncalculated.
+- Overtime was paid on days set to leave, LOP, a half day or a week off when the day had long punches. It is now earned only on a full day, a week off worked or a holiday worked.
+- Daily wage: a week off worked for 3 hours was paid a full day, and 6 hours paid less than 3. It is now a half or full day by the same thresholds as any day.
+- Monthly wage: a week off worked for 3 hours earned a full compensatory leave. It now earns half a day for a half day's hours.
+- Days after the last working day were absences covered by the leave balance, so a leaver was paid leave after leaving. Those days, and days before the new optional Date of Joining, are now Not Employed: deducted, never drawn from leave or sandwiched, and counted from the calendar even without attendance rows.
+- Working a holiday earned nothing extra. It now earns compensatory leave for Monthly wage, and a day's wage on top of the holiday for Daily wage, half or full by hours.
+- On a shift whose length is not a whole number of quarter hours, payable overtime minutes did not match what was paid. Overtime is now rounded on the time beyond the shift.
+- The sandwich rule skipped week offs next to a holiday. It now reaches through holidays between two unpaid days, charging only the week offs.
+
+## V1.14
 
 - The Settings About panel showed V1.09 because the version was a fixed value in the code. It, and the version stamped into backup files (which still said V1.05), now read version.md, so they follow every release.
 

@@ -1893,3 +1893,8 @@ html[data-theme="dark"] .missing-punch-cell .punch-placeholder { color:var(--ios
    wide on a 1024px screen and cut its label and amount. */
 @media (max-width: 1280px) { .dashboard-hero { grid-template-columns:1fr; } }
 .smart-table .badge, .smart-table .status-badge { white-space:nowrap; }
+.grace-input { display:inline-flex; align-items:center; gap:6px; }
+.grace-input input { width:76px; text-align:right; }
+.grace-input span { color:var(--smartfill-muted); font-size:.8rem; }
+.shift-works-out span { display:block; font-size:.8rem; color:var(--smartfill-muted); white-space:nowrap; }
+.shift-works-out strong { color:var(--smartfill-text, inherit); }

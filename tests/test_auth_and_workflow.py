@@ -461,7 +461,7 @@ def test_employee_master_import_export_updates_only_wage_fields(client, app):
 
     export_response = client.get("/master/export.csv")
     assert export_response.status_code == 200
-    assert b"Employee ID,Name,Department,Designation,Wage Type,Salary,Basic,HRA,Allowance,TDS,PF,ESIC" in export_response.data
+    assert b"Employee ID,Name,Department,Designation,Date of Joining,Wage Type,Salary,Basic,HRA,Allowance,TDS,PF,ESIC" in export_response.data
 
     blocked = client.post("/master/import", data={
         "employee_master_csv": (
@@ -1609,6 +1609,8 @@ def test_payroll_finalize_unlock_and_logs(client, app):
         db.session.add(Employee(id="5", name="Worker"))
         db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="5", employee_name="Worker", date=date(2026, 7, 1), day="Wednesday", raw_working_hours="9h 00m", actual_minutes=parse_duration("9h 00m"), parse_status="OK"))
         db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="5", name="Worker", salary_type="Monthly", normalized_salary_type="MONTHLY", salary=Decimal("30000"), adjustment=Decimal("0"), loan=Decimal("0")))
+        # Finalizing needs every employee cleanly calculated.
+        db.session.add(PayrollResult(payroll_month="2026-07", employee_id="5", payroll_rule_type="MONTHLY", calculation_status="Calculated", final_salary=Decimal("30000")))
         db.session.commit()
     client.post("/login", data={"username": "admin", "password": "12345"})
     blocked = client.post("/payroll/2026-07", data={"action": "finalize", "wage_group": "MONTHLY", "admin_password": "wrong"}, follow_redirects=True)

@@ -220,8 +220,8 @@ def test_settings_rules_are_all_live_configuration():
 def test_settings_page_renders_rule_effects(client, app):
     login(client)
     page = client.get("/settings")
-    assert b"Full-day grace threshold" in page.data
-    assert b"8h 50m" in page.data
+    assert b"Full-day minimum (2/3 of shift)" in page.data
+    assert b"6h 00m" in page.data
     assert b"SHIFT_START_MINUTES" not in page.data
 
 
@@ -1316,8 +1316,8 @@ def test_master_export_leads_with_sample_rows(client, app):
     body = client.get("/master/export.csv").data.decode()
     lines = [line for line in body.splitlines() if line.strip()]
     assert lines[0].endswith("Ignore OT,Ignore Less Hours,Annual CTC Bonus,Ignore Monthly Bonus,Week Off Pattern,Shift Pattern,Status,Last Working Day")
-    assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,Accounts,Accounts Executive,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
-    assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,Mechanical Production,Helper,Daily,5000,0,0,0,,No,No,Yes,No")
+    assert lines[1].startswith("EXAMPLE-MONTHLY,Example Monthly Employee,Accounts,Accounts Executive,01-04-2024,Monthly,50000,35000,10000,5000,2500,Yes,No,Yes,No")
+    assert lines[2].startswith("EXAMPLE-DAILY,Example Daily Employee,Mechanical Production,Helper,15-06-2025,Daily,5000,0,0,0,,No,No,Yes,No")
     # The sample IDs cannot be mistaken for an employee number, so a reader never
     # reads the file as holding two rows for the same person.
     assert not any(line.split(",")[0].isdigit() for line in lines[1:3])
@@ -2148,17 +2148,30 @@ def test_full_attendance_earns_the_ten_percent_bonus(app):
 
 
 def test_days_inside_the_full_day_grace_carry_no_absence(app):
-    """8h55m is inside the full-day grace, so it is not bonus absence.
+    """A day at or above the shift's required hours carries no absence or less hours.
 
-    Less hours is measured on the shift clock instead: in at 09:30 and out at
-    06:25 PM or 06:23 PM is 15 minutes early out each, grace or not.
+    With no grace the required hours are the full 9 hours, so 8h55m and 8h53m are
+    absence and less hours. With a 10-minute check-out grace the bar is 8h50m and
+    both days are complete.
     """
+    from attendance.models import Shift
+    from attendance.shifts import clear_shift_cache
     with app.app_context():
         result = daily_bonus_result({1: 535, 2: 533, 3: 540, 4: 545})
-        assert result.absence_minutes == 0
+        assert result.absence_minutes == 5 + 7
         assert Decimal(result.paid_working_days) == Decimal("4")
-        assert result.early_out_minutes == 30 and result.late_in_minutes == 0
+        # Each day is under 15 minutes short, charged as 15.
         assert Decimal(result.less_hours_minutes) == 30
+        assert result.early_out_minutes == 12 and result.late_in_minutes == 0
+        assert Decimal(result.attendance_bonus_percent) == Decimal("5")
+
+        Shift.query.filter_by(is_default=True).one().early_out_grace_minutes = 10
+        db.session.commit()
+        clear_shift_cache()
+        calculate_payroll_month("2026-07")
+        result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="6").one()
+        assert result.absence_minutes == 0
+        assert Decimal(result.less_hours_minutes) == 0
         assert Decimal(result.attendance_bonus_percent) == Decimal("10")
 
 
@@ -2286,8 +2299,10 @@ def test_split_punches_under_three_hours_need_review_instead_of_lop(app):
         assert by_date["2026-07-01"]["attendance_status"] == "Needs Review"
         assert "Multiple punch pairs" in by_date["2026-07-01"]["explanation"]
         assert by_date["2026-07-02"]["attendance_status"] == "Full Day LOP"
-        # A day awaiting review is not silently deducted as loss of pay.
-        assert Decimal(result.lop_days) == Decimal("1")
+        # A day awaiting review is not classified as LOP: it stays Needs Review, and
+        # is unpaid only until someone sets it, the same as for daily wage. The month
+        # cannot be finalized meanwhile.
+        assert Decimal(result.lop_days) == Decimal("2")
         assert result.calculation_status == "Needs Review"
 
 
@@ -4123,9 +4138,12 @@ def test_monthly_less_hours_is_split_into_late_in_and_early_out(app):
         calculate_payroll_month("2026-07")
         result = PayrollResult.query.filter_by(payroll_month="2026-07", employee_id="5").one()
         days = {x["date"]: x for x in result.detail_json}
-        assert (days["2026-07-06"]["late_in_minutes"], days["2026-07-06"]["early_out_minutes"]) == (30, 0)
-        assert (days["2026-07-07"]["late_in_minutes"], days["2026-07-07"]["early_out_minutes"]) == (0, 30)
-        assert result.late_in_minutes == 30 and result.early_out_minutes == 30
+        # Late in and early out are the clock minutes; each day is 20 minutes short
+        # of the 9-hour shift, charged as 30.
+        assert (days["2026-07-06"]["late_in_minutes"], days["2026-07-06"]["early_out_minutes"]) == (20, 0)
+        assert (days["2026-07-07"]["late_in_minutes"], days["2026-07-07"]["early_out_minutes"]) == (0, 20)
+        assert days["2026-07-06"]["shortage_minutes"] == 30 and days["2026-07-07"]["shortage_minutes"] == 30
+        assert result.late_in_minutes == 20 and result.early_out_minutes == 20
         assert result.less_hours_minutes == 60
         assert Decimal(result.less_hours_deduction) > 0
 
@@ -4520,11 +4538,11 @@ def test_short_hours_round_up_while_overtime_rounds_down(app):
     from attendance.payroll_rules import calculate_monthly_overtime, calculate_monthly_shortage
     # 8h12 is 48 minutes short of the 9h day.
     assert calculate_monthly_shortage(8 * 60 + 12) == 60
-    # 8h47 is inside the 8h50 grace threshold by 3 minutes, but the band starts below
-    # it, so 13 minutes short is charged as a full 15.
+    # 13 minutes short is charged as a full 15.
     assert calculate_monthly_shortage(8 * 60 + 47) == 15
-    # A day at or above the grace threshold is charged nothing at all.
-    assert calculate_monthly_shortage(8 * 60 + 50) == 0
+    # With no grace on the shift, only the full 9 hours is charged nothing.
+    assert calculate_monthly_shortage(8 * 60 + 50) == 15
+    assert calculate_monthly_shortage(9 * 60) == 0
     # 9h42 reaches the 9h30 trigger and pays 30 minutes over the 9h full day.
     assert calculate_monthly_overtime(9 * 60 + 42)[1] == 30
     assert calculate_monthly_overtime(9 * 60 + 22)[1] == 0

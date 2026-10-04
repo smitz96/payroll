@@ -7,25 +7,17 @@ COMPANY_ADDRESS = (
     "Ramol, Ahmedabad, India 382445"
 )
 
-# The day thresholds below are written for the 9-hour Normal Shift. A shift of any
-# other length scales them by the same fractions: full day at 2/3 of the shift, half
-# day at 1/3, full-day grace 10 minutes short of it, and total-hours overtime from 30
-# minutes past it. See attendance/shifts.py.
+# The full-day and half-day thresholds below are written for the 9-hour Normal Shift.
+# A shift of any other length scales them by the same fractions: full day at 2/3 of
+# the shift and half day at 1/3. Required hours, grace and overtime grace belong to
+# each shift. See attendance/shifts.py.
 MONTHLY_RULES = {
     "FULL_DAY_MINUTES": 9 * 60,
-    "FULL_DAY_REQUIRED_MINUTES": 8 * 60 + 50,
     "HALF_DAY_MINIMUM_MINUTES": 3 * 60,
     "LESS_HOURS_RULE_MINIMUM_MINUTES": 6 * 60,
-    # Less hours on a full day is measured against the employee's shift (see
-    # attendance/shifts.py), in two parts: checking in after the start grace, and
-    # checking out before the shift ends. Each part is rounded up to the rounding
-    # interval and the two are added.
-    "LATE_IN_GRACE_MINUTES": 10,
-    # On a full day overtime is counted from the shift end, once checkout is at
-    # least this far past it. Week offs and holidays worked have no shift to
-    # measure against, so they still use OVERTIME_START_MINUTES of total work.
-    "OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES": 30,
-    "OVERTIME_START_MINUTES": 9 * 60 + 30,
+    # Less hours on a full day is the shortfall against the shift's length, charged
+    # only when working hours fall below the shift's required hours (its length less
+    # its check-in and check-out grace). See attendance/shifts.py.
     "ROUNDING_INTERVAL_MINUTES": 15,
     # 0 means "use the actual number of days in the payroll month", which is what the
     # manual salary sheet does. A fixed number can still be set here, but no single
@@ -49,14 +41,10 @@ MONTHLY_RULES = {
 # Human-readable labels for the Settings page. Every key here is read by
 # attendance/payroll_rules.py or attendance/parser.py; nothing is display-only.
 MONTHLY_RULE_LABELS = {
-    "FULL_DAY_MINUTES": ("Full working day (Normal Shift)", "The Normal Shift length every other threshold here is written for. Other shifts use their own length and scale the rest. Target for overtime on week offs and holidays worked, and for less hours when a day has no punch times."),
-    "FULL_DAY_REQUIRED_MINUTES": ("Full-day grace threshold", "10 minutes short of the shift. Used for the daily wage attendance bonus, and for less hours only when a day has working hours but no punch times."),
+    "FULL_DAY_MINUTES": ("Full working day (Normal Shift)", "The Normal Shift length the full-day and half-day thresholds are written for. Other shifts use their own length and scale them."),
     "HALF_DAY_MINIMUM_MINUTES": ("Half-day minimum (1/3 of shift)", "Below this a worked day earns no pay of its own. For monthly wage it is covered by available leave, and is loss of pay only if there is none."),
-    "LESS_HOURS_RULE_MINIMUM_MINUTES": ("Full-day minimum (2/3 of shift)", "At or above this the day is paid full, with late check-in and early check-out charged as less hours."),
-    "LATE_IN_GRACE_MINUTES": ("Late check-in grace", "Checking in up to this long after the shift starts is not charged. After it, the time from the shift start is charged, rounded up: on a 9:30 shift, 9:41 is charged as 15 minutes and 9:50 as 30. Checking out before the shift ends has no grace: 6:29 PM on a 6:30 shift is 15 minutes."),
-    "OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES": ("Overtime minimum after shift", "On a full day, overtime is paid only when checkout is at least this long after the shift ends, floored to the rounding interval: 7:40 PM after a 6:30 shift is paid as 1 hour."),
-    "OVERTIME_START_MINUTES": ("Overtime starts at (week off / holiday)", "30 minutes past the shift. On a week off or holiday worked, overtime is paid only when rounded work reaches this daily duration."),
-    "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Late check-in and early check-out are each rounded up to this interval; overtime is floored to it."),
+    "LESS_HOURS_RULE_MINIMUM_MINUTES": ("Full-day minimum (2/3 of shift)", "At or above this the day is paid full. Hours short of the shift's required hours are charged as less hours."),
+    "ROUNDING_INTERVAL_MINUTES": ("Rounding interval", "Less hours are rounded up to this interval; overtime is rounded down to it."),
     "SALARY_CALCULATION_DAYS": ("Salary days per month", "Monthly salary is divided by this for the daily LOP rate. Set to 0 to divide by the actual days in each month."),
     "MONTHLY_RATE_HOURS_PER_DAY": ("Monthly wage rate divisor", "For less-hours and overtime only: monthly daily rate is divided by this many hours."),
     "DAILY_RATE_HOURS_PER_DAY": ("Daily wage rate divisor", "For less-hours and overtime only: daily wage rate is divided by this many hours."),
@@ -84,14 +72,10 @@ DAILY_BONUS_RULE_LABELS = {
 
 MINUTE_RULE_KEYS = {
     "FULL_DAY_MINUTES",
-    "FULL_DAY_REQUIRED_MINUTES",
     "HALF_DAY_MINIMUM_MINUTES",
     "LESS_HOURS_RULE_MINIMUM_MINUTES",
-    "OVERTIME_START_MINUTES",
     "MAX_SESSION_MINUTES",
     "PARTIAL_ATTENDANCE_MAX_ABSENCE_MINUTES",
-    "LATE_IN_GRACE_MINUTES",
-    "OVERTIME_AFTER_SHIFT_MINIMUM_MINUTES",
 }
 
 def format_clock_minutes(minutes):

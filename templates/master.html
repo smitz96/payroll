@@ -124,6 +124,9 @@
         <label class="form-label">Designation</label>
         <input class="form-control mb-3" name="designation" list="designationOptions" placeholder="e.g. Wireman" autocomplete="off">
         <div class="status-detail mb-3">Both are filled automatically from the attendance sheet on import. Set them here for employees added manually.</div>
+        <label class="form-label">Date of Joining</label>
+        <input class="form-control mb-1" name="joined_on" type="date">
+        <div class="status-detail mb-3">Days before it in the joining month are not paid and do not use leave. Leave blank for someone employed before the first payroll month.</div>
         <label class="form-label">Wage Type</label>
         <select class="form-select mb-3" name="wage_type" required>
           <option value="Monthly">Monthly</option>
@@ -219,6 +222,8 @@
         <input class="form-control mb-3" name="department" value="{{ employee.department or '' }}" list="departmentOptions" autocomplete="off" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
         <label class="form-label">Designation</label>
         <input class="form-control mb-3" name="designation" value="{{ employee.designation or '' }}" list="designationOptions" autocomplete="off" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
+        <label class="form-label">Date of Joining</label>
+        <input class="form-control mb-3" name="joined_on" type="date" value="{{ employee.joined_on.isoformat() if employee.joined_on else '' }}" {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
         <label class="form-label">Wage Type</label>
         <select class="form-select mb-3" name="wage_type" required {% if employee.employment_status != 'ACTIVE' %}disabled{% endif %}>
           <option value="Monthly" {% if employee.normalized_salary_type == 'MONTHLY' %}selected{% endif %}>Monthly</option>

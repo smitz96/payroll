@@ -6,10 +6,19 @@ written before shifts existed behave exactly as they did.
 
 The day thresholds in MONTHLY_RULES are written for the 9-hour Normal Shift. A shift
 of another length scales them by the same fractions rather than reusing the 9-hour
-figures: a full day needs 2/3 of the shift and a half day 1/3, the full-day grace is
-10 minutes short of the shift, and overtime on a week off or holiday worked starts
-30 minutes past it. The fractions are kept exact, so the Normal Shift is still
-exactly 6h and 3h, and an 8-hour shift needs 5h20m for a full day.
+figures: a full day needs 2/3 of the shift and a half day 1/3. The fractions are
+kept exact, so the Normal Shift is still exactly 6h and 3h, and an 8-hour shift needs
+5h20m for a full day.
+
+A day is then judged on its working hours against the shift:
+
+1. Hours at or above the shift's required hours (its length less its check-in and
+   check-out grace) carry no less hours.
+2. Below that, the shortfall against the full shift length is charged, rounded up.
+3. Hours at or above the shift length plus its overtime grace earn overtime on the
+   time beyond the shift length, rounded down.
+
+Check-in and check-out grace are 0 unless set; overtime grace is 30 minutes.
 """
 import re
 from dataclasses import dataclass
@@ -31,12 +40,12 @@ DEFAULT_SHIFT_END = 18 * 60 + 30
 # shift of any length scales them the same way.
 FULL_DAY_FRACTION = Fraction(CFG["LESS_HOURS_RULE_MINIMUM_MINUTES"], CFG["FULL_DAY_MINUTES"])
 HALF_DAY_FRACTION = Fraction(CFG["HALF_DAY_MINIMUM_MINUTES"], CFG["FULL_DAY_MINUTES"])
-FULL_DAY_GRACE_GAP = CFG["FULL_DAY_MINUTES"] - CFG["FULL_DAY_REQUIRED_MINUTES"]
-TOTAL_HOURS_OVERTIME_GAP = CFG["OVERTIME_START_MINUTES"] - CFG["FULL_DAY_MINUTES"]
+DEFAULT_OVERTIME_GRACE = 30
 
 # A shift has to leave room for a half day and a full day to mean anything, and a
 # day shift cannot run past midnight.
 MINIMUM_SHIFT_MINUTES = 60
+MAXIMUM_GRACE_MINUTES = 120
 SHIFT_NAME_MAX_LENGTH = 80
 
 
@@ -64,6 +73,9 @@ class ShiftTimes:
     start: int
     end: int
     id: int = None
+    late_in_grace: int = 0
+    early_out_grace: int = 0
+    overtime_grace: int = DEFAULT_OVERTIME_GRACE
 
     @property
     def length(self):
@@ -78,12 +90,14 @@ class ShiftTimes:
         return Fraction(self.length) * HALF_DAY_FRACTION
 
     @property
-    def full_day_grace(self):
-        return self.length - FULL_DAY_GRACE_GAP
+    def required_minutes(self):
+        """Working time that carries no less hours: the shift less both graces."""
+        return self.length - self.late_in_grace - self.early_out_grace
 
     @property
-    def total_hours_overtime_start(self):
-        return self.length + TOTAL_HOURS_OVERTIME_GAP
+    def overtime_start(self):
+        """Working time from which overtime is paid: the shift plus its OT grace."""
+        return self.length + self.overtime_grace
 
     def is_full_day(self, actual):
         return actual is not None and actual >= self.full_day_minimum
@@ -99,12 +113,20 @@ class ShiftTimes:
     def label(self):
         return f"{self.name} ({self.hours_label})"
 
+    @property
+    def grace_label(self):
+        return f"Grace: in {self.late_in_grace}m, out {self.early_out_grace}m, OT {self.overtime_grace}m"
+
 
 DEFAULT_SHIFT = ShiftTimes(DEFAULT_SHIFT_NAME, DEFAULT_SHIFT_START, DEFAULT_SHIFT_END)
 
 
 def shift_times(shift):
-    return ShiftTimes(shift.name, shift.start_minutes, shift.end_minutes, shift.id)
+    return ShiftTimes(
+        shift.name, shift.start_minutes, shift.end_minutes, shift.id,
+        int(shift.late_in_grace_minutes or 0), int(shift.early_out_grace_minutes or 0),
+        int(shift.overtime_grace_minutes if shift.overtime_grace_minutes is not None else DEFAULT_OVERTIME_GRACE),
+    )
 
 
 def ensure_default_shift():
@@ -180,8 +202,26 @@ def parse_clock_input(value, label):
     raise ValueError(f'{label}: "{value}" is not a time, such as 09:30 or 6:30 PM.')
 
 
-def validate_shift(name, start, end, shift_id=None):
-    """Clean a shift's fields, or raise ValueError saying what is wrong."""
+def parse_grace(value, label, shift_length, blank=0):
+    """Grace minutes from a form field: blank is `blank`, otherwise a whole number of
+    minutes that leaves the shift with time that can still be charged."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return blank
+    if not text.isdigit():
+        raise ValueError(f'{label}: "{value}" must be a whole number of minutes, 0 or more.')
+    minutes = int(text)
+    if minutes > MAXIMUM_GRACE_MINUTES:
+        raise ValueError(f"{label}: grace cannot be more than {MAXIMUM_GRACE_MINUTES} minutes.")
+    if minutes >= shift_length:
+        raise ValueError(f"{label}: grace must be shorter than the shift.")
+    return minutes
+
+
+def validate_shift(name, start, end, shift_id=None, late_in_grace=0, early_out_grace=0, overtime_grace=DEFAULT_OVERTIME_GRACE):
+    """Clean a shift's fields, or raise ValueError saying what is wrong.
+
+    Returns (name, start, end, late_in_grace, early_out_grace, overtime_grace)."""
     name = re.sub(r"\s+", " ", str(name or "").strip())
     if not name:
         raise ValueError("Shift name is required.")
@@ -198,7 +238,13 @@ def validate_shift(name, start, end, shift_id=None):
     for other in Shift.query.all():
         if other.id != shift_id and other.name.lower() == name.lower():
             raise ValueError(f'A shift named "{other.name}" already exists.')
-    return name, start_minutes, end_minutes
+    length = end_minutes - start_minutes
+    in_grace = parse_grace(late_in_grace, f"{name} check-in grace", length)
+    out_grace = parse_grace(early_out_grace, f"{name} check-out grace", length)
+    if in_grace + out_grace >= length:
+        raise ValueError(f"{name}: check-in and check-out grace together must be shorter than the shift.")
+    ot_grace = parse_grace(overtime_grace, f"{name} overtime grace", length, blank=DEFAULT_OVERTIME_GRACE)
+    return name, start_minutes, end_minutes, in_grace, out_grace, ot_grace
 
 
 def shift_usage(shift_id):
