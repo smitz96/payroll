@@ -1,5 +1,6 @@
 import calendar
 import csv
+from urllib.parse import quote
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from io import StringIO
@@ -19,7 +20,7 @@ from attendance.loans import active_loans_for_employee, employee_has_loan, loan_
 from attendance.master import employee_active_for_payroll_month, employees_left_out_of_month, sync_salary_records_from_master
 from attendance.models import AuditLog, AttendanceOverride, AttendanceRecord, Employee, LeaveLedger, LoanInstallmentSkip, PayrollMonth, PayrollResult, SalaryRecord, User
 from attendance.parser import ensure_month, import_attendance_csv, import_employee_attendance
-from attendance.payroll_rules import calculate_less_hours, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave, salary_days_for_month
+from attendance.payroll_rules import OVERTIME_STATUSES, calculate_day_overtime, calculate_less_hours, classify_daily_attendance, classify_monthly_attendance, daily_bonus_explanation, redeemable_leave, salary_days_for_month
 from attendance.reports import attendance_detail_csv, payroll_month_days, payroll_summary_csv, punch_sessions, total_paid_days
 from attendance.settings import DAILY_BONUS_RULES, MONTHLY_RULES as CFG
 from attendance.statutory import PROFESSIONAL_TAX_SLABS, STATUTORY_RULES
@@ -248,24 +249,27 @@ def employee_attendance_rows(records, result=None, salary=None, overrides=None):
             late_in = int(detail.get("late_in_minutes") or 0)
             early_out = int(detail.get("early_out_minutes") or 0)
             shortage_minutes = int(detail.get("shortage_minutes") or 0)
+            overtime_minutes = int(detail.get("payable_ot") or 0)
         elif salary and salary.normalized_salary_type == "MONTHLY":
             classified = classify_monthly_attendance(record, holidays, overrides.get(record.date), record.employee_id)
             raw_status = classified["status"]
             explanation = classified["explanation"]
             late_in, early_out, shortage_minutes = calculate_less_hours(record)
+            overtime_minutes = preview_overtime(record, raw_status)
         elif salary and salary.normalized_salary_type == "DAILY":
             classified = classify_daily_attendance(record, holidays, overrides.get(record.date), record.employee_id)
             raw_status = classified["status"]
             explanation = classified["explanation"]
             late_in, early_out, shortage_minutes = calculate_less_hours(record)
+            overtime_minutes = preview_overtime(record, raw_status)
         elif salary and salary.normalized_salary_type not in {"MONTHLY", "DAILY"}:
             raw_status = "Payroll Rules Not Configured"
             explanation = "Salary type rules not configured."
-            late_in = early_out = shortage_minutes = 0
+            late_in = early_out = shortage_minutes = overtime_minutes = 0
         else:
             raw_status = "Pending Calculation" if record.parse_status == "OK" else "Needs Review"
             explanation = record.warning or ""
-            late_in = early_out = shortage_minutes = 0
+            late_in = early_out = shortage_minutes = overtime_minutes = 0
         error = is_attendance_error(record, raw_status)
         display_status = attendance_display_status(raw_status)
         is_shortage = raw_status == "Full Day Present" and shortage_minutes > 0
@@ -281,10 +285,66 @@ def employee_attendance_rows(records, result=None, salary=None, overrides=None):
             "late_in_minutes": late_in,
             "early_out_minutes": early_out,
             "shortage_minutes": shortage_minutes,
+            "overtime_minutes": overtime_minutes,
+            "overtime_duration": minutes_to_duration(overtime_minutes) if overtime_minutes else "",
             "status_tone": attendance_status_tone(display_status, error, is_shortage),
             "sort_key": (0 if error else 1, record.date),
         })
     return sorted(rows, key=lambda row: row["sort_key"])
+
+
+def whatsapp_share(month, employee_id, salary, result, is_finalized):
+    """Pre-filled WhatsApp message and the PDF to attach, for the employee page.
+
+    WhatsApp's share link carries text only, so the button downloads the PDF for the
+    sender to attach, then opens WhatsApp with the summary typed out. No number is
+    stored, so WhatsApp asks who to send it to. Net pay is only quoted once the wage
+    group is finalized, because a draft figure can still change.
+    """
+    if not result or not salary or salary.normalized_salary_type not in {"MONTHLY", "DAILY"}:
+        return None
+    daily = salary.normalized_salary_type == "DAILY"
+
+    def days(value):
+        text = f"{Decimal(value or 0).quantize(Decimal('0.01')):f}"
+        return text.rstrip("0").rstrip(".") if "." in text else text
+
+    lines = [
+        f"*{'Attendance' if daily and not is_finalized else 'Salary'} summary - {display_month(month)}*",
+        f"{salary.name} (ID {employee_id})",
+        "",
+        f"Paid days: {days(total_paid_days(result))} of {payroll_month_days(month)}",
+    ]
+    if daily:
+        lines.append(f"Days worked: {days(result.paid_working_days)}")
+    else:
+        lines.append(f"Loss of pay: {days(result.lop_days)} day(s)")
+        lines.append(f"Leave used: {days(result.leave_used)} · Leave balance: {days(result.closing_leave)}")
+    lines.append(f"Less hours: {minutes_to_duration(result.less_hours_minutes or 0)}")
+    lines.append(f"Overtime: {minutes_to_duration(result.payable_ot_minutes or 0)}")
+    if is_finalized and result.final_salary is not None:
+        lines.append(f"*Net pay: ₹{money_text(result.final_salary)}*")
+    if is_finalized and not daily:
+        document, url = "salary slip", url_for("reports.employee_pdf", month=month, employee_id=employee_id)
+        filename = f"smartfill-salary-slip-{month}-{employee_id}.pdf"
+    else:
+        document = "attendance summary"
+        url = url_for("reports.employee_attendance_summary_pdf", month=month, employee_id=employee_id)
+        filename = f"attendance-summary-{month}-{employee_id}.pdf"
+    lines += ["", f"Your {document} PDF is attached."]
+    return {
+        "url": "https://wa.me/?text=" + quote("\n".join(lines)),
+        "pdf_url": url,
+        "pdf_name": filename,
+        "document": document,
+    }
+
+
+def preview_overtime(record, raw_status):
+    """Payable overtime for a day before the month is calculated, by the same rule."""
+    if raw_status not in OVERTIME_STATUSES:
+        return 0
+    return calculate_day_overtime(record, raw_status)[1]
 
 
 def save_employee_detail_changes(month, employee_id):
@@ -938,6 +998,7 @@ def employee(month, employee_id):
     return render_template(
         "employee_detail.html",
         review_nav=review_navigation(month, employee_id),
+        whatsapp=whatsapp_share(month, employee_id, salary, result, is_payroll_finalized(month, employee_id)),
         review_reasons=explained_review_items(result),
         calendar_weeks=attendance_calendar(month, attendance_rows),
         month_label=display_month(month),

@@ -235,3 +235,13 @@ def test_attendance_summary_marks_overtime_days_with_a_tick_and_duration(client,
     assert "2h 00m OT" in text
     assert "1h 00m short" in text
     assert "+120m OT" not in text
+
+
+def test_employee_calendar_shows_an_overtime_badge(client, app):
+    with app.app_context():
+        seed(minutes={6: 660})
+        calculate()
+    client.post("/login", data={"username": "admin", "password": "12345"})
+    page = client.get(f"/payroll/{MONTH}/employee/5").data.decode()
+    assert 'class="status-badge status-overtime"' in page
+    assert "OT: 2h 00m" in page

@@ -1,8 +1,13 @@
 # Version History
 
-## V1.16
+## V1.17
 
 Current version.
+
+- The employee payroll calendar shows a blue "OT" badge with a tick and the payable time on overtime days, beside the existing "Less hours" badge.
+- A "Share on WhatsApp" button on the employee payroll page downloads the PDF to attach and opens WhatsApp with a summary typed out: paid days, loss of pay, leave, less hours and overtime, and net pay once the wage group is finalized. Before finalizing, and for daily wage, it shares the attendance summary; once Monthly wage is finalized, the salary slip. WhatsApp asks who to send it to; no phone numbers are stored.
+
+## V1.16
 
 - Attendance summary and salary slip calendars mark overtime days with a blue tick and the payable time (for example "2h 00m OT"), the counterpart of the warning mark and "1h 00m short" on less-hours days. It replaces the plain "+120m OT" text.
 

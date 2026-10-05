@@ -1898,3 +1898,10 @@ html[data-theme="dark"] .missing-punch-cell .punch-placeholder { color:var(--ios
 .grace-input span { color:var(--smartfill-muted); font-size:.8rem; }
 .shift-works-out span { display:block; font-size:.8rem; color:var(--smartfill-muted); white-space:nowrap; }
 .shift-works-out strong { color:var(--smartfill-text, inherit); }
+/* Overtime: the blue tick of the PDF calendar, as a badge on the web calendar. */
+.status-overtime { display:inline-flex; align-items:center; gap:5px; background:color-mix(in srgb, #2196F3 16%, transparent); color:var(--ios-blue-text); }
+.ot-tick { position:relative; flex:0 0 auto; width:13px; height:13px; border-radius:50%; background:#2196F3; }
+.ot-tick::after { content:""; position:absolute; left:4.3px; top:2.2px; width:3px; height:6px; border:solid #fff; border-width:0 1.8px 1.8px 0; transform:rotate(45deg); }
+.btn-whatsapp { display:inline-flex; align-items:center; gap:7px; background:#25D366; border-color:#25D366; color:#fff; }
+.btn-whatsapp:hover, .btn-whatsapp:focus { background:#1EBE5B; border-color:#1EBE5B; color:#fff; }
+.whatsapp-icon { width:17px; height:17px; fill:currentColor; flex:0 0 auto; }
