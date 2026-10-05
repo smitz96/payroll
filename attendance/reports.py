@@ -14,7 +14,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import Flowable, Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from reportlab.graphics.shapes import Drawing, Polygon, String
+from reportlab.graphics.shapes import Circle, Drawing, PolyLine, Polygon, String
 
 from attendance import db
 from attendance.loans import loan_installment_for_loan, loan_paid_before_month, loan_pending_after_month, loan_remaining_before_month, loan_repayment_schedule
@@ -1165,19 +1165,36 @@ def warning_icon(size=10):
     return drawing
 
 
-def calendar_warning_block(minutes, icon_size):
-    """Centered short-hours warning for a PDF calendar cell."""
-    warning_text = f"{minutes_to_duration(minutes)} short"
+OVERTIME_BLUE = colors.HexColor("#2196F3")
+
+
+def tick_icon(size=10):
+    """Blue circle with a white tick, the overtime counterpart of warning_icon."""
+    drawing = Drawing(size, size)
+    drawing.add(Circle(size / 2, size / 2, size / 2, fillColor=OVERTIME_BLUE, strokeColor=None))
+    drawing.add(PolyLine(
+        [size * 0.29, size * 0.52, size * 0.45, size * 0.36, size * 0.73, size * 0.65],
+        strokeColor=colors.white,
+        strokeWidth=max(0.8, size * 0.12),
+        strokeLineCap=1,
+        strokeLineJoin=1,
+    ))
+    drawing.hAlign = "CENTER"
+    return drawing
+
+
+def calendar_icon_block(icon, text, text_colour, icon_size):
+    """An icon over a short bold caption, centred in a PDF calendar cell."""
     text_style = ParagraphStyle(
-        "CalShortageBlock",
+        "CalIconBlock",
         fontName="Helvetica-Bold",
         fontSize=8.8 if icon_size >= 10 else 5.4,
         leading=10 if icon_size >= 10 else 6.4,
-        textColor=RED_TEXT,
+        textColor=text_colour,
         alignment=TA_CENTER,
     )
     table = Table(
-        [[warning_icon(icon_size)], [Paragraph(warning_text, text_style)]],
+        [[icon], [Paragraph(text, text_style)]],
         colWidths=[28 * mm if icon_size >= 10 else 16 * mm],
     )
     table.setStyle(TableStyle([
@@ -1190,6 +1207,16 @@ def calendar_warning_block(minutes, icon_size):
     ]))
     table.hAlign = "CENTER"
     return table
+
+
+def calendar_overtime_block(minutes, icon_size):
+    """Centered overtime mark for a PDF calendar cell: blue tick and the payable time."""
+    return calendar_icon_block(tick_icon(icon_size), f"{minutes_to_duration(minutes)} OT", TINT_TEXT, icon_size)
+
+
+def calendar_warning_block(minutes, icon_size):
+    """Centered short-hours warning for a PDF calendar cell."""
+    return calendar_icon_block(warning_icon(icon_size), f"{minutes_to_duration(minutes)} short", RED_TEXT, icon_size)
 
 
 def attendance_calendar_grid(month, result):
@@ -1668,11 +1695,8 @@ def attendance_calendar_table(month, result, styles, available_width, compact=Fa
                 parts.append(Paragraph(cell["hours"], meta_style_local))
             if cell["shortage"]:
                 parts.append(calendar_warning_block(cell["shortage"], 10 if variant is not SLIP else 6))
-            extras = []
             if cell["overtime"]:
-                extras.append(f"+{cell['overtime']}m OT")
-            if extras:
-                parts.append(Paragraph(" ".join(extras), meta_style_local))
+                parts.append(calendar_overtime_block(cell["overtime"], 10 if variant is not SLIP else 6))
             row.append(parts)
             style.append(("BACKGROUND", (column, week_index), (column, week_index), wash))
         data.append(row)

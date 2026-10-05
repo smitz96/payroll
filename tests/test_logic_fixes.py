@@ -221,3 +221,17 @@ def test_date_of_joining_is_saved_from_the_form_and_the_master_file(client, app)
                 content_type="multipart/form-data")
     with app.app_context():
         assert db.session.get(Employee, "7").joined_on == date(2026, 7, 20)
+
+
+def test_attendance_summary_marks_overtime_days_with_a_tick_and_duration(client, app):
+    from io import BytesIO
+    from pypdf import PdfReader
+    with app.app_context():
+        seed(minutes={6: 660, 7: 480})
+        calculate()
+    client.post("/login", data={"username": "admin", "password": "12345"})
+    data = client.get(f"/reports/{MONTH}/employee/5/attendance-summary.pdf").data
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(data)).pages)
+    assert "2h 00m OT" in text
+    assert "1h 00m short" in text
+    assert "+120m OT" not in text

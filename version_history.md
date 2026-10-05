@@ -1,8 +1,12 @@
 # Version History
 
-## V1.15
+## V1.16
 
 Current version.
+
+- Attendance summary and salary slip calendars mark overtime days with a blue tick and the payable time (for example "2h 00m OT"), the counterpart of the warning mark and "1h 00m short" on less-hours days. It replaces the plain "+120m OT" text.
+
+## V1.15
 
 - Each shift has three grace settings in the Shifts panel on the Week Offs page: check-in grace and check-out grace (0 unless set) and OT grace (30 minutes unless changed).
 - A day is now judged on working hours against its shift, not on the check-in and check-out times:
