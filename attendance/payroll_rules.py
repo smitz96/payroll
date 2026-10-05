@@ -1,14 +1,14 @@
 import calendar
 from collections import defaultdict
 from datetime import date, datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
 from attendance import db
 from attendance.models import AttendanceOverride, AttendanceRecord, Employee, Holiday, PayrollMonth, PayrollResult, SalaryRecord
 from attendance.advances import advance_deduction_for_employee
 from attendance.loans import loan_installment_for_employee, loan_pending_after_month_for_employee
 from attendance.settings import DAILY_BONUS_RULES as BONUS_CFG
-from attendance.statutory import professional_tax, statutory_for_employee, statutory_rules_for
+from attendance.statutory import esi_coverage_wage, professional_tax, statutory_for_employee, statutory_rules_for
 from attendance.settings import MONTHLY_RULES as CFG
 from attendance.utils import LEAVE_DAY_PRECISION, ceil_to_interval, floor_to_interval, minutes_to_duration, minutes_to_working_day_shortage, money, truncate_leave_days
 from attendance.shifts import DEFAULT_SHIFT, format_threshold, shift_for_date
@@ -299,7 +299,9 @@ class MonthlyPayrollRule(PayrollRule):
             # contribution period. Testing the ceiling against what was earned would
             # enrol an employee above the ceiling for any month they took enough
             # unpaid leave, and drop them again the month after.
-            esi_eligibility_wage=salary,
+            # Coverage uses the wage definition, which leaves out HRA up to half
+            # of pay; the contribution is still on the gross wage above.
+            esi_eligibility_wage=esi_coverage_wage(employee, salary),
             cfg=statutory_rules_for(salary_record.payroll_month),
         )
         # Gujarat professional tax is charged on the wage actually earned, so a month
@@ -313,7 +315,7 @@ class MonthlyPayrollRule(PayrollRule):
             + pf["employee"] + esi["employee"] + prof_tax + tds
         )
         total_addition = ot_amount + leave_encashment + (manual if manual > 0 else Decimal("0"))
-        final_salary = salary - total_deduction + total_addition
+        final_salary, round_off = round_net_pay(salary - total_deduction + total_addition)
         status = "Needs Review" if needs_review else "Calculated"
         return PayrollResult(
             payroll_month=salary_record.payroll_month,
@@ -361,6 +363,7 @@ class MonthlyPayrollRule(PayrollRule):
             total_deduction=money(total_deduction),
             total_addition=money(total_addition),
             final_salary=money(final_salary),
+            round_off=money(round_off),
             detail_json=details,
         )
 
@@ -497,7 +500,7 @@ class DailyPayrollRule(PayrollRule):
         # monthly wage deduction, as it is on the manual wage sheet.
         total_deduction = less_deduction + loan + advance + manual_deduction
         total_addition = ot_amount + attendance_bonus + (manual if manual > 0 else Decimal("0"))
-        final_salary = gross_salary - total_deduction + total_addition
+        final_salary, round_off = round_net_pay(gross_salary - total_deduction + total_addition)
         status = "Needs Review" if needs_review else "Calculated"
         return PayrollResult(
             payroll_month=salary_record.payroll_month,
@@ -537,6 +540,7 @@ class DailyPayrollRule(PayrollRule):
             total_deduction=money(total_deduction),
             total_addition=money(total_addition),
             final_salary=money(final_salary),
+            round_off=money(round_off),
             detail_json=details,
         )
 
@@ -648,6 +652,17 @@ def classify_daily_attendance(record, holidays=None, override=None, employee_id=
     if has_split_punches(record):
         return {"status": "Needs Review", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": SPLIT_PUNCH_REVIEW_EXPLANATION}
     return {"status": "Absent / Attendance Missing", "paid_day": Decimal("0"), "leave_used": Decimal("0"), "rounded_minutes": actual, "explanation": f"Less than {format_threshold(shift.half_day_minimum)} for {shift.name} is not payable for daily wage."}
+
+
+def round_net_pay(amount):
+    """Net pay in whole rupees, half up, with the rounding it took.
+
+    Salary is paid in whole rupees, as the payroll office's sheet already shows it:
+    67,243.75 is paid as 67,244 and 52,722.78 as 52,723.
+    """
+    amount = Decimal(amount)
+    rounded = amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return rounded, rounded - amount
 
 
 def comp_off_for(row):

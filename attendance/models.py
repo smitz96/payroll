@@ -280,6 +280,9 @@ class PayrollResult(db.Model):
     total_deduction = db.Column(db.Numeric(12, 2), default=0)
     total_addition = db.Column(db.Numeric(12, 2), default=0)
     final_salary = db.Column(db.Numeric(12, 2))
+    # Net pay is paid in whole rupees; this is what rounding added (or took off),
+    # so the slip still adds up to it.
+    round_off = db.Column(db.Numeric(6, 2), default=0)
     detail_json = db.Column(db.JSON, default=list)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     __table_args__ = (db.UniqueConstraint("payroll_month", "employee_id", name="uq_result_month_employee"),)

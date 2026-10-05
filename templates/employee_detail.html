@@ -113,7 +113,7 @@
         <div><dt>Employee ESIC</dt><dd>{{ result.esi_employee|money }}</dd></div>
         <div><dt>Employer ESIC</dt><dd>{{ result.esi_employer|money }}</dd></div>
       </dl>
-      <p class="compliance-note">{% if esic_on %}Calculated on an ESI wage of {{ result.esi_wage|money }}.{% else %}ESIC covers employees earning up to {{ esi_ceiling }} a month.{% endif %}</p>
+      <p class="compliance-note">{% if esic_on %}Calculated on an ESI wage of {{ result.esi_wage|money }}.{% else %}ESIC covers employees whose wage excluding HRA (up to half of pay) is {{ esi_ceiling }} a month or less.{% endif %}</p>
     </div>
     <div class="compliance-card">
       <header><strong>Tax</strong><span class="compliance-flag {{ 'is-on' if (result.professional_tax or result.tds) else 'is-off' }}">{{ "Payable" if (result.professional_tax or result.tds) else "Not payable" }}</span></header>

@@ -83,7 +83,7 @@ STATUTORY_RULE_LABELS = {
     "PF_ADMIN_MINIMUM_PER_MONTH": ("PF admin minimum", "Establishment-level floor for the monthly admin charge."),
     "ESI_EMPLOYEE_PERCENT": ("ESI employee share", "Deducted from the employee's salary."),
     "ESI_EMPLOYER_PERCENT": ("ESI employer share", "Paid by the company on top of salary."),
-    "ESI_WAGE_CEILING": ("ESI wage ceiling", "Above this monthly wage the employee is outside ESI coverage."),
+    "ESI_WAGE_CEILING": ("ESI wage ceiling", "Coverage is decided on the monthly wage excluding HRA (HRA beyond half of pay counts as wage). Above this the employee is outside ESI coverage; the contribution itself is on the gross wage."),
 }
 
 RUPEE = Decimal("1")
@@ -133,6 +133,19 @@ def pf_contributions(earned_basic, cfg=None):
         "edli": round_pf(_percent(wage, cfg["EDLI_PERCENT"])),
         "admin": round_pf(_percent(wage, cfg["PF_ADMIN_PERCENT"])),
     }
+
+
+def esi_coverage_wage(employee, salary):
+    """The monthly wage that decides ESI coverage, under the Code on Social Security.
+
+    "Wages" leave out HRA, but only up to half of total pay: the code adds back any
+    excluded allowance beyond 50% of remuneration. So someone on 22,300 with 7,805
+    HRA has a coverage wage of 14,495 and is inside the 21,000 ceiling. ESIC applied
+    this definition to coverage from its circular of 10 December 2025.
+    """
+    salary = Decimal(salary or 0)
+    hra = max(Decimal("0"), Decimal(getattr(employee, "hra", 0) or 0)) if employee else Decimal("0")
+    return salary - min(hra, salary / 2)
 
 
 def esi_covered(eligibility_wage, cfg=None):

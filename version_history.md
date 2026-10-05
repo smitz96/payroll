@@ -1,8 +1,17 @@
 # Version History
 
-## V1.18
+## V1.19
 
 Current version.
+
+Rule changes from the payroll office's corrected August 2026 salary sheet:
+
+- Net pay is rounded half up to the whole rupee (67,243.75 is paid as 67,244). The rounding is stored and shown on the salary slip as "Round Off (+/-)", so the slip still adds up. Months already finalized are unchanged.
+- The salary sheet's SHORT LEAVE column no longer repeats the loss-of-pay amount, which is already taken out of PAID BASIC, PAID HRA and PAID ALLOWANCE.
+- ESI coverage is decided on the wage excluding HRA (HRA beyond half of pay counts as wage), per the Code on Social Security wage definition. The contribution is still on the gross wage. Employees above 21,000 gross whose wage without HRA is 21,000 or less are now covered when their ESIC flag is on.
+- Yearly CTC on a slip prices in ESIC only when that month's payroll covered the employee, so finalized slips still match their own deductions.
+
+## V1.18
 
 - Each issued slip on an employee's Salary Slips page has a WhatsApp button that downloads the pay slip and opens WhatsApp with the month's summary and net pay.
 - Employee PDFs download with readable names, such as "Asha Chaudhary Pay Slip for September 2026.pdf" and "Asha Chaudhary Attendance Summary for September 2026.pdf". Single-letter middle initials are left out. This applies to the WhatsApp download and the normal PDF buttons alike.

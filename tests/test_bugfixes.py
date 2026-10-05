@@ -3795,14 +3795,17 @@ def test_yearly_ctc_matches_bijal_example(app):
 def test_yearly_ctc_uses_full_contract_values_for_affected_august_employees(app):
     from attendance.reports import yearly_ctc
 
+    # The last field is whether that month's payroll covered the employee for ESI:
+    # Jayesh was above the old 21,000 gross ceiling when August was finalized, so
+    # his August slip prices in no ESIC, matching its deductions.
     cases = (
-        ("22300", "14495", "7805", True, "310557.00"),   # Jayesh
-        ("16000", "10400", "5600", True, "228896.00"),   # Narendra
-        ("18000", "11700", "6300", True, "257545.00"),   # Sunil
-        ("15000", "9750", "5250", False, "201072.00"),    # Bhavesh
+        ("22300", "14495", "7805", True, "310557.00", False),   # Jayesh
+        ("16000", "10400", "5600", True, "228896.00", True),    # Narendra
+        ("18000", "11700", "6300", True, "257545.00", True),    # Sunil
+        ("15000", "9750", "5250", False, "201072.00", True),    # Bhavesh
     )
     with app.app_context():
-        for salary_amount, basic, hra, bonus_enabled, expected in cases:
+        for salary_amount, basic, hra, bonus_enabled, expected, esi_covered in cases:
             salary = SalaryRecord(salary=Decimal(salary_amount))
             employee = Employee(
                 basic_salary=Decimal(basic), hra=Decimal(hra),
@@ -3813,7 +3816,8 @@ def test_yearly_ctc_uses_full_contract_values_for_affected_august_employees(app)
             attendance_result = PayrollResult(
                 pf_employee=Decimal("1"), pf_employer=Decimal("1"),
                 pf_admin=Decimal("1"), pf_edli=Decimal("1"),
-                esi_employee=Decimal("1"), esi_employer=Decimal("1"),
+                esi_employee=Decimal("1" if esi_covered else "0"),
+                esi_employer=Decimal("1" if esi_covered else "0"),
                 professional_tax=Decimal("0"),
             )
             assert yearly_ctc(salary, employee, attendance_result) == Decimal(expected)
@@ -4571,17 +4575,21 @@ def test_a_day_is_worth_the_month_divided_by_its_own_length(app):
 
 
 def test_esi_coverage_follows_the_wage_rate_not_a_short_month(app):
-    """Unpaid leave must not enrol an employee who is above the ceiling."""
+    """Unpaid leave must not enrol an employee who is above the ceiling.
+
+    Coverage is on the wage excluding HRA, so the example earns well above 21,000
+    even after HRA comes off.
+    """
     with app.app_context():
         db.session.add(PayrollMonth(month="2026-07"))
         db.session.add(Employee(id="7", name="Above Ceiling", salary_type="Monthly",
-                                normalized_salary_type="MONTHLY", salary=Decimal("25000"),
-                                basic_salary=Decimal("16250"), hra=Decimal("8750"),
+                                normalized_salary_type="MONTHLY", salary=Decimal("40000"),
+                                basic_salary=Decimal("26000"), hra=Decimal("14000"),
                                 esic_enabled=True))
         db.session.add(WeekOffRule(employee_id="7", confirmed_at=datetime.utcnow()))
         db.session.add(SalaryRecord(payroll_month="2026-07", employee_id="7", name="Above Ceiling",
                                     salary_type="Monthly", normalized_salary_type="MONTHLY",
-                                    salary=Decimal("25000")))
+                                    salary=Decimal("40000")))
         # A single working day: the month's earned wage lands far below the ceiling.
         when = date(2026, 7, 1)
         db.session.add(AttendanceRecord(payroll_month="2026-07", employee_id="7", employee_name="Above Ceiling",

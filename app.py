@@ -142,6 +142,7 @@ def ensure_schema_columns():
             ("tds", "NUMERIC(12, 2) DEFAULT 0"),
             # Less hours split into late check-in and early check-out. Months calculated
             # before the split keep 0 in both; their total stays in less_hours_minutes.
+            ("round_off", "NUMERIC(6, 2) DEFAULT 0"),
             ("late_in_minutes", "INTEGER DEFAULT 0"),
             ("early_out_minutes", "INTEGER DEFAULT 0"),
         ):

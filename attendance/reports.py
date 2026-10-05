@@ -26,6 +26,7 @@ from attendance.statutory import (
     PROFESSIONAL_TAX_SLABS,
     STATUTORY_RULES,
     esi_contributions,
+    esi_coverage_wage,
     pf_contributions,
     professional_tax,
     statutory_rules_for,
@@ -1781,7 +1782,7 @@ def slip_other_earnings(result):
         ("Overtime", Decimal(result.ot_amount or 0)),
         ("Leave Encashment", Decimal(getattr(result, "leave_encashment_amount", 0) or 0)),
         ("Adjustment (+/-)", Decimal(result.manual_adjustment or 0)),
-    ]
+    ] + ([("Round Off (+/-)", Decimal(result.round_off))] if Decimal(getattr(result, "round_off", 0) or 0) else [])
 
 
 def slip_other_deductions(result):
@@ -1802,7 +1803,17 @@ def yearly_ctc(salary_record, employee, result=None):
     }
     # CTC uses the contracted monthly salary as the ESI wage. Attendance and LOP
     # continue to control the separate statutory values used in actual payroll.
-    esi = esi_contributions(monthly_salary, monthly_salary, rules) if employee and employee.esic_enabled else {
+    # Whether ESI applies at all follows the month's payroll when there is one, so
+    # a slip never prices in an ESIC contribution its own deductions do not show,
+    # including on months finalized before coverage moved to the wage definition.
+    recorded = [getattr(result, field, None) for field in ("esi_wage", "esi_employee", "esi_employer")] if result is not None else []
+    if any(value is not None for value in recorded):
+        esi_covered_this_month = any(Decimal(value or 0) > 0 for value in recorded)
+    else:
+        esi_covered_this_month = esi_contributions(
+            monthly_salary, esi_coverage_wage(employee, monthly_salary), rules)["covered"]
+    esi = esi_contributions(monthly_salary, monthly_salary, {**rules, "ESI_WAGE_CEILING": Decimal("Infinity")}) \
+        if employee and employee.esic_enabled and esi_covered_this_month else {
         "employee": Decimal("0"), "employer": Decimal("0"),
     }
     annual_cost = (
@@ -2509,7 +2520,10 @@ def salary_register_rows(month):
             money(basic * ratio), money(hra * ratio), money(allowance * ratio),
             money(result.ot_amount),
             money(result.less_hours_deduction),
-            money(result.lop_deduction),
+            # SHORT LEAVE used to repeat the loss-of-pay amount. LOP is already out
+            # of PAID BASIC/HRA/ALLOWANCE, so showing it here as well read as a
+            # second deduction; it stays at zero until the column is given a use.
+            money(Decimal("0")),
             money(Decimal(result.loan_deduction or 0) + Decimal(result.advance_deduction or 0)),
             money(result.esi_employee),
             money(result.pf_employee),
