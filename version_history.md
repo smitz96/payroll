@@ -1,8 +1,14 @@
 # Version History
 
-## V1.17
+## V1.18
 
 Current version.
+
+- Each issued slip on an employee's Salary Slips page has a WhatsApp button that downloads the pay slip and opens WhatsApp with the month's summary and net pay.
+- Employee PDFs download with readable names, such as "Asha Chaudhary Pay Slip for September 2026.pdf" and "Asha Chaudhary Attendance Summary for September 2026.pdf". Single-letter middle initials are left out. This applies to the WhatsApp download and the normal PDF buttons alike.
+- The WhatsApp message calls the document a pay slip, matching its file name and title.
+
+## V1.17
 
 - The employee payroll calendar shows a blue "OT" badge with a tick and the payable time on overtime days, beside the existing "Less hours" badge.
 - A "Share on WhatsApp" button on the employee payroll page downloads the PDF to attach and opens WhatsApp with a summary typed out: paid days, loss of pay, leave, less hours and overtime, and net pay once the wage group is finalized. Before finalizing, and for daily wage, it shares the attendance summary; once Monthly wage is finalized, the salary slip. WhatsApp asks who to send it to; no phone numbers are stored.

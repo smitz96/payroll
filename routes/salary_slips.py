@@ -9,8 +9,9 @@ from flask import Blueprint, Response, abort, flash, redirect, render_template, 
 
 from attendance import db
 from attendance.authentication import login_required
-from attendance.models import Employee, SalaryRecord
-from attendance.reports import build_employee_slip_history_pdf, finalized_slip_months, pending_slip_months, slip_months_by_employee
+from attendance.models import Employee, PayrollResult, SalaryRecord
+from attendance.reports import build_employee_slip_history_pdf, finalized_slip_months, payroll_month_days, pending_slip_months, slip_months_by_employee, total_paid_days
+from attendance.sharing import whatsapp_share
 from attendance.utils import display_month, financial_year_label, financial_year_start
 
 bp = Blueprint("salary_slips", __name__, url_prefix="/salary-slips")
@@ -68,6 +69,20 @@ def index():
     return render_template("salary_slips.html", rows=rows, total_slips=sum(row["count"] for row in rows))
 
 
+def slip_shares(employee_id, months):
+    """A WhatsApp share for each issued slip; every listed month is finalized."""
+    salaries = {s.payroll_month: s for s in SalaryRecord.query.filter_by(employee_id=employee_id).all()}
+    results = {r.payroll_month: r for r in PayrollResult.query.filter_by(employee_id=employee_id).all()}
+    shares = {}
+    for month in months:
+        result = results.get(month)
+        share = whatsapp_share(month, employee_id, salaries.get(month), result, True,
+                               total_paid_days(result), payroll_month_days(month))
+        if share:
+            shares[month] = share
+    return shares
+
+
 @bp.route("/<employee_id>")
 @login_required
 def employee(employee_id):
@@ -86,6 +101,7 @@ def employee(employee_id):
         month_labels={month: display_month(month) for month in months},
         years=financial_years(months),
         pending=[display_month(month) for month in pending_slip_months(employee_id)],
+        shares=slip_shares(employee_id, months),
     )
 
 

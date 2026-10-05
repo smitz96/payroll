@@ -5,6 +5,7 @@ import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 from io import BytesIO, StringIO
+from urllib.parse import unquote
 
 from pypdf import PdfReader
 from conftest import finalize_group
@@ -3688,7 +3689,7 @@ def test_a_monthly_employee_pdf_is_still_a_salary_slip(client, app):
     response = client.get("/reports/2026-07/employee/5.pdf")
     assert response.status_code == 200
     assert "Pay Slip" in pdf_text(response.data)
-    assert "salary-slip" in response.headers["Content-Disposition"]
+    assert "Pay Slip for July 2026.pdf" in unquote(response.headers["Content-Disposition"])
 
 
 def test_reports_page_names_the_slip_report_by_wage_group(client, app):

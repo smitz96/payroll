@@ -29,6 +29,7 @@ from attendance.reports import (
     overtime_report_csv,
     payroll_summary_csv,
 )
+from attendance.sharing import ATTENDANCE_SUMMARY, PAY_SLIP, content_disposition, employee_document_filename
 from attendance.utils import money_text, display_month, is_valid_payroll_month
 from attendance.wage_groups import GROUP_LABELS, MONTHLY, is_group_finalized
 
@@ -84,7 +85,7 @@ def csv_response(content, filename):
 
 
 def pdf_response(content, filename):
-    return Response(content, mimetype="application/pdf", headers={"Content-Disposition": f"inline; filename={filename}"})
+    return Response(content, mimetype="application/pdf", headers={"Content-Disposition": content_disposition(filename)})
 
 
 @bp.route("/")
@@ -254,8 +255,8 @@ def employee_pdf(month, employee_id):
                                      back_to=url_for("payroll.employee", month=month, employee_id=employee_id))
         if blocked:
             return blocked
-    filename = (f"attendance-summary-{month}-{employee_id}.pdf" if daily
-                else f"smartfill-salary-slip-{month}-{employee_id}.pdf")
+    name = salary.name if salary else employee_id
+    filename = employee_document_filename(name, ATTENDANCE_SUMMARY if daily else PAY_SLIP, month)
     return pdf_response(build_employee_pdf(month, employee_id), filename)
 
 
@@ -266,11 +267,7 @@ def employee_attendance_summary_pdf(month, employee_id):
     if not salary or salary.normalized_salary_type not in {"MONTHLY", "DAILY"}:
         abort(404)
     wage_group = salary.normalized_salary_type
-    filename = (
-        f"attendance-summary-{month}-{employee_id}.pdf"
-        if wage_group == "DAILY"
-        else f"smartfill-attendance-summary-{month}-{employee_id}.pdf"
-    )
+    filename = employee_document_filename(salary.name, ATTENDANCE_SUMMARY, month)
     return pdf_response(build_attendance_summary_pdf(month, wage_group, employee_id=employee_id), filename)
 
 

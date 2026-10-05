@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_whatsapp.html" import whatsapp_button, whatsapp_script %}
 {% block content %}
 <div class="page-head">
   <div>
@@ -30,7 +31,10 @@
   </div>
   <div class="slip-month-grid">
     {% for month in year.months %}
-    <a class="slip-month-chip" href="{{ url_for('reports.employee_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">{{ month_labels[month] }}</a>
+    <span class="slip-month-item">
+      <a class="slip-month-chip" href="{{ url_for('reports.employee_pdf', month=month, employee_id=employee_id) }}" target="_blank" rel="noopener">{{ month_labels[month] }}</a>
+      {% if shares.get(month) %}{{ whatsapp_button(shares[month], "Share " ~ month_labels[month] ~ " pay slip on WhatsApp", compact=true) }}{% endif %}
+    </span>
     {% endfor %}
   </div>
 </div>
@@ -40,4 +44,5 @@
   <div class="empty-state">No salary slips have been issued to this employee yet. A slip is released once that month's monthly wage payroll is finalized.</div>
 </div>
 {% endif %}
+{% if shares %}{{ whatsapp_script() }}{% endif %}
 {% endblock %}

@@ -41,7 +41,7 @@ def test_finalized_month_shares_the_slip_with_net_pay(client, app):
     login(client)
     text, pdf = share_link(client.get(f"/payroll/{MONTH}/employee/5").data.decode())
     assert "*Net pay: ₹" in text
-    assert "salary slip PDF is attached" in text
+    assert "pay slip PDF is attached" in text
     assert pdf.endswith(f"/reports/{MONTH}/employee/5.pdf")
 
 
@@ -61,3 +61,36 @@ def test_no_share_button_before_calculation(client, app):
         seed()
     login(client)
     assert "data-whatsapp-share" not in client.get(f"/payroll/{MONTH}/employee/5").data.decode()
+
+
+def test_document_file_names_read_like_a_title():
+    from attendance.sharing import employee_document_filename, short_name
+    assert short_name("Asha G Chaudhary") == "Asha Chaudhary"
+    assert short_name("Mohit R. Panjabi") == "Mohit Panjabi"
+    assert short_name("Pradip Makwana") == "Pradip Makwana"
+    assert employee_document_filename("Asha G Chaudhary", "Pay Slip", "2026-09") == "Asha Chaudhary Pay Slip for September 2026.pdf"
+    assert employee_document_filename("Asha G Chaudhary", "Attendance Summary", "2026-09") == "Asha Chaudhary Attendance Summary for September 2026.pdf"
+    assert "/" not in employee_document_filename("A/B Worker", "Pay Slip", "2026-09")
+
+
+def test_pdf_downloads_carry_the_readable_name(client, app):
+    with app.app_context():
+        seed()
+        calculate()
+    login(client)
+    response = client.get(f"/reports/{MONTH}/employee/5/attendance-summary.pdf")
+    assert "Worker Attendance Summary for July 2026.pdf" in unquote(response.headers["Content-Disposition"])
+
+
+def test_salary_slips_page_has_a_share_button_per_issued_slip(client, app):
+    with app.app_context():
+        seed()
+        calculate()
+        finalize_group(db.session.get(PayrollMonth, MONTH), "MONTHLY", "admin")
+        db.session.commit()
+    login(client)
+    page = client.get("/salary-slips/5").data.decode()
+    text, pdf = share_link(page)
+    assert "*Net pay: ₹" in text and "pay slip PDF is attached" in text
+    assert pdf.endswith(f"/reports/{MONTH}/employee/5.pdf")
+    assert 'data-pdf-name="Worker Pay Slip for July 2026.pdf"' in page
